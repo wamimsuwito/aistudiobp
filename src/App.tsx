@@ -306,8 +306,8 @@ const ScadaDiagram = ({
   const isAdditiveOpen = isAir;
 
   return (
-    <div className="w-full h-full flex items-center justify-center bg-[#0a0f14] p-4 overflow-hidden rounded-[4px] border border-border">
-      <svg viewBox="0 -20 1000 670" className="w-full h-full max-h-full">
+    <div className="w-full h-full flex items-center justify-center bg-[#05080c] overflow-hidden rounded-[4px]">
+      <svg viewBox="30 25 940 580" className="w-full h-full max-h-full">
         <defs>
           <filter id="glow">
             <feGaussianBlur stdDeviation="2" result="blur" />
@@ -327,59 +327,7 @@ const ScadaDiagram = ({
           </clipPath>
         </defs>
 
-        {/* Main Weighing Indicator Panel */}
-        <foreignObject x="25" y="-12" width="500" height="155">
-          <div className="bg-[#0b1329]/95 border-2 border-[#00e5ff]/35 rounded-[6px] p-2.5 h-full w-full flex flex-col gap-2 select-none shadow-lg">
-            {/* Header Title with animated state light */}
-            <div className="flex items-center justify-between px-1">
-              <span className="text-[10px] font-sans font-black tracking-widest text-[#00e5ff] uppercase">MONITOR TIMBANGAN UTAMA</span>
-              <div className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-[#00ff9c] animate-pulse" />
-                <span className="text-[8px] font-mono font-bold tracking-widest text-[#00ff9c] uppercase">SCADA ON</span>
-              </div>
-            </div>
-
-            {/* 2x2 grid layout of components */}
-            <div className="grid grid-cols-2 gap-2 flex-1">
-              {[
-                { key: 'pasir', label: 'PASIR', unit: 'kg' },
-                { key: 'batu', label: 'BATU', unit: 'kg' },
-                { key: 'semen', label: 'SEMEN', unit: 'kg' },
-                { key: 'air', label: 'AIR', unit: 'kg' },
-              ].map(({ key, label, unit }) => {
-                const item = scales[key as MaterialType];
-                return (
-                  <div key={key} className="bg-[#05080c] border border-slate-800/80 rounded-[4px] p-2 flex flex-col justify-between relative overflow-hidden">
-                    <div className="flex justify-between items-center">
-                      <span className="text-[10px] font-sans font-black tracking-wide text-white uppercase">{label}</span>
-                      <span className="text-[8px] font-mono font-bold text-slate-400">
-                        Tgt: <span className="text-[#38bdf8] font-black">{item.target}</span> {unit}
-                      </span>
-                    </div>
-
-                    <div className="flex justify-between items-baseline mt-1.5">
-                      <span className={`font-mono text-xl font-black tracking-tighter leading-none ${item.isActive ? 'text-[#00ffd0] animate-pulse' : item.isComplete ? 'text-[#00ff9c]' : 'text-slate-500'}`}>
-                        {item.actual.toFixed(0)} <span className="text-[9px] font-sans font-bold text-slate-600 uppercase">KG</span>
-                      </span>
-
-                      {/* Status led inside grid card */}
-                      <span className={`w-2.5 h-2.5 rounded-full ${item.isActive ? 'bg-[#00ffd0] shadow-[0_0_8px_#00ffd0]' : item.isComplete ? 'bg-[#00ff9c]' : 'bg-[#1e293b]'}`} />
-                    </div>
-
-                    {/* Progress tracking line */}
-                    <div className="absolute bottom-0 left-0 w-full h-[2.5px] bg-[#0d1527]">
-                      <div 
-                        style={{ width: `${Math.min(100, (item.actual / (item.target || 1)) * 100)}%` }}
-                        className={`h-full transition-all duration-100 ${item.isComplete ? 'bg-[#00ff9c]' : item.isActive ? 'bg-[#00ffd0]' : 'bg-slate-700'}`}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </foreignObject>
-
+        {/* Weighing Monitor panel removed from SVG and rendered as native React components in layout */}
         {/* --- AGGREGATE SECTION (LEFT) --- */}
         <g id="aggregate-bins">
           {[
@@ -1001,124 +949,7 @@ const ScadaDiagram = ({
           />
         </g>
 
-        {/* Industrial PLC control button panel on the right empty space */}
-        <foreignObject x="795" y="302" width="190" height="338">
-          <div className="bg-[#0b1329]/95 border-2 border-[#00e5ff]/35 rounded-[6px] p-2.5 h-full w-full flex flex-col gap-2 select-none shadow-2xl relative overflow-hidden text-slate-100">
-            {/* Panel header with dynamic pulse led */}
-            <div className="flex items-center justify-between border-b border-slate-800/80 pb-1.5 px-0.5">
-              <span className="text-[10px] font-sans font-black tracking-widest text-[#00e5ff] uppercase flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse inline-block" />
-                PLC CONTROL PANEL
-              </span>
-              <span className="text-[8px] font-mono font-bold text-slate-500 uppercase">ONLINE</span>
-            </div>
-
-            {/* 2 column controller layout */}
-            <div className="grid grid-cols-2 gap-2 flex-1 min-h-0">
-              {/* Left column: Start, Stop, Auto ON (neat, tight, industrial alignment) */}
-              <div className="flex flex-col gap-2.5 justify-start">
-                {/* Circular Start & Stop Row */}
-                <div className="flex items-center justify-between gap-1.5 h-[42px]">
-                  <button 
-                    onClick={startBatch}
-                    disabled={isRunning}
-                    style={{ textShadow: !isRunning ? "0 0 4px rgba(255,255,255,0.5)" : "none" }}
-                    className={`w-[41px] h-[41px] rounded-full flex items-center justify-center font-sans font-black text-[10px] uppercase transition-all duration-150 shadow-md ${
-                      isRunning 
-                        ? 'bg-[#153e25]/60 text-[#15803d]/40 border-[2.5px] border-[#15803d]/30 cursor-not-allowed' 
-                        : 'bg-[#22c55e] hover:bg-[#16a34a] text-white border-[2.5px] border-[#4ade80] shadow-[0_0_10px_rgba(34,197,94,0.4)] hover:scale-105 active:scale-95 cursor-pointer'
-                    }`}
-                  >
-                    Start
-                  </button>
-                  <button 
-                    onClick={stopBatch}
-                    disabled={!isRunning}
-                    className={`w-[41px] h-[41px] rounded-full flex items-center justify-center font-sans font-black text-[10px] uppercase transition-all duration-150 shadow-md ${
-                      isRunning 
-                        ? 'bg-[#ef4444] hover:bg-[#dc2626] text-white border-[2.5px] border-[#f87171] shadow-[0_0_10px_rgba(239,68,68,0.4)] hover:scale-105 active:scale-95 cursor-pointer' 
-                        : 'bg-[#4c0519]/70 text-[#9f1239]/50 border-[2.5px] border-[#9f1239]/20 cursor-not-allowed'
-                    }`}
-                  >
-                    STOP
-                  </button>
-                </div>
-
-                {/* Auto rect button - exactly identical to QUARRY AGGREGATE size, style, and outline */}
-                <button
-                  onClick={() => setIsAuto(!isAuto)}
-                  className={`rounded-[5px] px-1.5 py-1 flex flex-col items-center justify-center text-center transition-all duration-150 border-[1.5px] h-[42px] cursor-pointer ${
-                    isAuto
-                      ? 'bg-[#22c55e] hover:bg-[#16a34a] text-white border-[#4ade80] shadow-[0_0_8px_rgba(34,197,94,0.35)]'
-                      : 'bg-[#1e293b]/55 hover:bg-slate-700/80 text-slate-400 border-slate-700/50'
-                  }`}
-                >
-                  <Power size={11} className={isAuto ? "animate-pulse" : ""} />
-                  <span className="text-[7.5px] font-sans font-black tracking-wide leading-tight uppercase mt-0.5">AUTO: {isAuto ? 'ON' : 'OFF'}</span>
-                </button>
-              </div>
-
-              {/* Right column: Moisture, Quarry, Print, Help */}
-              <div className="flex flex-col gap-2.5 justify-start">
-                {/* MOISTURE CONTROL */}
-                <button
-                  onClick={() => setMoistureControl(!moistureControl)}
-                  className={`rounded-[5px] px-1.5 py-1 flex flex-col items-center justify-center text-center transition-all duration-150 border-[1.5px] h-[42px] cursor-pointer ${
-                    moistureControl
-                      ? 'bg-[#0d9488] hover:bg-[#0f766e] text-white border-[#2dd4bf] shadow-[0_0_8px_rgba(13,148,136,0.35)]'
-                      : 'bg-[#0f172a]/60 hover:bg-slate-800/80 text-slate-400 border-slate-800/60'
-                  }`}
-                >
-                  <span className="text-[7.5px] font-sans font-black tracking-wide leading-tight uppercase">MOISTURE</span>
-                  <span className="text-[7.5px] font-sans font-black tracking-wide leading-tight uppercase mt-0.5">CONTROL</span>
-                </button>
-
-                {/* QUARRY AGGREGATE */}
-                <button
-                  onClick={() => setQuarryAggregate(!quarryAggregate)}
-                  className={`rounded-[5px] px-1.5 py-1 flex flex-col items-center justify-center text-center transition-all duration-150 border-[1.5px] h-[42px] cursor-pointer ${
-                    quarryAggregate
-                      ? 'bg-[#2563eb] hover:bg-[#1d4ed8] text-white border-[#60a5fa] shadow-[0_0_8px_rgba(37,99,235,0.35)]'
-                      : 'bg-[#0f172a]/60 hover:bg-slate-800/80 text-slate-400 border-slate-800/60'
-                  }`}
-                >
-                  <span className="text-[7.5px] font-sans font-black tracking-wide leading-tight uppercase">QUARRY</span>
-                  <span className="text-[7.5px] font-sans font-black tracking-wide leading-tight uppercase mt-0.5">AGGREGATE</span>
-                </button>
-
-                {/* Print + Help Row */}
-                <div className="flex items-center gap-1.5 h-[34px]">
-                  {/* Print card */}
-                  <div 
-                    onClick={() => setIsPrint(!isPrint)}
-                    className={`flex-1 rounded-[5px] px-1.5 h-full flex items-center justify-center gap-1 border transition-all duration-150 cursor-pointer select-none ${
-                      isPrint 
-                        ? 'bg-[#1e293b] border-slate-600'
-                        : 'bg-[#0f172a]/40 border-slate-800 text-slate-500'
-                    }`}
-                  >
-                    <input 
-                      type="checkbox" 
-                      checked={isPrint} 
-                      onChange={() => {}} 
-                      className="w-3 h-3 accent-[#2563eb] cursor-pointer mr-0.5 shrink-0"
-                    />
-                    <span className="text-[9px] font-sans font-black text-white shrink-0">Print</span>
-                  </div>
-
-                  {/* Help "?" Circle */}
-                  <button
-                    onClick={onHelpClick}
-                    className="w-8 h-8 rounded-full bg-[#1d4ed8] hover:bg-[#2563eb] border border-blue-500/30 flex items-center justify-center text-white cursor-pointer hover:scale-105 active:scale-95 shadow-md flex-shrink-0"
-                  >
-                    <span className="text-[12px] font-sans font-black">?</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </foreignObject>
-      </svg>
+        {/* PLC Control panel removed from SVG view and rendered as clean native components underneath */}      </svg>
     </div>
   );
 };
@@ -2058,7 +1889,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#070b13] text-slate-100 font-sans flex flex-col p-2">
+    <div className="h-screen max-h-screen w-screen max-w-full overflow-hidden bg-[#070b13] text-slate-100 font-sans flex flex-col p-2">
       {/* Top Header */}
       <TopCompanyHeader />
 
@@ -2171,14 +2002,154 @@ export default function App() {
           )}
         </AnimatePresence>
 
-        {/* Inner layout grid */}
-        <div className="flex-1 flex flex-col gap-3 min-h-0">
+        {/* Inner layout 3-Column Grid representing the pristine Lovable HMI design */}
+        <div className="flex-1 grid grid-cols-[230px_1fr_240px] gap-3 min-h-0 relative select-none">
           
-          {/* MAIN GRAPHICS AREA (Indicator panels, diagram, and controls) */}
+          {/* LEFT PANEL: AMPERE, SLUMP, AND ACTIVITY LOGS */}
+          <div className="flex flex-col gap-3 min-h-0">
+            {/* AMPERE MIXER CARD */}
+            <div className="bg-[#0b1329] border border-slate-800 rounded-[5px] p-2.5 flex flex-col justify-between overflow-hidden relative shadow-md">
+              <div className="flex justify-between items-center border-b border-slate-850 pb-1 mb-1.5">
+                <span className="text-[8px] font-sans font-black tracking-widest text-[#00ffd0] uppercase flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                  AMPERE MIXER
+                </span>
+                <span className="text-[7.5px] font-mono font-bold text-slate-500">SIMULATION</span>
+              </div>
+              <div className="flex items-baseline justify-between py-1">
+                <span className="font-mono text-[22px] font-black tracking-tight text-[#00ffd0]">
+                  {mixerShaftActive ? (ampere || 24.5).toFixed(1) : (isRunning ? "2.5" : "0.0")}{" "}
+                  <span className="text-[9px] font-sans font-bold text-slate-500 uppercase">A</span>
+                </span>
+                <span className="text-[7px] font-sans font-bold text-slate-500 uppercase">NORMAL RANGE</span>
+              </div>
+              {/* Animated Mini Level Bar */}
+              <div className="w-full bg-[#1e293b]/55 h-1.5 rounded-full overflow-hidden mt-1 relative">
+                <div 
+                  className="bg-cyan-400 h-full rounded-full transition-all duration-300"
+                  style={{ width: `${mixerShaftActive ? (((ampere || 24.5) / 40) * 100) : (isRunning ? 6 : 0)}%` }}
+                />
+              </div>
+            </div>
+
+            {/* ESTIMASI SLUMP CARD */}
+            <div className="bg-[#0b1329] border border-slate-800 rounded-[5px] p-2.5 flex flex-col justify-between overflow-hidden relative shadow-md">
+              <div className="flex justify-between items-center border-b border-slate-850 pb-1 mb-1.5">
+                <span className="text-[8px] font-sans font-black tracking-widest text-emerald-400 uppercase flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  ESTIMASI SLUMP
+                </span>
+                <span className="text-[7.5px] font-mono font-bold text-slate-500">AUTO</span>
+              </div>
+              <div className="flex items-baseline justify-between py-1">
+                <span className="font-mono text-[22px] font-black tracking-tight text-emerald-400">
+                  {mixerShaftActive ? (slump ? `${slump.toFixed(1)} cm` : "Calculating...") : (isRunning ? `${activeSlump}` : "?")}{" "}
+                </span>
+                <span className="text-[7px] font-sans font-bold text-slate-500 uppercase">TARGET: {activeSlump}</span>
+              </div>
+              {/* Slump Bar Indicator */}
+              <div className="w-full bg-[#1e293b]/55 h-1.5 rounded-full overflow-hidden mt-1">
+                <div 
+                  className="bg-emerald-400 h-full rounded-full transition-all duration-300"
+                  style={{ width: `${mixerShaftActive ? 68 : (isRunning ? 50 : 0)}%` }}
+                />
+              </div>
+            </div>
+
+            {/* ACTIVITY LOG CARD (Neon Red tint border) */}
+            <div className="flex-1 bg-[#0b1329] border border-slate-800 rounded-[5px] p-2.5 flex flex-col min-h-0 shadow-md">
+              <div className="flex justify-between items-center border-b border-slate-850 pb-1 mb-1.5">
+                <span className="text-[8px] font-sans font-black tracking-widest text-red-500 uppercase flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-ping inline-block" />
+                  ACTIVITY LOGS
+                </span>
+                <span className="text-[7px] font-mono font-semibold text-slate-500">REALTIME</span>
+              </div>
+              {/* Dynamic scrollable log list */}
+              <div className="flex-1 overflow-y-auto pr-1 space-y-2 font-mono scrollbar-thin text-[8.5px] leading-relaxed uppercase">
+                {logs.length === 0 ? (
+                  <div className="text-slate-600 italic text-center pt-2">NO LOG DATA AVAILABLE...</div>
+                ) : (
+                  [...logs].reverse().slice(0, 15).map((log) => (
+                    <div key={log.id} className="border-b border-slate-900 pb-1.5 text-slate-400">
+                      <div className="flex justify-between text-[7.5px] text-slate-500 font-bold mb-0.5">
+                        <span>{log.timestamp.toLocaleTimeString()}</span>
+                        <span className={log.status === 'sukses' ? 'text-emerald-500' : 'text-red-500'}>
+                          {log.status}
+                        </span>
+                      </div>
+                      <div className="text-[8px] font-black text-slate-300 break-all">{log.recipeName}</div>
+                      <div className="text-[7.5px] text-slate-500 mt-0.5 grid grid-cols-2 gap-x-1">
+                        <span>PS: {log.data.pasir} kg</span>
+                        <span>BT: {log.data.batu} kg</span>
+                        <span>SM: {log.data.semen} kg</span>
+                        <span>AR: {log.data.air} kg</span>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* CENTER PANEL: HORIZONTAL WEIGHING CARDS & MECHANICAL DIAGRAM */}
           <div className="flex-1 flex flex-col gap-3 min-h-0">
-            
-             {/* SCADA CANVAS GRAPHICS AREA (Keep SCADA exact to الصورة 1) */}
-            <div className="flex-1 bg-[#05080c] border border-slate-800 rounded-[4px] relative overflow-hidden flex items-center justify-center p-2.5">
+            {/* TOP ROW: WEIGHING CARDS + LOGO & CLOCK */}
+            <div className="grid grid-cols-[1fr_205px] gap-2.5 h-[58px] items-stretch shrink-0">
+              {/* Horizontal Weighing Cards */}
+              <div className="grid grid-cols-4 gap-2">
+                {[
+                  { key: 'pasir', label: 'PASIR (SAND)', color: 'text-cyan-400' },
+                  { key: 'batu', label: 'BATU (STONE)', color: 'text-amber-400' },
+                  { key: 'semen', label: 'SEMEN (CEMENT)', color: 'text-[#e2e8f0]' },
+                  { key: 'air', label: 'AIR (WATER)', color: 'text-[#3b82f6]' }
+                ].map(({ key, label }) => {
+                  const item = scales[key as MaterialType];
+                  return (
+                    <div key={key} className="bg-[#0b1329] border border-slate-800 rounded-[5px] flex flex-col justify-between overflow-hidden relative shadow-md">
+                      {/* Weighing Card Header */}
+                      <div className="bg-[#121c32] px-2 py-0.5 flex justify-between items-center border-b border-slate-850 leading-none shrink-0">
+                        <span className="text-[7.5px] font-sans font-black tracking-widest text-slate-400 uppercase">TARGET</span>
+                        <span className="text-[8.5px] font-mono font-black text-[#58a6ff]">{item.target.toFixed(0)} kg</span>
+                      </div>
+                      {/* Weighing Card Value */}
+                      <div className="p-1 px-2 flex flex-col justify-center flex-1 relative leading-none">
+                        <span className="text-[6.5px] font-sans font-extrabold text-slate-500 uppercase tracking-wide mb-1 select-none">{label}</span>
+                        <div className="flex justify-between items-baseline">
+                          <span className={`font-mono text-[16px] font-black tracking-tight leading-none ${item.isActive ? 'text-[#00ffd0] animate-pulse' : item.isComplete ? 'text-[#00ff9c]' : 'text-slate-400'}`}>
+                            {item.actual.toFixed(0)} <span className="text-[7.5px] font-sans font-bold text-slate-600">KG</span>
+                          </span>
+                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${item.isActive ? 'bg-[#00ffd0] shadow-[0_0_8px_#00ffd0]' : item.isComplete ? 'bg-[#00ff9c]' : 'bg-slate-800'}`} />
+                        </div>
+                      </div>
+                      {/* Bottom Micro progress indicator */}
+                      <div className="h-[2px] w-full bg-[#111827] mt-auto">
+                        <div 
+                          className={`h-full transition-all duration-300 ${item.isComplete ? 'bg-[#00ff9c]' : item.isActive ? 'bg-[#00ffd0]' : 'bg-slate-700'}`}
+                          style={{ width: `${Math.min(100, (item.actual / (item.target || 1)) * 100)}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* PT FARIKA LOGO AND DIGITAL CLOCK CARD */}
+              <div className="bg-[#0b1329] border border-slate-800 rounded-[5px] p-2 flex items-center gap-3 shadow-md">
+                <FarikaLogo />
+                <div className="flex flex-col justify-center leading-none select-none">
+                  <span className="font-mono text-[14px] font-black text-[#00ffd0] tracking-wider">
+                    {time.toLocaleTimeString('id-ID', { hour12: false }).replace(/:/g, '.')}
+                  </span>
+                  <span className="text-[7px] font-sans font-black text-slate-400 uppercase tracking-tight mt-1.5">
+                    {getIndonesianDate(time)}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* MECHANICAL SCADA CANVAS AREA (Elegant representation) */}
+            <div className="flex-1 bg-[#05080c] border border-slate-800 rounded-[5px] relative overflow-hidden flex items-center justify-center p-1.5 shadow-inner">
               <ScadaDiagram 
                 isRunning={isRunning} 
                 currentStep={currentStep} 
@@ -2218,6 +2189,158 @@ export default function App() {
             </div>
           </div>
 
+          {/* RIGHT PANEL: MIXING GAUGES AND PLC CONTROL PANEL BUTTON BOARD */}
+          <div className="flex flex-col gap-3 min-h-0 justify-between">
+            {/* WAKTU MIXING CIRCULAR COUNTDOWN TIMER CARD */}
+            <div className="bg-[#0b1329] border border-slate-800 rounded-[5px] p-2.5 flex flex-col justify-between overflow-hidden shadow-md shrink-0 h-[155px]">
+              <div className="flex justify-between items-center border-b border-slate-850 pb-1.5 md:mb-1 select-none">
+                <span className="text-[8px] font-sans font-black tracking-widest text-[#00ffd0] uppercase flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                  WAKTU MIXING
+                </span>
+                <span className="text-[7.5px] font-mono font-bold text-slate-500">COUNTDOWN</span>
+              </div>
+              
+              {/* Circular Dial Indicator */}
+              <div className="flex-1 flex flex-col items-center justify-center relative my-1">
+                {/* Visual Radial Ring */}
+                <div className="relative w-18 h-18 rounded-full border border-slate-800 flex items-center justify-center bg-[#070b13]/80 select-none shadow-inner">
+                  {/* Decorative rotating segment if mixing is active */}
+                  {mixerShaftActive && (
+                    <div className="absolute inset-0.5 rounded-full border border-dashed border-cyan-400 animate-spin" style={{ animationDuration: '6s' }} />
+                  )}
+                  {/* Centered digits */}
+                  <div className="flex flex-col items-center justify-center leading-none">
+                    <span className="font-mono text-[17px] font-black text-[#58a6ff]">
+                      {productionState === 'MIXING' ? mixingCountdown : 0}
+                    </span>
+                    <span className="text-[6.5px] font-sans font-extrabold text-[#00e5ff] uppercase tracking-wide mt-1">
+                      DTK
+                    </span>
+                  </div>
+                </div>
+                {/* Secondary details */}
+                <span className="text-[7.5px] font-sans font-black text-slate-400 uppercase tracking-widest mt-2">
+                  Mix {currentCycle || (isRunning ? 1 : 0)} Dari {totalCycles || activeMixingCount || 1}
+                </span>
+              </div>
+            </div>
+
+            {/* INDUSTRIAL PLC PANEL COHESIVE BUTTON GRID */}
+            <div className="bg-[#0b1329] border border-slate-800 rounded-[5px] p-2.5 flex flex-col gap-2 shadow-xl flex-1 relative overflow-hidden">
+              <div className="flex items-center justify-between border-b border-slate-850 pb-1.5 px-0.5">
+                <span className="text-[9px] font-sans font-black tracking-widest text-[#00ffd0] uppercase flex items-center gap-1 select-none">
+                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse inline-block" />
+                  PLC CONTROL PANEL
+                </span>
+                <span className="text-[7.5px] font-mono font-black text-[#00ff9c] uppercase select-none">ONLINE</span>
+              </div>
+
+              {/* Robust Industrial Alignment */}
+              <div className="flex flex-col gap-2 flex-1 justify-between select-none py-1">
+                
+                {/* START & STOP CIRCULAR ROW */}
+                <div className="grid grid-cols-2 gap-2 h-[41px] items-stretch">
+                  <button 
+                    onClick={() => isAuto ? setIsBatchConfigOpen(true) : startBatch({
+                      recipe: selectedRecipe,
+                      volume: activeVolume,
+                      mixingCycles: activeMixingCount,
+                      slump: activeSlump,
+                      siloSemen: activeSiloSemen,
+                      mixingTime: activeMixingTime,
+                      pelanggan: activePelanggan,
+                      lokasi: activeLokasi,
+                      noKendaraan: activeNoKendaraan,
+                      sopir: activeSopir
+                    })}
+                    disabled={isRunning}
+                    style={{ textShadow: !isRunning ? "0 0 4px rgba(255,255,255,0.4)" : "none" }}
+                    className={`rounded-full flex items-center justify-center font-sans font-black text-[10px] uppercase transition-all duration-150 shadow-md h-full text-center ${
+                      isRunning 
+                        ? 'bg-[#153e25]/60 text-[#15803d]/40 border-2 border-[#15803d]/30 cursor-not-allowed' 
+                        : 'bg-[#22c55e] hover:bg-[#16a34a] text-white border-2 border-[#4ade80] shadow-[0_0_10px_rgba(34,197,94,0.35)] hover:scale-[1.03] active:scale-95 cursor-pointer'
+                    }`}
+                  >
+                    Start
+                  </button>
+                  <button 
+                    onClick={stopBatch}
+                    disabled={!isRunning}
+                    className={`rounded-full flex items-center justify-center font-sans font-black text-[10px] uppercase transition-all duration-150 shadow-md h-full text-center ${
+                      isRunning 
+                        ? 'bg-[#ef4444] hover:bg-[#dc2626] text-white border-2 border-[#f87171] shadow-[0_0_10px_rgba(239,68,68,0.35)] hover:scale-[1.03] active:scale-95 cursor-pointer' 
+                        : 'bg-[#4c0519]/70 text-[#9f1239]/50 border-2 border-[#9f1239]/20 cursor-not-allowed'
+                    }`}
+                  >
+                    STOP
+                  </button>
+                </div>
+
+                {/* AUTOMATIC ON OFF SWITCH */}
+                <button
+                  onClick={() => setIsAuto(!isAuto)}
+                  className={`rounded-[5px] px-1 py-1 flex flex-col items-center justify-center text-center transition-all duration-150 border h-[32px] cursor-pointer shrink-0 ${
+                    isAuto
+                      ? 'bg-[#22c55e] hover:bg-[#16a34a] text-white border-[#4ade80] shadow-[0_0_8px_rgba(34,197,94,0.3)]'
+                      : 'bg-[#1e293b]/55 hover:bg-slate-700/80 text-slate-400 border-slate-800'
+                  }`}
+                >
+                  <span className="text-[7.5px] font-sans font-black tracking-wide leading-none uppercase">AUTO: {isAuto ? 'ON' : 'OFF'}</span>
+                </button>
+
+                {/* PARAMETRIC CONTROLS (MOISTURE & QUARRY) */}
+                <div className="grid grid-cols-2 gap-1.5 shrink-0">
+                  <button
+                    onClick={() => setMoistureControl(!moistureControl)}
+                    className={`rounded-[5px] px-1 py-1 flex flex-col items-center justify-center text-center transition-all duration-150 border h-[34px] cursor-pointer leading-tight ${
+                      moistureControl
+                        ? 'bg-[#0d9488] hover:bg-[#0f766e] text-white border-[#2dd4bf] shadow-[0_0_8px_rgba(13,148,136,0.3)]'
+                        : 'bg-[#1e293b]/55 hover:bg-slate-750 text-slate-400 border-slate-800'
+                    }`}
+                  >
+                    <span className="text-[7px] font-sans font-black uppercase">MOISTURE</span>
+                    <span className="text-[7px] font-sans font-black uppercase mt-0.5">CONTROL</span>
+                  </button>
+                  <button
+                    onClick={() => setQuarryAggregate(!quarryAggregate)}
+                    className={`rounded-[5px] px-1 py-1 flex flex-col items-center justify-center text-center transition-all duration-150 border h-[34px] cursor-pointer leading-tight ${
+                      quarryAggregate
+                        ? 'bg-[#2563eb] hover:bg-[#1d4ed8] text-white border-[#60a5fa] shadow-[0_0_8px_rgba(37,99,235,0.3)]'
+                        : 'bg-[#1e293b]/55 hover:bg-slate-755 text-slate-400 border-slate-800'
+                    }`}
+                  >
+                    <span className="text-[7px] font-sans font-black uppercase">QUARRY</span>
+                    <span className="text-[7px] font-sans font-black uppercase mt-0.5">AGGREGATE</span>
+                  </button>
+                </div>
+
+                {/* PRINT CHECKBOX & HELP ROW */}
+                <div className="flex items-center gap-2 h-[30px] shrink-0 mt-0.5">
+                  <div 
+                    onClick={() => setIsPrint(!isPrint)}
+                    className={`flex-1 rounded-[5px] px-2 h-full flex items-center justify-center gap-1 border transition-all duration-150 cursor-pointer select-none border-slate-800 p-1 bg-[#1e293b]/55`}
+                  >
+                    <input 
+                      type="checkbox" 
+                      checked={isPrint} 
+                      onChange={() => {}} 
+                      className="w-2.5 h-2.5 accent-[#2563eb] cursor-pointer shrink-0"
+                    />
+                    <span className="text-[8px] font-sans font-black text-white shrink-0">Print Struk</span>
+                  </div>
+
+                  <button
+                    onClick={() => setIsHelpOpen(true)}
+                    className="w-7 h-7 rounded-full bg-[#1d4ed8] hover:bg-[#2563eb] border border-blue-500/20 flex items-center justify-center text-white cursor-pointer hover:scale-105 active:scale-95 shadow-md flex-shrink-0"
+                  >
+                    <span className="text-[11px] font-sans font-black">?</span>
+                  </button>
+                </div>
+
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
