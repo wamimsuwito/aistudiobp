@@ -59,11 +59,21 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onSuccess, onClose }) =>
       const registeredUsers = getRegisteredUsers();
       
       // Match with either NIK or Nama (case-insensitive)
-      const matchedUser = registeredUsers.find(
+      let matchedUser = registeredUsers.find(
         (u: any) => 
           (String(u.nik).toLowerCase() === inputUser || String(u.nama).toLowerCase() === inputUser) && 
           String(u.password) === inputPass
       );
+
+      // Fallback for default hardcoded 'admin / admin' credentials to ensure absolute reliability
+      if (!matchedUser && inputUser === "admin" && inputPass === "admin") {
+        matchedUser = registeredUsers.find((u: any) => u.jabatan === "Admin") || {
+          nama: "Administrator Utama",
+          nik: "12001",
+          jabatan: "Admin",
+          password: "admin"
+        };
+      }
 
       if (matchedUser) {
         // Save matched user in active session

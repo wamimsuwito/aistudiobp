@@ -33,6 +33,7 @@ import { AdminDashboard } from "./components/admin/AdminDashboard";
 import { MixingSequence } from "./components/admin/MixingSequenceConfig";
 import { BatchConfigModal } from "./components/BatchConfigModal";
 import { webSerialService } from "./lib/webSerial";
+import { loadRelayConfig } from "./components/admin/relay-config/ConfigState";
 
 // --- Types ---
 
@@ -235,6 +236,8 @@ const ScadaDiagram = ({
   productionState = 'IDLE',
   currentCycle = 1,
   totalCycles = 1,
+  currentBatch = 0,
+  targetBatch = 0,
   gatePasirSiloOpen = false,
   gatePasir1SiloOpen = false,
   gatePasir2SiloOpen = false,
@@ -281,6 +284,8 @@ const ScadaDiagram = ({
   productionState?: string;
   currentCycle?: number;
   totalCycles?: number;
+  currentBatch?: number;
+  targetBatch?: number;
   gatePasirSiloOpen?: boolean;
   gatePasir1SiloOpen?: boolean;
   gatePasir2SiloOpen?: boolean;
@@ -1081,10 +1086,7 @@ const ScadaDiagram = ({
             {/* Left Shaft */}
             <g transform="translate(637.5, 400)">
               <circle r="25" fill="none" stroke="rgba(0,0,0,0.2)" strokeWidth="1" />
-              <motion.g
-                animate={isMixerRotating ? { rotate: -360 } : { rotate: 0 }}
-                transition={{ duration: 1.2, repeat: Infinity, ease: "linear" }}
-              >
+              <g className={isMixerRotating ? "spin-ccw-active" : ""}>
                 <line x1="-22" y1="0" x2="22" y2="0" stroke="#00e5ff" strokeWidth="3" opacity="0.8" />
                 <line x1="0" y1="-22" x2="0" y2="22" stroke="#00e5ff" strokeWidth="3" opacity="0.8" />
                 {/* Paddle Profiles */}
@@ -1093,15 +1095,12 @@ const ScadaDiagram = ({
                 <rect x="-3" y="-24" width="6" height="6" fill="#00e5ff" rx="1" />
                 <rect x="-3" y="18" width="6" height="6" fill="#00e5ff" rx="1" />
                 <circle r="5" fill="#334155" />
-              </motion.g>
+              </g>
             </g>
             {/* Right Shaft */}
             <g transform="translate(717.5, 400)">
               <circle r="25" fill="none" stroke="rgba(0,0,0,0.2)" strokeWidth="1" />
-              <motion.g
-                animate={isMixerRotating ? { rotate: 360 } : { rotate: 0 }}
-                transition={{ duration: 1.2, repeat: Infinity, ease: "linear" }}
-              >
+              <g className={isMixerRotating ? "spin-cw-active" : ""}>
                 <line x1="-22" y1="0" x2="22" y2="0" stroke="#00e5ff" strokeWidth="3" opacity="0.8" />
                 <line x1="0" y1="-22" x2="0" y2="22" stroke="#00e5ff" strokeWidth="3" opacity="0.8" />
                 {/* Paddle Profiles */}
@@ -1110,7 +1109,7 @@ const ScadaDiagram = ({
                 <rect x="-3" y="-24" width="6" height="6" fill="#00e5ff" rx="1" />
                 <rect x="-3" y="18" width="6" height="6" fill="#00e5ff" rx="1" />
                 <circle r="5" fill="#334155" />
-              </motion.g>
+              </g>
             </g>
           </g>
 
@@ -1369,9 +1368,14 @@ const ScadaDiagram = ({
                 </div>
 
                 {/* Batch Info Segment */}
-                <div className="w-full flex flex-col justify-center items-center select-none bg-transparent py-2 px-1 leading-none">
-                  <span className="text-[12px] font-mono font-extrabold text-[#00ff9c] tracking-wide uppercase">
-                    MIX {currentCycle || (isRunning ? 1 : 0)} DARI {totalCycles || 1}
+                <div className="w-full flex flex-col justify-center items-center select-none bg-transparent py-1.5 px-1 leading-normal text-center space-y-1">
+                  <span className="text-[11px] font-mono font-extrabold text-[#00ff9c] tracking-wide uppercase">
+                    CURRENT BATCH : {productionState === 'COMPLETE' ? targetBatch : Math.min(targetBatch, isRunning ? (currentBatch + 1) : currentBatch)}/{targetBatch || 1}
+                  </span>
+                  <span className="text-[10px] font-mono font-bold text-slate-400 tracking-wide uppercase">
+                    STATUS : <span className={productionState === 'COMPLETE' ? "text-[#00ff9c]" : isRunning ? "text-cyan-400 animate-pulse font-extrabold" : "text-slate-500"}>
+                      {productionState === 'COMPLETE' ? 'COMPLETE' : productionState}
+                    </span>
                   </span>
                 </div>
               </div>
@@ -1477,12 +1481,15 @@ export default function App() {
   ]);
 
   // --- SCADA HIGH-REALISM SEQUENCING STATE ENGINE ---
-  const [productionState, setProductionState] = useState<'IDLE' | 'STARTING' | 'WEIGHING' | 'READY' | 'WAITING_DISCHARGE' | 'DISCHARGING' | 'MIXING' | 'MIX_COMPLETE' | 'WAITING_EMPTY' | 'NEXT_BATCH' | 'FINISHED' | 'ERROR'>('IDLE');
+  const [productionState, setProductionState] = useState<'IDLE' | 'STARTING' | 'WEIGHING' | 'READY' | 'WAITING_DISCHARGE' | 'DISCHARGING' | 'MIXING' | 'MIX_COMPLETE' | 'WAITING_EMPTY' | 'NEXT_BATCH' | 'FINISHED' | 'ERROR' | 'COMPLETE'>('IDLE');
   const [batchQueue, setBatchQueue] = useState<any[]>([]);
   const [mixerOccupied, setMixerOccupied] = useState<boolean>(false);
   const [currentCycle, setCurrentCycle] = useState<number>(0);
   const [totalCycles, setTotalCycles] = useState<number>(0);
   const [volumePerCycle, setVolumePerCycle] = useState<number>(0);
+  const [currentBatch, setCurrentBatch] = useState<number>(0);
+  const [targetBatch, setTargetBatch] = useState<number>(0);
+  const [volumePerBatch, setVolumePerBatch] = useState<number>(0);
   
   // Weighing controller states
   const [weighingCycle, setWeighingCycle] = useState<number>(0);
@@ -1504,10 +1511,34 @@ export default function App() {
 
   const [screwSemenActive, setScrewSemenActive] = useState(false);
   const [valveWaterActive, setValveWaterActive] = useState(false);
+  
   const [gatePasirHopperOpen, setGatePasirHopperOpen] = useState(false);
   const [gateBatuHopperOpen, setGateBatuHopperOpen] = useState(false);
   const [gateSemenHopperOpen, setGateSemenHopperOpen] = useState(false);
   const [gateWaterHopperOpen, setGateWaterHopperOpen] = useState(false);
+
+  // Synchronous, zero-lag Ref source-of-truth for physical relay synchronization
+  const gatePasirHopperOpenRef = useRef(false);
+  const gateBatuHopperOpenRef = useRef(false);
+  const gateSemenHopperOpenRef = useRef(false);
+  const gateWaterHopperOpenRef = useRef(false);
+
+  const setGatePasirHopperOpenSync = (val: boolean) => {
+    gatePasirHopperOpenRef.current = val;
+    setGatePasirHopperOpen(val);
+  };
+  const setGateBatuHopperOpenSync = (val: boolean) => {
+    gateBatuHopperOpenRef.current = val;
+    setGateBatuHopperOpen(val);
+  };
+  const setGateSemenHopperOpenSync = (val: boolean) => {
+    gateSemenHopperOpenRef.current = val;
+    setGateSemenHopperOpen(val);
+  };
+  const setGateWaterHopperOpenSync = (val: boolean) => {
+    gateWaterHopperOpenRef.current = val;
+    setGateWaterHopperOpen(val);
+  };
 
   // Relay activities log with offline persistence
   const [relayLogs, setRelayLogs] = useState<RelayLog[]>(() => {
@@ -1533,6 +1564,17 @@ export default function App() {
   // Conveyor / Machinery States
   const [conveyorBottomActive, setConveyorBottomActive] = useState(false);
   const [conveyorUpperActive, setConveyorUpperActive] = useState(false);
+  const conveyorBottomActiveRef = useRef(false);
+  const conveyorUpperActiveRef = useRef(false);
+
+  const setConveyorBottomActiveSync = (val: boolean) => {
+    conveyorBottomActiveRef.current = val;
+    setConveyorBottomActive(val);
+  };
+  const setConveyorUpperActiveSync = (val: boolean) => {
+    conveyorUpperActiveRef.current = val;
+    setConveyorUpperActive(val);
+  };
   const [mixerShaftActive, setMixerShaftActive] = useState(false);
   
   // Mixer doors & concrete flowing status
@@ -1547,54 +1589,166 @@ export default function App() {
   const [batchId, setBatchId] = useState("");
   const [klaksonActive, setKlaksonActive] = useState(false);
   const [batchProgress, setBatchProgress] = useState(0);
+  const [activePins, setActivePins] = useState<Record<string, boolean>>({});
+  const [alarmMessage, setAlarmMessage] = useState<string | null>(null);
+  const [configTrigger, setConfigTrigger] = useState(0);
+
+  // Trigger config reloading on save events
+  useEffect(() => {
+    const handleReload = () => {
+      setConfigTrigger(prev => prev + 1);
+    };
+    window.addEventListener("storage", handleReload);
+    window.addEventListener("hmi_pin_config_updated", handleReload);
+    return () => {
+      window.removeEventListener("storage", handleReload);
+      window.removeEventListener("hmi_pin_config_updated", handleReload);
+    };
+  }, []);
 
   // Real-time Arduino Serial relay state transmission hook
   useEffect(() => {
-    const states = [
-      gatePasirSiloOpen,      // Index 0  -> Pin 22
-      gatePasir1SiloOpen,     // Index 1  -> Pin 23
-      gatePasir2SiloOpen,     // Index 2  -> Pin 24
-      gateBatuSiloOpen,       // Index 3  -> Pin 25
-      gateBatu1SiloOpen,      // Index 4  -> Pin 26
-      gateBatu2SiloOpen,      // Index 5  -> Pin 27
-      screwSemenActive,       // Index 6  -> Pin 28
-      valveWaterActive,       // Index 7  -> Pin 29
-      gatePasirHopperOpen,    // Index 8  -> Pin 30
-      gateBatuHopperOpen,     // Index 9  -> Pin 31
-      gateSemenHopperOpen,    // Index 10 -> Pin 32
-      gateWaterHopperOpen,    // Index 11 -> Pin 33
-      conveyorBottomActive,   // Index 12 -> Pin 34
-      conveyorUpperActive,    // Index 13 -> Pin 35
-      mixerShaftActive,       // Index 14 -> Pin 36
-      mixerDoor1OpenActive,   // Index 15 -> Pin 37
-      mixerDoor2OpenActive,   // Index 16 -> Pin 38
-      mixerDoor3OpenActive    // Index 17 -> Pin 39
+    // Extract Cement Silo ID from activeSiloSemen selection
+    const match = activeSiloSemen.match(/Silo\s*(\d+)/i);
+    const siloNum = match ? match[1] : "1";
+
+    const configList = loadRelayConfig();
+
+    const getRelayActiveState = (row: any): boolean => {
+      const normName = row.name.trim().toLowerCase();
+      
+      // 1. Unchanging hardware Relay IDs (1 to 23)
+      switch (row.relay) {
+        case 1:  return mixerShaftActive; // Mixer
+        case 2:  return conveyorUpperActiveRef.current; // Konveyor atas
+        case 3:  return conveyorBottomActiveRef.current; // Konveyor bawah
+        case 4:  return false; // Kompressor
+        case 5:  return gatePasir1SiloOpen; // Pintu pasir 1
+        case 6:  return gatePasir2SiloOpen; // Pintu pasir 2
+        case 7:  return gateBatu1SiloOpen; // Pintu batu 1
+        case 8:  return gateBatu2SiloOpen; // Pintu batu 2
+        case 9:  return gatePasirHopperOpenRef.current; // Dump material (Pasir Dump)
+        case 10: return gateBatuHopperOpenRef.current; // Dump material 2 (Batu Dump)
+        case 11: return false; // Vibrator
+        case 12: return gateWaterHopperOpenRef.current; // Tuang air (Water Scale Dump Gate)
+        case 13: return valveWaterActive; // Tuang additive (originally spare/water fill valve)
+        case 14: return !!(mixerDoor1OpenActive || mixerDoor2OpenActive || mixerDoor3OpenActive); // Pintu mixer buka
+        case 15: return mixerDoorClosingActive; // Pintu mixer tutup
+        case 16: return klaksonActive; // Klakson
+        case 17: return !!(screwSemenActive && siloNum === "1"); // Silo 1
+        case 18: return !!(screwSemenActive && siloNum === "2"); // Silo 2
+        case 19: return !!(screwSemenActive && siloNum === "3"); // Silo 3
+        case 20: return !!(screwSemenActive && siloNum === "4"); // Silo 4
+        case 21: return !!(screwSemenActive && siloNum === "5"); // Silo 5
+        case 22: return !!(screwSemenActive && siloNum === "6"); // Silo 6
+        case 23: return gateSemenHopperOpenRef.current; // Dump semen (Cement scale dumper gate)
+      }
+
+      // 2. Dynamic, flexible keyword name fallbacks
+      if (normName.includes("mixer") && normName.includes("buka")) {
+        return !!(mixerDoor1OpenActive || mixerDoor2OpenActive || mixerDoor3OpenActive);
+      }
+      if (normName.includes("mixer") && normName.includes("tutup")) {
+        return mixerDoorClosingActive;
+      }
+      if (normName.includes("mixer")) {
+        return mixerShaftActive;
+      }
+      if (normName.includes("konveyor") && normName.includes("atas")) {
+        return conveyorUpperActiveRef.current;
+      }
+      if (normName.includes("konveyor") && normName.includes("bawah")) {
+        return conveyorBottomActiveRef.current;
+      }
+      if (normName.includes("pintu pasir 1")) {
+        return gatePasir1SiloOpen;
+      }
+      if (normName.includes("pintu pasir 2")) {
+        return gatePasir2SiloOpen;
+      }
+      if (normName.includes("pintu batu 1")) {
+        return gateBatu1SiloOpen;
+      }
+      if (normName.includes("pintu batu 2")) {
+        return gateBatu2SiloOpen;
+      }
+      if (normName.includes("dump") && (normName.includes("batu") || normName.includes("gravel") || normName.includes("material 2") || normName.includes("kris"))) {
+        return gateBatuHopperOpenRef.current;
+      }
+      if (normName.includes("dump") && (normName.includes("pasir") || normName.includes("sand") || normName.includes("material") || normName.includes("material 1"))) {
+        return gatePasirHopperOpenRef.current;
+      }
+      if (normName.includes("semen") || normName.includes("cement") || normName.includes("dump semen")) {
+        return gateSemenHopperOpenRef.current;
+      }
+      if (normName.includes("tuang air") || normName.includes("dump air") || normName.includes("discharge air")) {
+        return gateWaterHopperOpenRef.current;
+      }
+      if (normName.includes("air timbang") || normName.includes("valve air") || normName.includes("tuang additive") || normName.includes("inlet air")) {
+        return valveWaterActive;
+      }
+      if (normName.includes("klakson") || normName.includes("horn")) {
+        return klaksonActive;
+      }
+      if (normName.includes("silo 1")) return !!(screwSemenActive && siloNum === "1");
+      if (normName.includes("silo 2")) return !!(screwSemenActive && siloNum === "2");
+      if (normName.includes("silo 3")) return !!(screwSemenActive && siloNum === "3");
+      if (normName.includes("silo 4")) return !!(screwSemenActive && siloNum === "4");
+      if (normName.includes("silo 5")) return !!(screwSemenActive && siloNum === "5");
+      if (normName.includes("silo 6")) return !!(screwSemenActive && siloNum === "6");
+
+      return false;
+    };
+
+    const pinStatesMap: Record<string, boolean> = {};
+
+    configList.forEach(row => {
+      const isFunctionActive = getRelayActiveState(row);
+      const pin = row.arduinoPin || "";
+      if (pin) {
+        pinStatesMap[pin] = pinStatesMap[pin] || isFunctionActive;
+      }
+    });
+
+    const arduinoPinsOrder = [
+      "22", "24", "26", "28", "30", "32", "34", "36", "38", "40", "42", "44", "48", "50", "52", "33", "31", "35", "37", "39", "41", "43", "45", "47", "49", "51", "53"
     ];
-    
+
+    const states = Array(27).fill(false);
+    for (let i = 0; i < 27; i++) {
+      const targetPin = arduinoPinsOrder[i];
+      states[i] = !!pinStatesMap[targetPin];
+    }
+
+    // Update state for output monitor matching
+    setActivePins(pinStatesMap);
+
     // Broadcast states or buffer them during connection transitions
     const currentStatus = webSerialService.getStatus();
     if (currentStatus === "CONNECTED" || currentStatus === "RECONNECTING" || currentStatus === "CONNECTING") {
       webSerialService.sendRelaysState(states);
     }
   }, [
-    gatePasirSiloOpen,
+    mixerShaftActive,
+    conveyorUpperActive,
+    conveyorBottomActive,
     gatePasir1SiloOpen,
     gatePasir2SiloOpen,
-    gateBatuSiloOpen,
     gateBatu1SiloOpen,
     gateBatu2SiloOpen,
-    screwSemenActive,
-    valveWaterActive,
     gatePasirHopperOpen,
     gateBatuHopperOpen,
     gateSemenHopperOpen,
     gateWaterHopperOpen,
-    conveyorBottomActive,
-    conveyorUpperActive,
-    mixerShaftActive,
+    valveWaterActive,
     mixerDoor1OpenActive,
     mixerDoor2OpenActive,
-    mixerDoor3OpenActive
+    mixerDoor3OpenActive,
+    mixerDoorClosingActive,
+    klaksonActive,
+    screwSemenActive,
+    activeSiloSemen,
+    configTrigger
   ]);
 
   // References and effects for logging relay state transitions
@@ -1686,23 +1840,47 @@ export default function App() {
       if (now.valveWaterActive) createLog('air timbang on', 'on');
       else createLog('air timbang off', 'off');
     }
+    const configListForLogging = loadRelayConfig();
+    const getPinForRelay = (relayNum: number): string => {
+      const row = configListForLogging.find(r => r.relay === relayNum);
+      return row ? row.arduinoPin || "X" : "X";
+    };
+
     // 7. Dump Pasir
     if (now.gatePasirHopperOpen !== prev.gatePasirHopperOpen) {
-      if (now.gatePasirHopperOpen) createLog('dump pasir', 'on');
+      const pin = getPinForRelay(9);
+      if (now.gatePasirHopperOpen) {
+        createLog(`DUMP PASIR START - PIN ${pin} ON`, 'on');
+      } else {
+        createLog(`WEIGHT EMPTY - GATE CLOSE - PIN ${pin} OFF`, 'off');
+      }
     }
     // 8. Dump Batu
     if (now.gateBatuHopperOpen !== prev.gateBatuHopperOpen) {
-      if (now.gateBatuHopperOpen) createLog('dump batu', 'on');
+      const pin = getPinForRelay(10);
+      if (now.gateBatuHopperOpen) {
+        createLog(`DUMP BATU START - PIN ${pin} ON`, 'on');
+      } else {
+        createLog(`WEIGHT EMPTY - GATE CLOSE - PIN ${pin} OFF`, 'off');
+      }
     }
     // 9. Dump Air
     if (now.gateWaterHopperOpen !== prev.gateWaterHopperOpen) {
-      if (now.gateWaterHopperOpen) createLog('dump air on', 'on');
-      else createLog('dump air off', 'off');
+      const pin = getPinForRelay(12);
+      if (now.gateWaterHopperOpen) {
+        createLog(`DUMP AIR START - PIN ${pin} ON`, 'on');
+      } else {
+        createLog(`WEIGHT EMPTY - GATE CLOSE - PIN ${pin} OFF`, 'off');
+      }
     }
     // 10. Dump Semen
     if (now.gateSemenHopperOpen !== prev.gateSemenHopperOpen) {
-      if (now.gateSemenHopperOpen) createLog('dump semen on', 'on');
-      else createLog('dump semen off', 'off');
+      const pin = getPinForRelay(23);
+      if (now.gateSemenHopperOpen) {
+        createLog(`DUMP SEMEN START - PIN ${pin} ON`, 'on');
+      } else {
+        createLog(`WEIGHT EMPTY - GATE CLOSE - PIN ${pin} OFF`, 'off');
+      }
     }
     // 11. Konveyor Atas
     if (now.conveyorUpperActive !== prev.conveyorUpperActive) {
@@ -1965,6 +2143,19 @@ export default function App() {
   const sandDischargeStartedRef = useRef(false);
   const sandCompletedElapsedSecRef = useRef<number | null>(null);
 
+  const currentBatchNoRef = useRef(1);
+  const weighedBatchNosRef = useRef<Record<MaterialType, number>>({
+    pasir: 1,
+    batu: 1,
+    semen: 1,
+    air: 1
+  });
+  const batchQueueRef = useRef<any[]>([]);
+  const weighingCycleRef = useRef(1);
+  const currentBatchRef = useRef<number>(0);
+  const targetBatchRef = useRef<number>(0);
+  const totalCyclesRef = useRef<number>(1);
+
   const weighingJogStatesRef = useRef<Record<MaterialType, { phase: 'fast' | 'jeda' | 'jog_on' | 'jog_off' | 'done'; timer: number; pulseCount: number; }>>({
     pasir: { phase: 'fast', timer: 0, pulseCount: 0 },
     batu: { phase: 'fast', timer: 0, pulseCount: 0 },
@@ -2055,6 +2246,14 @@ export default function App() {
   }) => {
     if (isRunning) return;
 
+    // Safety checks: Block batching if any pin configuration is empty!
+    const currentConfig = loadRelayConfig();
+    const hasEmptyPins = currentConfig.some(row => !row.arduinoPin || row.arduinoPin.trim() === "");
+    if (hasEmptyPins) {
+      setAlarmMessage("BATCHING PROSES DIBATALKAN: Beberapa pintu/relay memiliki Pin Arduino yang KOSONG! Lengkapi konfigurasi pin.");
+      return;
+    }
+
     // Save batch details
     setSelectedRecipe(config.recipe);
     setActiveVolume(config.volume);
@@ -2070,10 +2269,18 @@ export default function App() {
     // Compute cycle mathematics
     const totalC = config.mixingCycles || 1;
     setTotalCycles(totalC);
+    totalCyclesRef.current = totalC;
     setCurrentCycle(1);
     setWeighingCycle(1);
+    weighingCycleRef.current = 1;
+
+    setCurrentBatch(0);
+    currentBatchRef.current = 0;
+    setTargetBatch(totalC);
+    targetBatchRef.current = totalC;
     
     const vPerCycle = parseFloat((config.volume / totalC).toFixed(2));
+    setVolumePerBatch(vPerCycle);
     setVolumePerCycle(vPerCycle);
 
     // Initial batch ID
@@ -2109,6 +2316,15 @@ export default function App() {
       };
     });
     setBatchQueue(initialQueue);
+    batchQueueRef.current = initialQueue;
+    currentBatchNoRef.current = 1;
+    weighingCycleRef.current = 1;
+    weighedBatchNosRef.current = {
+      pasir: 1,
+      batu: 1,
+      semen: 1,
+      air: 1
+    };
 
     // Initial scale targets proportional to vPerCycle
     const initialScales = { ...INITIAL_SCALES };
@@ -2196,12 +2412,12 @@ export default function App() {
     setMixerDoorClosingActive(false);
     setScrewSemenActive(false);
     setValveWaterActive(false);
-    setGatePasirHopperOpen(false);
-    setGateBatuHopperOpen(false);
-    setGateSemenHopperOpen(false);
-    setGateWaterHopperOpen(false);
-    setConveyorBottomActive(false);
-    setConveyorUpperActive(false);
+    setGatePasirHopperOpenSync(false);
+    setGateBatuHopperOpenSync(false);
+    setGateSemenHopperOpenSync(false);
+    setGateWaterHopperOpenSync(false);
+    setConveyorBottomActiveSync(false);
+    setConveyorUpperActiveSync(false);
     setMixerShaftActive(false);
     setMixerDoorPercent(0);
     setMixerDoorStateText("CLOSED");
@@ -2268,6 +2484,11 @@ export default function App() {
 
       simIntervalRef.current = setInterval(() => {
         if (isPausedRef.current) return;
+
+        // Fail-safe: check if communication connection is disconnected or lost during batch
+        if (webSerialService.getStatus() === "DISCONNECTED") {
+          setAlarmMessage("ALARM KESELAMATAN: Komunikasi HMI ke Board Arduino Mega terputus selama proses produksi!");
+        }
         
         // --- 1. WEIGHING ENGINE STATE (TICKING IN REALTIME) ---
         if (weighingActiveRef.current) {
@@ -3063,8 +3284,8 @@ export default function App() {
             sandCompletedElapsedSecRef.current = null;
             setProductionState('DISCHARGING');
             setMixerStatusText('DISCHARGING HOPPERS');
-            setConveyorUpperActive(true); // turn on main belt feeder
-            setConveyorBottomActive(true); // turn on bottom conveyor belt
+            setConveyorUpperActiveSync(true); // turn on main belt feeder
+            setConveyorBottomActiveSync(true); // turn on bottom conveyor belt
           }
         }
 
@@ -3081,15 +3302,15 @@ export default function App() {
 
             // 1. PASIR DISCHARGE (M1) Logic is ALWAYS the baseline
             if (nextScales.pasir.actual > 0) {
-              setGatePasirHopperOpen(true);
-              setConveyorBottomActive(true);
+              setGatePasirHopperOpenSync(true);
+              setConveyorBottomActiveSync(true);
               sandDischargeStartedRef.current = true; // Event: ON_SAND_DISCHARGE_START
 
               // Drastically reduced rate of Sand drainage for visual smoothness (slow-motion):
               const drain = (8 + Math.random() * 4) * 0.1; // 0.8 - 1.2 kg/tick
               nextScales.pasir.actual = Math.max(0, nextScales.pasir.actual - drain);
             } else {
-              setGatePasirHopperOpen(false);
+              setGatePasirHopperOpenSync(false);
               // Handle first-time Sand Empty Event: ON_SAND_DISCHARGE_COMPLETE
               if (sandCompletedElapsedSecRef.current === null && sandDischargeStartedRef.current) {
                 sandCompletedElapsedSecRef.current = elapsedSec;
@@ -3114,44 +3335,44 @@ export default function App() {
             // 2. AIR & ADITIF (M2) Logic
             if (isTriggered('air')) {
               if (nextScales.air.actual > 0) {
-                setGateWaterHopperOpen(true);
+                setGateWaterHopperOpenSync(true);
                 // Drastically reduced rate of Air drainage for visual smoothness (slow-motion):
                 const drain = (4 + Math.random() * 2) * 0.1; // 0.4 - 0.6 kg/tick
                 nextScales.air.actual = Math.max(0, nextScales.air.actual - drain);
               } else {
-                setGateWaterHopperOpen(false);
+                setGateWaterHopperOpenSync(false);
               }
             } else {
-              setGateWaterHopperOpen(false);
+              setGateWaterHopperOpenSync(false);
             }
 
             // 3. SEMEN (M3) Logic
             if (isTriggered('semen')) {
               if (nextScales.semen.actual > 0) {
-                setGateSemenHopperOpen(true);
+                setGateSemenHopperOpenSync(true);
                 // Drastically reduced rate of Semen drainage for visual smoothness (slow-motion):
                 const drain = (5 + Math.random() * 3) * 0.1; // 0.5 - 0.8 kg/tick
                 nextScales.semen.actual = Math.max(0, nextScales.semen.actual - drain);
               } else {
-                setGateSemenHopperOpen(false);
+                setGateSemenHopperOpenSync(false);
               }
             } else {
-              setGateSemenHopperOpen(false);
+              setGateSemenHopperOpenSync(false);
             }
 
             // 4. BATU / KRIS (M4) Logic
             if (isTriggered('batu')) {
               if (nextScales.batu.actual > 0) {
-                setGateBatuHopperOpen(true);
-                setConveyorBottomActive(true);
+                setGateBatuHopperOpenSync(true);
+                setConveyorBottomActiveSync(true);
                 // Drastically reduced rate of Stone drainage for visual smoothness (slow-motion):
                 const drain = (10 + Math.random() * 4) * 0.1; // 1.0 - 1.4 kg/tick
                 nextScales.batu.actual = Math.max(0, nextScales.batu.actual - drain);
               } else {
-                setGateBatuHopperOpen(false);
+                setGateBatuHopperOpenSync(false);
               }
             } else {
-              setGateBatuHopperOpen(false);
+              setGateBatuHopperOpenSync(false);
             }
 
             // Once everything is fully drained to 0 in scales scales hoppers
@@ -3164,54 +3385,53 @@ export default function App() {
               // Conveyors are left running for 5 seconds of the mixing cycle to completely clear remaining materials
               
               // Close all gates
-              setGatePasirHopperOpen(false);
-              setGateBatuHopperOpen(false);
-              setGateSemenHopperOpen(false);
-              setGateWaterHopperOpen(false);
+              setGatePasirHopperOpenSync(false);
+              setGateBatuHopperOpenSync(false);
+              setGateSemenHopperOpenSync(false);
+              setGateWaterHopperOpenSync(false);
 
-              // Overlapping background weighing loop trigger for next cycle
-              setCurrentCycle(prevCycle => {
-                setWeighingCycle(prevWeighing => {
-                  setTotalCycles(tot => {
-                    if (prevWeighing < tot) {
-                      const nextW = prevWeighing + 1;
-                      // Overlap weighing triggering in background concurrently
-                      weighingActiveRef.current = true;
-                      setIsWeighingActive(true);
-                      
-                      weighingJogStatesRef.current = {
-                        pasir: { phase: 'fast', timer: 0, pulseCount: 0 },
-                        batu: { phase: 'fast', timer: 0, pulseCount: 0 },
-                        semen: { phase: 'fast', timer: 0, pulseCount: 0 },
-                        air: { phase: 'fast', timer: 0, pulseCount: 0 }
-                      };
+              if (weighingCycleRef.current < targetBatchRef.current) {
+                weighingCycleRef.current += 1;
+                const nextW = weighingCycleRef.current;
+                setWeighingCycle(nextW);
 
-                      // Tare/Reset scales actual levels to 0 for cycle C+1 weighing
-                      const tFactor = parseFloat((activeVolume / tot).toFixed(2));
-                      setScales(sc => {
-                        const res = { ...sc };
-                        (Object.keys(res) as MaterialType[]).forEach(k => {
-                          const targetWeight = Math.round(selectedRecipe.targets[k] * tFactor);
-                          res[k] = { 
-                            id: k, 
-                            label: INITIAL_SCALES[k].label, 
-                            actual: 0, 
-                            target: targetWeight, 
-                            unit: INITIAL_SCALES[k].unit, 
-                            isActive: true, 
-                            isComplete: false 
-                          };
-                        });
-                        return res;
-                      });
-                      return nextW;
-                    }
-                    return prevWeighing;
+                // Start weighing the next batch in parallel!
+                weighingActiveRef.current = true;
+                setIsWeighingActive(true);
+                
+                weighingJogStatesRef.current = {
+                  pasir: { phase: 'fast', timer: 0, pulseCount: 0 },
+                  batu: { phase: 'fast', timer: 0, pulseCount: 0 },
+                  semen: { phase: 'fast', timer: 0, pulseCount: 0 },
+                  air: { phase: 'fast', timer: 0, pulseCount: 0 }
+                };
+
+                // Tare/Reset scales actual levels to 0 for cycle C+1 weighing
+                const tFactor = parseFloat((activeVolume / totalCyclesRef.current).toFixed(2));
+                setScales(sc => {
+                  const res = { ...sc };
+                  (Object.keys(res) as MaterialType[]).forEach(k => {
+                    const targetWeight = Math.round(selectedRecipe.targets[k] * tFactor);
+                    res[k] = { 
+                      id: k, 
+                      label: INITIAL_SCALES[k].label, 
+                      actual: 0, 
+                      target: targetWeight, 
+                      unit: INITIAL_SCALES[k].unit, 
+                      isActive: true, 
+                      isComplete: false 
+                    };
                   });
-                  return prevWeighing;
+                  return res;
                 });
-                return prevCycle;
-              });
+
+                setRelayLogs(l => [{
+                  id: Math.random().toString(36).substring(7).toUpperCase(),
+                  timestamp: new Date(),
+                  message: `[BUFFER ADVANCE] Hopper kosong. Memulai penimbangan Batch ${nextW} secara paralel!`,
+                  type: 'info'
+                }, ...l]);
+              }
 
               // Slide into mixing countdown timer
               mixerStateRef.current = 'mixing';
@@ -3231,23 +3451,19 @@ export default function App() {
           
           // Let conveyors keep running for exactly 5.0 seconds of mixing to clear all residual aggregate/particles completely
           if (mixSec >= 5.0) {
-            setConveyorBottomActive(false);
-            setConveyorUpperActive(false);
+            setConveyorBottomActiveSync(false);
+            setConveyorUpperActiveSync(false);
           }
 
           setMixingCountdown(Math.max(0, Math.ceil(activeMixingTime - mixSec)));
           setMixingTime(Math.min(activeMixingTime, Math.round(mixSec)));
 
           // Synchronize general production progress bar
-          setCurrentCycle(cur => {
-            setTotalCycles(tot => {
-              const baseProgress = ((cur - 1) / tot) * 100;
-              const stepPercent = (mixSec / activeMixingTime) * 100 * (1 / tot) * 0.45;
-              setBatchProgress(Math.min(99, Math.round(baseProgress + stepPercent)));
-              return tot;
-            });
-            return cur;
-          });
+          const cur = currentBatchRef.current + 1;
+          const tot = targetBatchRef.current || 1;
+          const baseProgress = ((cur - 1) / tot) * 100;
+          const stepPercent = (mixSec / activeMixingTime) * 100 * (1 / tot) * 0.45;
+          setBatchProgress(Math.min(99, Math.round(baseProgress + stepPercent)));
 
           if (mixSec >= activeMixingTime) {
             mixerStateRef.current = 'discharging_concrete';
@@ -3276,16 +3492,12 @@ export default function App() {
           setDischargeTimeSec(dSecElapsed);
 
           // Compute overall batch progress
-          setCurrentCycle(cur => {
-            setTotalCycles(tot => {
-              const baseProgress = ((cur - 1) / tot) * 100;
-              const mixWeight = 45; // mixing portion completed
-              const stepPercent = (dSecElapsed / dSecondsTotal) * 100 * (1 / tot) * 0.55;
-              setBatchProgress(Math.min(100, Math.round(baseProgress + mixWeight * (1/tot) + stepPercent)));
-              return tot;
-            });
-            return cur;
-          });
+          const curD = currentBatchRef.current + 1;
+          const totD = targetBatchRef.current || 1;
+          const baseProgressD = ((curD - 1) / totD) * 100;
+          const mixWeightD = 45; // mixing portion completed
+          const stepPercentD = (dSecElapsed / dSecondsTotal) * 100 * (1 / totD) * 0.55;
+          setBatchProgress(Math.min(100, Math.round(baseProgressD + mixWeightD * (1/totD) + stepPercentD)));
 
           // Phase 1 (Buka 2 detik, Target 20%)
           if (step === 1) {
@@ -3394,43 +3606,49 @@ export default function App() {
               setConcreteDischargeActive(false);
               setMixerDoorClosingActive(false);
 
-              // CHECK COMPLETED BATCH CYCLES
-              setCurrentCycle(currCycle => {
-                setTotalCycles(totalCyclesCount => {
-                  if (currCycle === totalCyclesCount) {
-                    // Entire production is complete!
-                    setProductionState('COMPLETE');
-                    setMixerStatusText('PRODUCTION COMPLETED');
-                    setBatchProgress(100);
-                    
-                    // Stop simulation
-                    setIsRunning(false);
-                    setIsDone(true);
-                    
-                    if (simIntervalRef.current) {
-                      clearInterval(simIntervalRef.current);
-                      simIntervalRef.current = null;
-                    }
+              // 4. SETELAH SATU MIXING SELESAI: Lakukan currentBatch++
+              currentBatchRef.current += 1;
+              const nextB = currentBatchRef.current;
+              setCurrentBatch(nextB);
 
-                    // Log final stats
-                    saveLog();
+              // 5. STOP PRODUKSI SAAT TARGET TERCAPAI: Jika currentBatch >= targetBatch
+              if (nextB >= targetBatchRef.current) {
+                // Entire production is complete!
+                setProductionState('COMPLETE');
+                setMixerStatusText('PRODUCTION COMPLETED');
+                setBatchProgress(100);
+                
+                // Stop simulation
+                setIsRunning(false);
+                setIsDone(true);
+                
+                // Hentikan auto weighing, next batch, refill, auto discharge
+                setIsWeighingActive(false);
+                weighingActiveRef.current = false;
+                
+                if (simIntervalRef.current) {
+                  clearInterval(simIntervalRef.current);
+                  simIntervalRef.current = null;
+                }
 
-                    // Sound a massive 1.5 seconds completion industrial buzzer horn
-                    playKlakson(1500);
-                  } else {
-                    // Loop back to waiting state for next cycle's materials (which are already weighed overlappingly)
-                    mixerStateRef.current = 'waiting';
-                    dischargeTimerMsRef.current = 0;
-                    mixingTimerMsRef.current = 0;
-                    doorStepRef.current = 1;
-                    doorTimerMsRef.current = 0;
-                    setMixerDoorStateText("CLOSED");
-                    setConcreteDischargeActive(false);
-                  }
-                  return totalCyclesCount;
-                });
-                return currCycle;
-              });
+                // Log final stats
+                saveLog();
+
+                // Sound a massive 1.5 seconds completion industrial buzzer horn
+                playKlakson(1500);
+              } else {
+                // Loop back to waiting state for next cycle's materials (which are already weighed overlappingly)
+                mixerStateRef.current = 'waiting';
+                dischargeTimerMsRef.current = 0;
+                mixingTimerMsRef.current = 0;
+                doorStepRef.current = 1;
+                doorTimerMsRef.current = 0;
+                setMixerDoorStateText("CLOSED");
+                setConcreteDischargeActive(false);
+                
+                // Sync legacy currentCycle state
+                setCurrentCycle(nextB + 1);
+              }
             }
           }
         }
@@ -3570,6 +3788,7 @@ export default function App() {
         logs={transformedLogs}
         mixingSequence={mixingSequence}
         setMixingSequence={setMixingSequence}
+        activePins={activePins}
         onLogout={() => {
           localStorage.removeItem('admin_session');
           setCurrentView('admin-login');
@@ -3586,6 +3805,34 @@ export default function App() {
       {/* Main Workspace Frame with Cyan Outer Line */}
       <div className="flex-1 bg-[#090d16] border-2 border-[#00e5ff]/80 rounded-[8px] shadow-2xl p-3 flex flex-col min-h-0 relative">
         
+        {/* Safety Alarm Overlay Banner */}
+        <AnimatePresence>
+          {alarmMessage && (
+            <motion.div 
+              initial={{ opacity: 0, y: -20, x: "-50%" }}
+              animate={{ opacity: 1, y: 0, x: "-50%" }}
+              exit={{ opacity: 0, y: -20, x: "-50%" }}
+              className="absolute top-4 left-1/2 z-[300] bg-rose-950 border-2 border-rose-500 rounded-[6px] py-3.5 px-6 shadow-[0_0_30px_rgba(239,68,68,0.5)] flex items-center gap-4 max-w-xl text-left select-none"
+            >
+              <div className="p-2 bg-rose-900 rounded-full text-rose-300 shrink-0">
+                <AlertOctagon size={24} className="animate-bounce" />
+              </div>
+              <div className="flex-1">
+                <h4 className="text-[12px] font-sans font-black text-rose-300 uppercase tracking-widest leading-none">ALARM KESELAMATAN BATCH</h4>
+                <p className="text-[10px] font-mono text-white uppercase mt-1 leading-normal font-bold">
+                  {alarmMessage}
+                </p>
+              </div>
+              <button 
+                onClick={() => setAlarmMessage(null)}
+                className="text-rose-400 hover:text-white px-3 py-1.5 text-[10px] font-sans font-black border border-rose-800 rounded uppercase tracking-wider transition-all bg-rose-900/40 hover:bg-rose-900 shrink-0 cursor-pointer"
+              >
+                Clear
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Success Overlay */}
         <AnimatePresence>
           {isDone && (
@@ -3851,6 +4098,8 @@ export default function App() {
                 productionState={productionState}
                 currentCycle={currentCycle}
                 totalCycles={totalCycles}
+                currentBatch={currentBatch}
+                targetBatch={targetBatch}
                 gatePasirSiloOpen={gatePasirSiloOpen}
                 gatePasir1SiloOpen={gatePasir1SiloOpen}
                 gatePasir2SiloOpen={gatePasir2SiloOpen}

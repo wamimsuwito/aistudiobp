@@ -55,3 +55,32 @@
     background: #555;
   }
 }
+
+@keyframes spin-cw {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes spin-ccw {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(-360deg);
+  }
+}
+
+.spin-cw-active {
+  animation: spin-cw 1.2s linear infinite;
+  transform-origin: 0px 0px;
+}
+
+.spin-ccw-active {
+  animation: spin-ccw 1.2s linear infinite;
+  transform-origin: 0px 0px;
+}
+

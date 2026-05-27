@@ -3,40 +3,49 @@
  * 
  * Deskripsi:
  * Sketch ini menerima instruksi status relai dari aplikasi HMI berbasis web
- * (melalui Web Serial API) dengan baudrate 115200 bps. Program ini memicu 18 relai output
- * secara individual pada pin digital contiguous 22 sampai 39.
+ * (melalui Web Serial API) dengan baudrate 115200 bps. Program ini memicu 27 relai output
+ * secara individual pada pin digital yang telah ditentukan di bawah.
  * 
  * Dilengkapi dengan Fitur Keselamatan "Hardware Safety Watchdog" yang otomatis mematikan
  * seluruh relai/katup jika komputer terputus atau tidak mengirim data dalam waktu 5 detik.
  * 
- * Hubungkan modul relay Anda ke Pin 22 - Pin 39 pada Arduino Mega 2560:
- * - Pin 22: Silo Pasir Utama
- * - Pin 23: Silo Pasir 1
- * - Pin 24: Silo Pasir 2
- * - Pin 25: Silo Batu Utama
- * - Pin 26: Silo Batu 1
- * - Pin 27: Silo Batu 2
- * - Pin 28: Screw Conveyor Semen
- * - Pin 29: Valve Air Timbang
- * - Pin 30: Dump Gate Pasir Hopper
- * - Pin 31: Dump Gate Batu Hopper
- * - Pin 32: Dump Gate Semen Hopper
- * - Pin 33: Dump Gate Air Hopper
- * - Pin 34: Conveyor Belt Bawah (Bottom Conveyor)
- * - Pin 35: Conveyor Belt Atas (Main Feeder)
- * - Pin 36: Motor Twin Shaft Mixer
- * - Pin 37: Pintu Mixer Buang 1
- * - Pin 38: Pintu Mixer Buang 2
- * - Pin 39: Pintu Mixer Buang 3
+ * Hubungkan modul relay Anda ke Pin pada Arduino Mega 2560 sesuai urutan berikut:
+ * - Relay 1  (Pin 22): Mixer
+ * - Relay 2  (Pin 24): Konveyor Atas (Main Feeder)
+ * - Relay 3  (Pin 26): Konveyor Bawah (Bottom Conveyor)
+ * - Relay 4  (Pin 28): Kompressor
+ * - Relay 5  (Pin 30): Pintu Pasir 1
+ * - Relay 6  (Pin 32): Pintu Pasir 2
+ * - Relay 7  (Pin 34): Pintu Batu 1
+ * - Relay 8  (Pin 36): Pintu Batu 2
+ * - Relay 9  (Pin 38): Dump Material 1 (Dump Pasir Hopper)
+ * - Relay 10 (Pin 40): Dump Material 2 (Dump Batu Hopper)
+ * - Relay 11 (Pin 42): Vibrator
+ * - Relay 12 (Pin 44): Tuang Air (Valve Air Timbang)
+ * - Relay 13 (Pin 48): Tuang Additive
+ * - Relay 14 (Pin 50): Pintu Mixer Buka
+ * - Relay 15 (Pin 52): Pintu Mixer Tutup
+ * - Relay 16 (Pin 33): Klakson
+ * - Relay 17 (Pin 31): Silo 1
+ * - Relay 18 (Pin 35): Silo 2
+ * - Relay 19 (Pin 37): Silo 3
+ * - Relay 20 (Pin 39): Silo 4
+ * - Relay 21 (Pin 41): Silo 5
+ * - Relay 22 (Pin 43): Silo 6
+ * - Relay 23 (Pin 45): Spare 1
+ * - Relay 24 (Pin 47): Spare 2
+ * - Relay 25 (Pin 49): Spare 3
+ * - Relay 26 (Pin 51): Spare 4
+ * - Relay 27 (Pin 53): Spare 5
  */
 
 // Konfigurasi Jenis Modul Relai (Ubah ke true jika menggunakan modul relay aktif LOW)
-const bool ACTIVE_LOW_RELAYS = false; 
+const bool ACTIVE_LOW_RELAYS = true; 
 
 // Konfigurasi Pin Digital Arduino
-const int NUM_RELAYS = 18;
+const int NUM_RELAYS = 27;
 const int relayPins[NUM_RELAYS] = {
-  22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39
+  22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 48, 50, 52, 33, 31, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53
 };
 
 // State penyimpanan

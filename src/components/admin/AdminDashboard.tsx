@@ -38,13 +38,15 @@ interface AdminDashboardProps {
   logs: BatchLog[];
   mixingSequence: MixingSequence;
   setMixingSequence: React.Dispatch<React.SetStateAction<MixingSequence>>;
+  activePins?: Record<string, boolean>;
 }
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onLogout,
   logs,
   mixingSequence,
-  setMixingSequence
+  setMixingSequence,
+  activePins
 }) => {
   const [activeMenu, setActiveMenu] = useState("Dashboard");
 
@@ -226,7 +228,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         );
 
       case "Pengaturan Relay & Pintu Mixer":
-        return <RelayConfigView />;
+        return <RelayConfigView activePins={activePins} />;
 
       case "Setting Com dan Port":
         return (
