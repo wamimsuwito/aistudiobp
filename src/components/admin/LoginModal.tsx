@@ -13,11 +13,41 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onSuccess, onClose }) =>
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
+  // Initial reference fallback if no users in local storage yet
+  const getRegisteredUsers = () => {
+    const saved = localStorage.getItem("batching_plant_users");
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch (e) {}
+    }
+    const defaultList = [
+      {
+        nama: "Administrator Utama",
+        nik: "12001",
+        jabatan: "Admin",
+        password: "admin"
+      },
+      {
+        nama: "Budi",
+        nik: "12002",
+        jabatan: "Operator",
+        password: "1234"
+      }
+    ];
+    localStorage.setItem("batching_plant_users", JSON.stringify(defaultList));
+    return defaultList;
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
-    if (!username || !password) {
+    const inputUser = username.trim().toLowerCase();
+    const inputPass = password.trim();
+
+    if (!inputUser || !inputPass) {
       setError("Silakan isi semua kolom input");
       return;
     }
@@ -26,10 +56,22 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onSuccess, onClose }) =>
 
     // Simulate small latency for industrial verification feel
     setTimeout(() => {
-      if (username === "admin" && password === "admin") {
+      const registeredUsers = getRegisteredUsers();
+      
+      // Match with either NIK or Nama (case-insensitive)
+      const matchedUser = registeredUsers.find(
+        (u: any) => 
+          (String(u.nik).toLowerCase() === inputUser || String(u.nama).toLowerCase() === inputUser) && 
+          String(u.password) === inputPass
+      );
+
+      if (matchedUser) {
+        // Save matched user in active session
+        localStorage.setItem("batching_plant_active_user", JSON.stringify(matchedUser));
+        window.dispatchEvent(new Event("active_user_session_sync"));
         onSuccess();
       } else {
-        setError("Username atau Password salah");
+        setError("NIK / Nama atau Password tidak cocok.");
       }
       setIsLoading(false);
     }, 600);

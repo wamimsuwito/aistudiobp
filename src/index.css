@@ -30,6 +30,17 @@
     @apply antialiased bg-bg text-text-main;
   }
 
+  /* No spinner for number inputs */
+  input::-webkit-outer-spin-button,
+  input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  input[type=number] {
+    -moz-appearance: textfield;
+  }
+
   .custom-scrollbar::-webkit-scrollbar {
     width: 4px;
   }

@@ -1,10 +1,15 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Sidebar } from "./Sidebar";
 import { DashboardCards } from "./DashboardCards";
 import { ChartPanel } from "./ChartPanel";
 import { SystemStatus } from "./SystemStatus";
 import { RelayConfigView } from "./relay-config/RelayConfigView";
 import { MixingSequenceConfig, MixingSequence } from "./MixingSequenceConfig";
+import { SettingComPort } from "./SettingComPort";
+import { JogingMaterial } from "./JogingMaterial";
+import { SlumpCalibration } from "./SlumpCalibration";
+import { JobMixFormula } from "./JobMixFormula";
+import { UserManagement } from "./UserManagement";
 import {
   BookOpen,
   Layout,
@@ -43,12 +48,97 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 }) => {
   const [activeMenu, setActiveMenu] = useState("Dashboard");
 
+  const [currentUser, setCurrentUser] = useState<any>(() => {
+    const saved = localStorage.getItem("batching_plant_active_user");
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (err) {}
+    }
+    return { nama: "Administrator", nik: "12001", jabatan: "Admin" };
+  });
+
+  // Keep state sync in case user is updated inside user management
+  useEffect(() => {
+    const handleSync = () => {
+      const saved = localStorage.getItem("batching_plant_active_user");
+      if (saved) {
+        try {
+          setCurrentUser(JSON.parse(saved));
+        } catch (err) {}
+      }
+    };
+    window.addEventListener("active_user_session_sync", handleSync);
+    window.addEventListener("user_database_updated", handleSync);
+    return () => {
+      window.removeEventListener("active_user_session_sync", handleSync);
+      window.removeEventListener("user_database_updated", handleSync);
+    };
+  }, []);
+
+  const RESTRICTED_ADMIN_MENUS = [
+    "Manajemen User",
+    "Setting Com dan Port",
+    "Pengaturan Relay & Pintu Mixer",
+    "Urutan Mixing",
+    "Penamaan BP",
+    "Pengaturan Perusahaan",
+    "Kalibrasi Slump"
+  ];
+
+  // Helper to render Access Denied SCADA block
+  const renderAccessDenied = (menuName: string) => {
+    return (
+      <div className="flex-1 flex items-center justify-center p-6 overflow-y-auto">
+        <div className="bg-[#150a0f]/90 border-2 border-rose-500/50 rounded-[6px] p-6 flex flex-col items-center justify-center text-center overflow-hidden max-w-md w-full shadow-[0_0_25px_rgba(239,68,68,0.2)] relative">
+          {/* Neon border strip */}
+          <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-rose-500 via-pink-600 to-rose-500" />
+          
+          <div className="p-4 bg-rose-950/40 border border-rose-500/30 rounded-full text-rose-500 animate-pulse mb-4">
+            <AlertOctagon size={32} />
+          </div>
+
+          <h4 className="text-xs font-sans font-black tracking-widest text-[#ef4444] uppercase">
+            AKSES DITOLAK: PRIVILEGE ADMIN DIBUTUHKAN
+          </h4>
+          <span className="text-[8px] font-mono font-bold text-rose-300 bg-rose-950 border border-rose-800/40 px-2 py-0.5 mt-2 rounded uppercase tracking-wider">
+            Otoritas Terbatas [ Operator ]
+          </span>
+
+          <div className="mt-5 p-3.5 bg-slate-950/95 border border-slate-900 rounded-md text-left w-full space-y-2.5">
+            <div className="flex justify-between text-[10px] font-mono">
+              <span className="text-slate-500 uppercase">Nama:</span>
+              <span className="text-slate-200 font-bold uppercase">{currentUser?.nama || "Unknown User"}</span>
+            </div>
+            <div className="flex justify-between text-[10px] font-mono border-t border-slate-900 pt-2">
+              <span className="text-slate-500 uppercase">NIK Karyawan:</span>
+              <span className="text-cyan-400 font-bold">{currentUser?.nik || "12000"}</span>
+            </div>
+            <div className="flex justify-between text-[10px] font-mono border-t border-slate-900 pt-2">
+              <span className="text-slate-500 uppercase">Status Role:</span>
+              <span className="text-[#ef4444] font-extrabold uppercase">{currentUser?.jabatan || "Operator"}</span>
+            </div>
+          </div>
+
+          <p className="text-[9.5px] font-mono text-slate-400 uppercase leading-relaxed mt-5">
+            Akun Operator Anda dibatasi dan tidak diizinkan membuka menu "{menuName}". Setelan sensitif mesin PLC hanya dapat dimodifikasi oleh Administrator Utama.
+          </p>
+        </div>
+      </div>
+    );
+  };
+
   // Calculate live statistics based on real HMI batch logs if any exist
   const totalBatch = logs.length;
   const totalVolume = logs.reduce((acc, curr) => acc + curr.volume, 0);
 
   // Helper to render dynamic view based on sidebar selection
   const renderContent = () => {
+    // Check access restriction
+    if (currentUser?.jabatan === "Operator" && RESTRICTED_ADMIN_MENUS.includes(activeMenu)) {
+      return renderAccessDenied(activeMenu);
+    }
+
     switch (activeMenu) {
       case "Dashboard":
         return (
@@ -65,7 +155,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <ChartPanel logs={logs} />
 
             {/* Bottom Status panel */}
-            <SystemStatus username="admin" role="admin" />
+            <SystemStatus username={currentUser?.nama || "Guest Operator"} role={currentUser?.jabatan || "Operator"} />
           </div>
         );
 
@@ -119,68 +209,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       case "Job Mix Formula":
         return (
-          <div className="flex-1 bg-[#0b1329]/80 border border-[#1e293b]/70 rounded-[6px] p-6 flex flex-col justify-between overflow-hidden">
-            <div className="space-y-4 overflow-y-auto pr-2 max-h-[300px]">
-              <div className="flex items-center gap-2.5 text-[#00e5ff]">
-                <FileCheck size={20} />
-                <h4 className="text-sm font-sans font-black tracking-widest uppercase">
-                  TABEL JOB MIX FORMULA (JMF)
-                </h4>
-              </div>
-              <p className="text-[10px] font-mono text-slate-405 uppercase">
-                Daftar formula agregat beton dan aditif pencampur aktif.
-              </p>
+          <JobMixFormula />
+        );
 
-              <table className="w-full text-left text-[10px] font-mono border-collapse mt-4">
-                <thead>
-                  <tr className="border-b border-slate-800 text-slate-500">
-                    <th className="py-2 px-1">KODE REAKSI</th>
-                    <th className="py-2">NAMA FORMULA</th>
-                    <th className="py-2 text-right">PASIR (KG)</th>
-                    <th className="py-2 text-right">BATU (KG)</th>
-                    <th className="py-2 text-right">SEMEN (KG)</th>
-                    <th className="py-2 text-right">AIR (KG)</th>
-                  </tr>
-                </thead>
-                <tbody className="text-slate-300 divide-y divide-slate-900">
-                  <tr>
-                    <td className="py-2.5 px-1 font-bold text-[#00e5ff]">K-300 FA</td>
-                    <td>MUTU BETON K300 FLY ASH</td>
-                    <td className="text-right">670</td>
-                    <td className="text-right">1010</td>
-                    <td className="text-right">310</td>
-                    <td className="text-right">180</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2.5 px-1 font-bold text-[#00e5ff]">K-250 NFA</td>
-                    <td>MUTU BETON K250 NORMAL</td>
-                    <td className="text-right">720</td>
-                    <td className="text-right">980</td>
-                    <td className="text-right">290</td>
-                    <td className="text-right">175</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2.5 px-1 font-bold text-[#00e5ff]">K-350 FA</td>
-                    <td>MUTU BETON K350 FLY ASH</td>
-                    <td className="text-right">620</td>
-                    <td className="text-right">1040</td>
-                    <td className="text-right">350</td>
-                    <td className="text-right">190</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <div className="bg-[#112211]/30 border-2 border-emerald-500/30 rounded-[4px] p-3 flex items-start gap-2.5">
-              <Zap size={16} className="text-emerald-500 shrink-0 mt-0.5" />
-              <div className="flex flex-col text-left">
-                <span className="text-[9.5px] font-sans font-black text-emerald-400 uppercase">JMF SYNC OK</span>
-                <span className="text-[8.5px] font-mono text-slate-400 uppercase mt-1 leading-relaxed">
-                  Semua formula lokal sinkron sepenuhnya dengan memori registrasi Modbus PLC-OMRON-300M.
-                </span>
-              </div>
-            </div>
-          </div>
+      case "Manajemen User":
+        return (
+          <UserManagement />
         );
 
       case "Urutan Mixing":
@@ -196,44 +230,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       case "Setting Com dan Port":
         return (
-          <div className="flex-1 bg-[#0b1329]/80 border border-[#1e293b]/70 rounded-[6px] p-6 flex flex-col justify-between overflow-hidden">
-            <div className="space-y-4">
-              <div className="flex items-center gap-2.5 text-[#00e5ff]">
-                <Cpu size={20} />
-                <h4 className="text-sm font-sans font-black tracking-widest uppercase">
-                  SETTING PORT KOMUNIKASI MODBUS / RS485
-                </h4>
-              </div>
-              <p className="text-[10px] font-mono text-slate-405 uppercase">
-                Konfigurasi interface serial port rintangan fisik controller timbangan batching plant.
-              </p>
+          <SettingComPort />
+        );
 
-              <div className="grid grid-cols-2 gap-4 pt-2">
-                <div className="flex flex-col gap-1">
-                  <span className="text-[9px] font-sans font-bold text-slate-400">BAUD RATE</span>
-                  <select disabled className="bg-[#05080e] border border-slate-800 text-slate-300 p-2 text-xs font-mono rounded-[4px]">
-                    <option>9600 bps</option>
-                  </select>
-                </div>
-                <div className="flex flex-col gap-1">
-                  <span className="text-[9px] font-sans font-bold text-slate-400">SERIAL PORT CONNECTOR</span>
-                  <select disabled className="bg-[#05080e] border border-slate-800 text-slate-500 p-2 text-xs font-mono rounded-[4px]">
-                    <option>COM3 - PROLIFIC USB-TO-SERIAL</option>
-                  </select>
-                </div>
-              </div>
-            </div>
+      case "Joging Material":
+        return (
+          <JogingMaterial />
+        );
 
-            <div className="bg-[#112211]/30 border-2 border-emerald-500/30 rounded-[4px] p-3 flex items-start gap-2.5">
-              <Clock size={16} className="text-emerald-500 shrink-0 mt-0.5" />
-              <div className="flex flex-col text-left">
-                <span className="text-[9.5px] font-sans font-black text-emerald-400 uppercase">PORT STATUS ACTIVE</span>
-                <span className="text-[8.5px] font-mono text-slate-400 uppercase mt-1 leading-relaxed">
-                  Koneksi RS485 Timbangan transmitter lancar. Latensi transfer paket 12ms.
-                </span>
-              </div>
-            </div>
-          </div>
+      case "Kalibrasi Slump":
+        return (
+          <SlumpCalibration />
         );
 
       default:

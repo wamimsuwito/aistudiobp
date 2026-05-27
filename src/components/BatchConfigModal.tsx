@@ -222,6 +222,9 @@ export const BatchConfigModal: React.FC<BatchConfigModalProps> = ({
                 <option value="Silo 1 - 42.150 kg" className="bg-[#0c111e]">Silo 1 - 42.150 kg</option>
                 <option value="Silo 2 - 35.800 kg" className="bg-[#0c111e]">Silo 2 - 35.800 kg</option>
                 <option value="Silo 3 - 28.290 kg" className="bg-[#0c111e]">Silo 3 - 28.290 kg</option>
+                <option value="Silo 4 - 31.400 kg" className="bg-[#0c111e]">Silo 4 - 31.400 kg</option>
+                <option value="Silo 5 - 19.500 kg" className="bg-[#0c111e]">Silo 5 - 19.500 kg</option>
+                <option value="Silo 6 - 48.900 kg" className="bg-[#0c111e]">Silo 6 - 48.900 kg</option>
               </select>
               <ChevronDown
                 size={14}
