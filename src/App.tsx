@@ -262,7 +262,8 @@ const ScadaDiagram = ({
   ampere = null,
   relayLogs = [],
   isPaused = false,
-  activeSiloSemen = "Silo 3 - 28.290 kg"
+  activeSiloSemen = "Silo 3 - 28.290 kg",
+  activePins = {}
 }: { 
   isRunning: boolean; 
   currentStep: string; 
@@ -311,6 +312,7 @@ const ScadaDiagram = ({
   relayLogs?: { id: string; timestamp: Date; message: string; type: 'on' | 'off' | 'info' | 'done' }[];
   isPaused?: boolean;
   activeSiloSemen?: string;
+  activePins?: Record<string, boolean>;
 }) => {
   const theme = {
     outline: "#00e5ff",
@@ -538,6 +540,41 @@ const ScadaDiagram = ({
             <path d="M760 220 L840 220 L820 260 L800 278 L780 260 Z" />
           </clipPath>
         </defs>
+
+        {/* Real-time Arduino PIN Monitoring side list inside the red box space */}
+        <foreignObject x="-115" y="-15" width="162" height="610">
+          <div className="w-full h-full bg-[#0a1224]/85 border border-slate-800/80 rounded-[5px] p-2 flex flex-col font-mono text-[9px] select-none text-slate-200 shadow-lg">
+            <div className="text-[9.5px] text-[#00ffd0] font-extrabold border-b border-slate-800/80 pb-1.5 mb-2 uppercase tracking-widest text-center flex items-center justify-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+              MONITOR PIN ARDUINO
+            </div>
+            <div className="flex-1 overflow-y-auto space-y-1.5 pr-0.5 custom-scrollbar">
+              {loadRelayConfig().map((row) => {
+                const pin = row.arduinoPin || "";
+                const isOn = !!activePins[pin];
+                return (
+                  <div key={row.relay} className="flex items-center justify-between bg-slate-900/50 hover:bg-slate-900/80 p-1.5 rounded border border-slate-800/20 transition-all duration-150">
+                    <div className="flex flex-col min-w-0 flex-1 mr-1.5">
+                      <span className="text-[#00e5ff] font-extrabold text-[8.5px] truncate leading-none">
+                        PIN {pin || "?"}
+                      </span>
+                      <span className="text-slate-400 uppercase text-[7.5px] font-sans font-black truncate leading-none mt-1" title={row.name}>
+                        {row.name}
+                      </span>
+                    </div>
+                    <span className={`text-[8px] font-black px-1.5 py-0.5 rounded text-center shrink-0 min-w-[28px] border leading-none transition-all duration-200 ${
+                      isOn 
+                        ? "bg-emerald-950/80 text-emerald-400 border-emerald-500/30 shadow-[0_0_4px_rgba(16,185,129,0.2)] font-black" 
+                        : "bg-red-950/80 text-red-400 border-red-500/30 font-medium"
+                    }`}>
+                      {isOn ? "ON" : "OFF"}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </foreignObject>
 
         {/* Weighing Monitor panel removed from SVG and rendered as native React components in layout */}
         {/* --- AGGREGATE SECTION (LEFT) --- */}
@@ -1236,9 +1273,9 @@ const ScadaDiagram = ({
               <div className="w-full h-full bg-transparent p-2 flex flex-col justify-between items-center relative overflow-hidden">
                 {/* Header */}
                 <div className="w-full flex justify-center items-center pb-1 select-none">
-                  <span className={`text-[12.5px] font-sans font-bold tracking-wider uppercase flex items-center gap-1.5 ${isDischargingSec ? 'text-red-500' : 'text-[#00ffd0]'}`}>
-                    <span className={`w-2 h-2 rounded-full ${isDischargingSec ? 'bg-red-500' : isMixerRotating ? 'bg-cyan-400' : isPaused ? 'bg-orange-400' : 'bg-slate-600'}`} />
-                    {isDischargingSec ? 'DISCHARGE' : 'WAKTU MIXING'}
+                  <span className={`text-[12.5px] font-sans font-bold tracking-wider uppercase flex items-center gap-1.5 ${(productionState === 'COMPLETE' || isDone) ? 'text-emerald-400' : isDischargingSec ? 'text-red-500' : 'text-[#00ffd0]'}`}>
+                    <span className={`w-2 h-2 rounded-full ${(productionState === 'COMPLETE' || isDone) ? 'bg-emerald-400' : isDischargingSec ? 'bg-red-500' : isMixerRotating ? 'bg-cyan-400' : isPaused ? 'bg-orange-400' : 'bg-slate-600'}`} />
+                    {(productionState === 'COMPLETE' || isDone) ? 'COMPLETE' : isDischargingSec ? 'DISCHARGE' : 'WAKTU MIXING'}
                   </span>
                 </div>
 
@@ -1320,7 +1357,7 @@ const ScadaDiagram = ({
                         );
                       } else {
                         const maxTime = activeMixingTime || 1;
-                        const curTime = productionState === 'MIXING' ? mixingCountdown : activeMixingTime;
+                        const curTime = (productionState === 'COMPLETE' || isDone) ? 0 : (productionState === 'MIXING' ? mixingCountdown : activeMixingTime);
                         const pct = Math.min(1, Math.max(0, curTime / maxTime));
                         const offset = C - (pct * C);
                         
@@ -1330,12 +1367,12 @@ const ScadaDiagram = ({
                             cy="55"
                             r={r}
                             fill="none"
-                            stroke="#00f0ff"
+                            stroke={(productionState === 'COMPLETE' || isDone) ? "#00ff9c" : "#00f0ff"}
                             strokeWidth="3.5"
                             strokeLinecap="round"
                             strokeDasharray={C}
                             strokeDashoffset={offset}
-                            filter="url(#cyanGlow)"
+                            filter={(productionState === 'COMPLETE' || isDone) ? "url(#cyanGlow)" : "url(#cyanGlow)"}
                             transform="rotate(-90 55 55)"
                             className="transition-all duration-300 ease-out"
                           />
@@ -1349,15 +1386,17 @@ const ScadaDiagram = ({
                       y="55" 
                       textAnchor="middle" 
                       dominantBaseline="middle"
-                      fill={isDischargingSec ? "#ef4444" : "#00e5ff"} 
+                      fill={(productionState === 'COMPLETE' || isDone) ? "#00ff9c" : isDischargingSec ? "#ef4444" : "#00e5ff"} 
                       fontSize="34" 
                       fontWeight="950" 
                       fontFamily="monospace"
-                      filter={isDischargingSec ? "url(#redGlow)" : "url(#cyanGlow)"}
+                      filter={(productionState === 'COMPLETE' || isDone) ? "url(#cyanGlow)" : isDischargingSec ? "url(#redGlow)" : "url(#cyanGlow)"}
                       className=""
                     >
                       {isDischargingSec ? (
                         Math.max(0, Math.ceil(34 - dischargeTimeSec))
+                      ) : (productionState === 'COMPLETE' || isDone) ? (
+                        0
                       ) : (
                         productionState === 'MIXING' ? mixingCountdown : activeMixingTime
                       )}
@@ -3645,6 +3684,7 @@ export default function App() {
                 doorTimerMsRef.current = 0;
                 setMixerDoorStateText("CLOSED");
                 setConcreteDischargeActive(false);
+                setDischargeTimeSec(0);
                 
                 // Sync legacy currentCycle state
                 setCurrentCycle(nextB + 1);
@@ -4125,6 +4165,7 @@ export default function App() {
                 relayLogs={relayLogs}
                 isPaused={isPaused}
                 activeSiloSemen={activeSiloSemen}
+                activePins={activePins}
               />
             </div>
           </div>
