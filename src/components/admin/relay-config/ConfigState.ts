@@ -37,7 +37,7 @@ export const DEFAULT_RELAY_DATA: RelayRow[] = [
   { name: "Silo 5", relay: 21, modbusCoil: "20", arduinoPin: "41", timer1: "0", timer2: "", timer3: "", timer4: "", timer5: "", timer6: "" },
   { name: "Silo 6", relay: 22, modbusCoil: "21", arduinoPin: "43", timer1: "0", timer2: "", timer3: "", timer4: "", timer5: "", timer6: "" },
   { name: "Dump semen", relay: 23, modbusCoil: "22", arduinoPin: "45", timer1: "0", timer2: "", timer3: "", timer4: "", timer5: "", timer6: "" },
-  { name: "Spare 2", relay: 24, modbusCoil: "23", arduinoPin: "47", timer1: "0", timer2: "", timer3: "", timer4: "", timer5: "", timer6: "" },
+  { name: "Pintu waiting hopper", relay: 24, modbusCoil: "23", arduinoPin: "47", timer1: "0", timer2: "", timer3: "", timer4: "", timer5: "", timer6: "" },
   { name: "Spare 3", relay: 25, modbusCoil: "24", arduinoPin: "49", timer1: "0", timer2: "", timer3: "", timer4: "", timer5: "", timer6: "" },
   { name: "Spare 4", relay: 26, modbusCoil: "25", arduinoPin: "51", timer1: "0", timer2: "", timer3: "", timer4: "", timer5: "", timer6: "" },
   { name: "Spare 5", relay: 27, modbusCoil: "26", arduinoPin: "53", timer1: "0", timer2: "", timer3: "", timer4: "", timer5: "", timer6: "" }

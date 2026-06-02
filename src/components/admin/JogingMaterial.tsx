@@ -18,8 +18,10 @@ export interface JogingRow {
 }
 
 const DEFAULT_JOGING_DATA: JogingRow[] = [
-  { material: "Pasir", targetPercent: 90, jeda: 1.5, onTime: 0.5, offTime: 1.2, tolerance: 10 },
-  { material: "Batu", targetPercent: 92, jeda: 1.5, onTime: 0.4, offTime: 1.3, tolerance: 12 },
+  { material: "Pasir 1", targetPercent: 90, jeda: 1.5, onTime: 0.5, offTime: 1.2, tolerance: 10 },
+  { material: "Pasir 2", targetPercent: 90, jeda: 1.5, onTime: 0.5, offTime: 1.2, tolerance: 10 },
+  { material: "Batu 1", targetPercent: 92, jeda: 1.5, onTime: 0.4, offTime: 1.3, tolerance: 12 },
+  { material: "Batu 2", targetPercent: 92, jeda: 1.5, onTime: 0.4, offTime: 1.3, tolerance: 12 },
   { material: "Semen", targetPercent: 95, jeda: 2.0, onTime: 0.3, offTime: 1.5, tolerance: 5 },
   { material: "Air", targetPercent: 96, jeda: 1.0, onTime: 0.2, offTime: 1.0, tolerance: 2 }
 ];
@@ -171,8 +173,8 @@ export const JogingMaterial: React.FC = () => {
                           <td className="py-3 px-3 text-left">
                             <div className="flex flex-col">
                               <span className="text-slate-100 font-sans font-extrabold text-[11px] uppercase">
-                                {row.material === "Pasir" && "砂 "}
-                                {row.material === "Batu" && "硎 "}
+                                {row.material.startsWith("Pasir") && "砂 "}
+                                {row.material.startsWith("Batu") && "硎 "}
                                 {row.material === "Semen" && "灰 "}
                                 {row.material === "Air" && "水 "}
                                 {row.material}

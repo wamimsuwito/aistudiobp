@@ -35,6 +35,34 @@ import { BatchConfigModal } from "./components/BatchConfigModal";
 import { webSerialService } from "./lib/webSerial";
 import { loadRelayConfig } from "./components/admin/relay-config/ConfigState";
 
+// Background timer Web Worker using Blob URL to bypass browser throttling when tab is minimized/inactive
+let bgWorker: Worker | null = null;
+try {
+  if (typeof window !== 'undefined' && typeof Worker !== 'undefined') {
+    const workerBlobCode = `
+      let intervalId = null;
+      self.onmessage = function(e) {
+        if (e.data === 'START') {
+          if (intervalId) clearInterval(intervalId);
+          intervalId = setInterval(() => {
+            self.postMessage('TICK');
+          }, 100);
+        } else if (e.data === 'STOP') {
+          if (intervalId) {
+            clearInterval(intervalId);
+            intervalId = null;
+          }
+        }
+      };
+    `;
+    const blob = new Blob([workerBlobCode], { type: 'application/javascript' });
+    const blobUrl = URL.createObjectURL(blob);
+    bgWorker = new Worker(blobUrl);
+  }
+} catch (err) {
+  console.error("Failed to initialize background worker:", err);
+}
+
 // --- Types ---
 
 type MaterialType = 'pasir' | 'batu' | 'semen' | 'air';
@@ -59,6 +87,22 @@ interface BatchLog {
     semen: number;
     air: number;
   };
+  targets?: {
+    pasir1: number;
+    pasir2: number;
+    batu1: number;
+    batu2: number;
+    semen: number;
+    air: number;
+  };
+  actuals?: {
+    pasir1: number;
+    pasir2: number;
+    batu1: number;
+    batu2: number;
+    semen: number;
+    air: number;
+  };
   status: 'sukses' | 'gagal';
   volume?: number;
   mixingCycles?: number;
@@ -69,6 +113,9 @@ interface BatchLog {
   lokasi?: string;
   noKendaraan?: string;
   sopir?: string;
+  productionMode?: string;
+  startTime?: string;
+  endTime?: string;
 }
 
 interface Recipe {
@@ -91,6 +138,15 @@ const RECIPES: Recipe[] = [
   { id: 'k250', name: 'Beton K-250', targets: { pasir: 425, batu: 425, semen: 350, air: 160 } },
   { id: 'k300', name: 'Beton K-300', targets: { pasir: 450, batu: 450, semen: 400, air: 180 } },
 ];
+
+const SCALE_CAPACITIES = {
+  pasir: 1000,          // Kapasitas loadcell timbangan pasir (kg)
+  batu: 1000,           // Kapasitas loadcell timbangan batu (kg)
+  accumulative: 2000,   // Kapasitas loadcell timbangan akumulatif pasir + batu (kg)
+  semen: 800,           // Kapasitas loadcell timbangan semen (kg)
+  air: 400,             // Kapasitas loadcell timbangan air & aditif (kg)
+  waiting_hopper: 2000, // Kapasitas fisik waiting hopper (kg)
+};
 
 // --- Components ---
 
@@ -263,7 +319,22 @@ const ScadaDiagram = ({
   relayLogs = [],
   isPaused = false,
   activeSiloSemen = "Silo 3 - 28.290 kg",
-  activePins = {}
+  siloWeights = [42150, 35800, 28290, 31400, 19500, 48900],
+  activePins = {},
+  batchingPlantMode = 'SYSTEM_1',
+  waitingHopperEnabled = false,
+  waitingHopperState = 'WAITING_HOPPER_IDLE',
+  waitingHopperGateOpen = false,
+  waitingHopperWeight = 0,
+  selectedRecipe = null,
+  volumePerBatch = 1.0,
+  scaleCapacities = { pasir: 1000, batu: 1000, semen: 800, air: 400, mixerGeometris: 4.0, mixerMaxMixing: 3.5 },
+  mixerState = 'waiting',
+  aggregateInMixer = 0,
+  activeVolume = 0,
+  compressorActive = false,
+  vibratorActive = false,
+  onManualDeviceToggle
 }: { 
   isRunning: boolean; 
   currentStep: string; 
@@ -312,7 +383,22 @@ const ScadaDiagram = ({
   relayLogs?: { id: string; timestamp: Date; message: string; type: 'on' | 'off' | 'info' | 'done' }[];
   isPaused?: boolean;
   activeSiloSemen?: string;
+  siloWeights?: number[];
   activePins?: Record<string, boolean>;
+  batchingPlantMode?: 'SYSTEM_1' | 'SYSTEM_2' | 'SYSTEM_3';
+  waitingHopperEnabled?: boolean;
+  waitingHopperState?: string;
+  waitingHopperGateOpen?: boolean;
+  waitingHopperWeight?: number;
+  selectedRecipe?: Recipe | null;
+  volumePerBatch?: number;
+  scaleCapacities?: { pasir: number; batu: number; semen: number; air: number; mixerGeometris?: number; mixerMaxMixing?: number };
+  mixerState?: 'waiting' | 'discharging_hoppers' | 'mixing' | 'discharging_concrete' | 'complete';
+  aggregateInMixer?: number;
+  activeVolume?: number;
+  compressorActive?: boolean;
+  vibratorActive?: boolean;
+  onManualDeviceToggle?: (deviceKey: string, newValue?: boolean) => void;
 }) => {
   const theme = {
     outline: "#00e5ff",
@@ -325,26 +411,208 @@ const ScadaDiagram = ({
     accentGreen: "#00e676"
   };
 
-  const isPasirActive = isRunning && !isPaused ? (gatePasirSiloOpen || currentStep === 'pasir') : false;
-  const isBatuActive = isRunning && !isPaused ? (gateBatuSiloOpen || currentStep === 'batu') : false;
-  const isSemen = isRunning && !isPaused ? (screwSemenActive || currentStep === 'semen') : false;
-  const isAir = isRunning && !isPaused ? (valveWaterActive || currentStep === 'air') : false;
-  const isAggregat = isRunning && !isPaused ? (conveyorBottomActive || conveyorUpperActive || isPasirActive || isBatuActive) : false;
+  const [selectedManualDevice, setSelectedManualDevice] = useState<{
+    id: string;
+    name: string;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (isAuto) {
+      setSelectedManualDevice(null);
+    }
+  }, [isAuto]);
+
+  const getDeviceStatus = (id: string): boolean => {
+    switch (id) {
+      case 'pasir1': return !!gatePasir1SiloOpen;
+      case 'pasir2': return !!gatePasir2SiloOpen;
+      case 'batu1': return !!gateBatu1SiloOpen;
+      case 'batu2': return !!gateBatu2SiloOpen;
+      case 'silo1': return !!(screwSemenActive && activeSiloSemen.includes("Silo 1"));
+      case 'silo2': return !!(screwSemenActive && activeSiloSemen.includes("Silo 2"));
+      case 'silo3': return !!(screwSemenActive && activeSiloSemen.includes("Silo 3"));
+      case 'silo4': return !!(screwSemenActive && activeSiloSemen.includes("Silo 4"));
+      case 'silo5': return !!(screwSemenActive && activeSiloSemen.includes("Silo 5"));
+      case 'silo6': return !!(screwSemenActive && activeSiloSemen.includes("Silo 6"));
+      case 'valveIsiAir': return !!valveWaterActive;
+      case 'dischargeAir': return !!gateWaterHopperOpen;
+      case 'dischargeSemen': return !!gateSemenHopperOpen;
+      case 'conveyorBottom': return !!conveyorBottomActive;
+      case 'conveyorUpper': return !!conveyorUpperActive;
+      case 'waitingHopperGate': return !!waitingHopperGateOpen;
+      case 'mixerDischargeGate': return mixerDoorPercent > 0;
+      case 'compressor': return !!compressorActive;
+      case 'vibrator': return !!vibratorActive;
+      case 'klakson': return !!activePins["Relay #16"] || false; // Or from prop, but we'll handle key
+      default: return false;
+    }
+  };
+
+  // Lock-in and remember targets of the currently processing batch
+  const currentBatchTargetAggRef = useRef<number>(0);
+  const currentBatchTargetSemenRef = useRef<number>(0);
+  const currentBatchTargetAirRef = useRef<number>(0);
+
+  if (isRunning) {
+    if (mixerState === 'discharging_hoppers') {
+      currentBatchTargetAggRef.current = scales.pasir.target + scales.batu.target;
+      currentBatchTargetSemenRef.current = scales.semen.target;
+      currentBatchTargetAirRef.current = scales.air.target;
+    }
+  } else {
+    currentBatchTargetAggRef.current = 0;
+    currentBatchTargetSemenRef.current = 0;
+    currentBatchTargetAirRef.current = 0;
+  }
+
+  const scaleCapacitiesAccumulative = scaleCapacities.pasir + scaleCapacities.batu;
+  const scaleCapacitiesWaitingHopper = scaleCapacities.pasir + scaleCapacities.batu;
+
+  // Mixer settings capacities
+  const mixerGeometris = scaleCapacities.mixerGeometris ?? 4.0;
+  const mixerMaxMixing = scaleCapacities.mixerMaxMixing ?? 3.5;
+
+  // Stable baseline values for division and fallbacks, ensuring no division by zero during state transitions
+  const fallbackAgg = scales.pasir.target + scales.batu.target;
+  const fallbackSemen = scales.semen.target;
+  const fallbackAir = scales.air.target;
+
+  const targetAggLocked = currentBatchTargetAggRef.current || fallbackAgg || 800;
+  const targetSemenLocked = currentBatchTargetSemenRef.current || fallbackSemen || 300;
+  const targetAirLocked = currentBatchTargetAirRef.current || fallbackAir || 150;
+
+  // Real-time material in mixer calculation based on scale-drain dynamics
+  let currentMixerVolume = 0;
+  let w_agg = 0;
+  let w_cement = 0;
+  let w_water = 0;
+
+  if (isRunning || isDone) {
+    if (mixerState === 'waiting') {
+      currentMixerVolume = 0;
+      w_agg = 0;
+      w_cement = 0;
+      w_water = 0;
+    } else if (mixerState === 'discharging_hoppers') {
+      w_agg = aggregateInMixer;
+      w_cement = Math.max(0, scales.semen.target - scales.semen.actual);
+      w_water = Math.max(0, scales.air.target - scales.air.actual);
+      
+      const totalWeightInMixer = w_agg + w_cement + w_water;
+      const totalBatchTargetWeight = targetAggLocked + targetSemenLocked + targetAirLocked;
+      
+      const fillRatio = totalBatchTargetWeight > 0 ? (totalWeightInMixer / totalBatchTargetWeight) : 0;
+      currentMixerVolume = fillRatio * volumePerBatch;
+    } else if (mixerState === 'mixing') {
+      // In mixing state, cement and water have completely entered the mixer.
+      // Aggregate (sand and stone) continues to land as details complete traveling down the conveyor belt.
+      w_agg = aggregateInMixer;
+      w_cement = targetSemenLocked;
+      w_water = targetAirLocked;
+      
+      const totalWeightInMixer = w_agg + w_cement + w_water;
+      const totalBatchTargetWeight = targetAggLocked + targetSemenLocked + targetAirLocked;
+      
+      const fillRatio = totalBatchTargetWeight > 0 ? (totalWeightInMixer / totalBatchTargetWeight) : 0;
+      currentMixerVolume = fillRatio * volumePerBatch;
+    } else if (mixerState === 'discharging_concrete') {
+      const dischargeProgressRatio = Math.max(0, Math.min(1, dischargeTimeSec / 30.0));
+      currentMixerVolume = volumePerBatch * (1 - dischargeProgressRatio);
+      
+      w_agg = targetAggLocked * (1 - dischargeProgressRatio);
+      w_cement = targetSemenLocked * (1 - dischargeProgressRatio);
+      w_water = targetAirLocked * (1 - dischargeProgressRatio);
+    } else if (mixerState === 'complete') {
+      currentMixerVolume = 0;
+      w_agg = 0;
+      w_cement = 0;
+      w_water = 0;
+    }
+  }
+
+  // Force bounds
+  currentMixerVolume = Math.min(volumePerBatch, Math.max(0, currentMixerVolume));
+
+  // Fill percent for display
+  const mixerFillPercent = mixerMaxMixing > 0 ? (currentMixerVolume / mixerMaxMixing) * 100 : 0;
+
+  // Material proportions inside the mixer for color blending
+  const totalDry = w_agg + w_cement;
+  const targetAir = targetAirLocked || 150;
+
+  const aggRatio = totalDry > 0 ? (w_agg / totalDry) : 1; 
+  const cementRatio = totalDry > 0 ? (w_cement / totalDry) : 0; 
+  const waterRatio = targetAir > 0 ? (w_water / targetAir) : 0;
+
+  // Gradient transitions: Aggregate (sandy brown), Cement (dusty cement grey), Fresh Wet Concrete (distinct wet-slate blue-grey)
+  const cAgg = { r: 148, g: 132, b: 114 }; // Sandy-brown dry aggregate tone
+  const cSemen = { r: 172, g: 178, b: 188 }; // Distinct concrete dust grey
+  const cWet = { r: 84, g: 96, b: 114 }; // Thick medium-glossy wet concrete slate-blue grey
+
+  const dryR = aggRatio * cAgg.r + cementRatio * cSemen.r;
+  const dryG = aggRatio * cAgg.g + cementRatio * cSemen.g;
+  const dryB = aggRatio * cAgg.b + cementRatio * cSemen.b;
+
+  const finalR = Math.round((1 - waterRatio) * dryR + waterRatio * cWet.r);
+  const finalG = Math.round((1 - waterRatio) * dryG + waterRatio * cWet.g);
+  const finalB = Math.round((1 - waterRatio) * dryB + waterRatio * cWet.b);
+
+  const mixerColor_fg = `rgb(${finalR}, ${finalG}, ${finalB})`;
+  const mixerColor_bg = `rgb(${Math.round(finalR * 0.68)}, ${Math.round(finalG * 0.68)}, ${Math.round(finalB * 0.68)})`;
+
+  const isPasirActive = isAuto
+    ? (isRunning && !isPaused ? (gatePasirSiloOpen || currentStep === 'pasir') : false)
+    : (gatePasir1SiloOpen || gatePasir2SiloOpen);
+  const isBatuActive = isAuto
+    ? (isRunning && !isPaused ? (gateBatuSiloOpen || currentStep === 'batu') : false)
+    : (gateBatu1SiloOpen || gateBatu2SiloOpen);
+  const isSemen = isAuto
+    ? (isRunning && !isPaused ? (screwSemenActive || currentStep === 'semen') : false)
+    : screwSemenActive;
+  const isAir = isAuto
+    ? (isRunning && !isPaused ? (valveWaterActive || currentStep === 'air') : false)
+    : valveWaterActive;
+  const isAggregat = isAuto
+    ? (isRunning && !isPaused ? (conveyorBottomActive || conveyorUpperActive || isPasirActive || isBatuActive) : false)
+    : (conveyorBottomActive || conveyorUpperActive || isPasirActive || isBatuActive);
 
   // Extract cement silo number
   const siloMatch = activeSiloSemen ? activeSiloSemen.match(/Silo\s*(\d+)/i) : null;
   const selectedSiloNumber = siloMatch ? parseInt(siloMatch[1], 10) : 3;
 
   // Dynamic state selectors for flow pathways
-  const isWaterOpen = isAir;
-  const isAdditiveOpen = isAir;
-  const isMixerRotating = mixerShaftActive && !isPaused;
+  const isWaterOpen = isAuto ? isAir : valveWaterActive;
+  const isAdditiveOpen = isAuto ? isAir : valveWaterActive;
+  const isMixerRotating = isAuto 
+    ? (mixerShaftActive && !isPaused)
+    : mixerShaftActive;
+
+  const isWaterDischargeOpen = isAuto ? isAir : gateWaterHopperOpen;
+
+  const isBottomConvRunning = isAuto
+    ? (conveyorBottomActive && !isPaused)
+    : conveyorBottomActive;
+  const isUpperConvRunning = isAuto
+    ? (conveyorUpperActive && !isPaused)
+    : conveyorUpperActive;
+
+  // Single-source of truth variables for concrete level
+  const mixerCurrentVolume = currentMixerVolume;
+  const fillPercent = Math.min(1.0, Math.max(0, mixerCurrentVolume / 3.5));
+  const hasMaterial = mixerCurrentVolume > 0.001;
+  // Maximum visual height is exactly 82px within 96px inside height (leaves 14px headroom empty at top for 3.5m³)
+  const visualConcreteHeight = hasMaterial ? Math.max(2, fillPercent * 82) : 0;
+  const surfaceY = 448 - visualConcreteHeight;
 
   // Real-time sand and stone particle tracking state for physical conveyor belt constraint simulation
   const [particles, setParticles] = useState<any[]>([]);
 
   useEffect(() => {
-    if (!isRunning) {
+    const shouldRunParticles = isRunning || (gatePasir1SiloOpen || gatePasir2SiloOpen || gateBatu1SiloOpen || gateBatu2SiloOpen || conveyorBottomActive || conveyorUpperActive || gatePasirHopperOpen || gateBatuHopperOpen);
+
+    if (!shouldRunParticles) {
       if (particles.length > 0) setParticles([]);
       return;
     }
@@ -444,11 +712,6 @@ const ScadaDiagram = ({
             const nextX = p.x + (p.vx ?? 35) * delta;
             const nextY = p.y + nextVy * delta;
 
-            // Absolute boundary line: once hit inner mixer line (y = 350), delete immediately from state
-            if (nextY >= 350) {
-              return null;
-            }
-
             // Constrain particles tightly inside the chute using physical boundary clamping (y: 320 to 350)
             let clampedX = nextX;
             if (nextY >= 320) {
@@ -459,18 +722,136 @@ const ScadaDiagram = ({
               if (clampedX > right_limit - 1) clampedX = right_limit - 1;
             }
 
+            // Capture particle into Waiting Hopper if chute gate is CLOSED
+            if (nextY >= 347) {
+              const belongsInHopper = waitingHopperEnabled && 
+                                      (waitingHopperState === 'WAITING_HOPPER_FILLING' || waitingHopperState === 'WAITING_HOPPER_READY');
+              if (belongsInHopper && !waitingHopperGateOpen) {
+                return {
+                  ...p,
+                  stage: 'in_hopper',
+                  x: clampedX,
+                  y: 346 + Math.random() * 2.5, // form a pile on the closed gate flappers!
+                  vx: 0,
+                  vy: 0,
+                };
+              }
+              // Transitions to high-speed swirling churn inside the twinshaft mixer
+              return {
+                ...p,
+                stage: 'churning_in_mixer',
+                centerX: Math.random() < 0.5 ? 637.5 : 712.5,
+                angle: Math.random() * Math.PI * 2,
+                radius: 12 + Math.random() * 28,
+                speed: 4 + Math.random() * 3,
+                y: 350 + Math.random() * 90,
+                x: clampedX,
+                lifespan: 8.5
+              };
+            }
+
             return { 
               ...p, 
               x: clampedX, 
               y: nextY, 
               vy: nextVy 
             };
+          } else if (p.stage === 'in_hopper') {
+            // Stay still on top of the gate until it OPENS
+            if (waitingHopperGateOpen) {
+              return {
+                ...p,
+                stage: 'falling_from_hopper',
+                vy: 20 + Math.random() * 32,
+                vx: (Math.random() - 0.5) * 16,
+              };
+            }
+            return p;
+          } else if (p.stage === 'falling_from_hopper') {
+            const nextVy = (p.vy ?? 20) + 260 * delta;
+            const nextY = p.y + nextVy * delta;
+            const nextX = p.x + (p.vx ?? 0) * delta;
+
+            if (nextY >= 365) {
+              // Transitions to high-speed swirling churn inside the twinshaft mixer
+              return {
+                ...p,
+                stage: 'churning_in_mixer',
+                centerX: Math.random() < 0.5 ? 637.5 : 712.5,
+                angle: Math.random() * Math.PI * 2,
+                radius: 12 + Math.random() * 28,
+                speed: 4 + Math.random() * 3,
+                y: 365 + Math.random() * 75,
+                x: nextX,
+                lifespan: 8.5
+              };
+            }
+
+            return {
+              ...p,
+              x: nextX,
+              y: nextY,
+              vy: nextVy,
+            };
+          } else if (p.stage === 'churning_in_mixer') {
+            const nextLifespan = (p.lifespan ?? 8.5) - delta;
+
+            const isFin = isAuto ? (nextLifespan <= 0 || mixerState === 'complete' || !isRunning) : (nextLifespan <= 0);
+            if (isFin) {
+              return null; // clean up old/stale particles or on sequence termination
+            }
+
+            if (mixerState === 'discharging_concrete') {
+              // Drift downward toward center bottom gate (X=677.5, Y=450)
+              const nextY = p.y + (60 + Math.random() * 30) * delta;
+              const nextX = p.x + (677.5 - p.x) * 4 * delta;
+              if (nextY >= 450) {
+                return null; // drain out completely
+              }
+              return {
+                ...p,
+                x: nextX,
+                y: nextY,
+                lifespan: nextLifespan
+              };
+            }
+
+            if (isMixerRotating) {
+              // Orbital swirl around assigned shaft
+              const nextAngle = (p.angle ?? 0) + (p.speed ?? 5) * delta;
+              const targetX = p.centerX + Math.cos(nextAngle) * p.radius;
+              const targetY = 400 + Math.sin(nextAngle) * p.radius * 0.7; // squashed height ellipse
+              // Slight turbulence jitter
+              const jitterX = (Math.random() - 0.5) * 6;
+              const jitterY = (Math.random() - 0.5) * 6;
+
+              return {
+                ...p,
+                angle: nextAngle,
+                x: Math.max(583, Math.min(772, targetX + jitterX)),
+                y: Math.max(355, Math.min(444, targetY + jitterY)),
+                lifespan: nextLifespan
+              };
+            } else {
+              // Standby/Dampened sinking down
+              const currentMixerBottom = 444;
+              let nextY = p.y;
+              if (p.y < currentMixerBottom - 5) {
+                nextY += (15 + Math.random() * 15) * delta;
+              }
+              const jitterY = (Math.random() - 0.5) * 1.5;
+              return {
+                ...p,
+                y: Math.max(355, Math.min(currentMixerBottom, nextY + jitterY)),
+                lifespan: nextLifespan
+              };
+            }
           }
           return p;
         }).filter(Boolean) as any[];
 
-        // GREEN ZONE: Spawn sand and stone particles ONLY if respective gates are open
-        if (conveyorBottomActive) {
+        // GREEN ZONE: Spawn sand and stone particles whenever the respective gates are open
+        if (conveyorBottomActive || gatePasirHopperOpen || gateBatuHopperOpen) {
           const spawnCount = Math.random() < 0.5 ? 1 : 2;
 
           // Sand (PASIR) stream under TIMBANGAN PASIR (Discharges from center cx=143)
@@ -514,12 +895,24 @@ const ScadaDiagram = ({
 
     animationFrameId = requestAnimationFrame(updateLoop);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [isRunning, conveyorBottomActive, conveyorUpperActive, gatePasirHopperOpen, gateBatuHopperOpen]);
+  }, [isRunning, conveyorBottomActive, conveyorUpperActive, gatePasirHopperOpen, gateBatuHopperOpen, waitingHopperEnabled, waitingHopperGateOpen, waitingHopperState, mixerShaftActive, isPaused, mixerState, isAuto, gatePasir1SiloOpen, gatePasir2SiloOpen, gateBatu1SiloOpen, gateBatu2SiloOpen]);
 
   return (
-    <div className="w-full h-full flex items-center justify-center bg-[#05080c] overflow-hidden rounded-[4px]">
-      <svg viewBox="-120 -30 1250 640" className="w-full h-full max-h-full" preserveAspectRatio="xMidYMin meet">
+    <div className="w-full h-full flex items-center justify-center bg-[#05080c] overflow-hidden rounded-[4px] relative">
+      <svg 
+        viewBox="-120 -30 1250 640" 
+        className="w-full h-full max-h-full" 
+        preserveAspectRatio="xMidYMin meet"
+        onClick={() => {
+          if (!isAuto) {
+            setSelectedManualDevice(null);
+          }
+        }}
+      >
         <defs>
+          <filter id="dust-blur">
+            <feGaussianBlur stdDeviation="6" />
+          </filter>
           <filter id="glow">
             <feGaussianBlur stdDeviation="2" result="blur" />
             <feComposite in="SourceGraphic" in2="blur" operator="over" />
@@ -530,6 +923,9 @@ const ScadaDiagram = ({
           <clipPath id="batu-clip">
             <path d="M228 335 L378 335 L328 385 L278 385 Z" />
           </clipPath>
+          <clipPath id="accum-clip">
+            <path d="M68 335 L378 335 L328 385 L118 385 Z" />
+          </clipPath>
           <clipPath id="mixer-funnel-clip">
             <path d="M595 280 L760 280 L718 350 L637 350 Z" />
           </clipPath>
@@ -539,58 +935,62 @@ const ScadaDiagram = ({
           <clipPath id="air-clip">
             <path d="M760 220 L840 220 L820 260 L800 278 L780 260 Z" />
           </clipPath>
+          <clipPath id="mixer-clip">
+            <rect x="579.5" y="352" width="196" height="96" rx="3" />
+          </clipPath>
+          <clipPath id="concrete-level-clip">
+            <rect x="579.5" y={surfaceY} width="196" height={Math.max(0, 448 - surfaceY)} />
+          </clipPath>
+          {/* Dynamic slate concrete gradients representing real volume depth and texture */}
+          <linearGradient id="concrete-gradient" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={mixerColor_fg} />
+            <stop offset="35%" stopColor={mixerColor_fg} />
+            <stop offset="100%" stopColor={mixerColor_bg} />
+          </linearGradient>
+          <linearGradient id="concrete-bg-gradient" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={mixerColor_bg} />
+            <stop offset="100%" stopColor="#080c14" />
+          </linearGradient>
         </defs>
 
-        {/* Real-time Arduino PIN Monitoring side list inside the red box space */}
-        <foreignObject x="-115" y="-15" width="162" height="610">
-          <div className="w-full h-full bg-[#0a1224]/85 border border-slate-800/80 rounded-[5px] p-2 flex flex-col font-mono text-[9px] select-none text-slate-200 shadow-lg">
-            <div className="text-[9.5px] text-[#00ffd0] font-extrabold border-b border-slate-800/80 pb-1.5 mb-2 uppercase tracking-widest text-center flex items-center justify-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
-              MONITOR PIN ARDUINO
-            </div>
-            <div className="flex-1 overflow-y-auto space-y-1.5 pr-0.5 custom-scrollbar">
-              {loadRelayConfig().map((row) => {
-                const pin = row.arduinoPin || "";
-                const isOn = !!activePins[pin];
-                return (
-                  <div key={row.relay} className="flex items-center justify-between bg-slate-900/50 hover:bg-slate-900/80 p-1.5 rounded border border-slate-800/20 transition-all duration-150">
-                    <div className="flex flex-col min-w-0 flex-1 mr-1.5">
-                      <span className="text-[#00e5ff] font-extrabold text-[8.5px] truncate leading-none">
-                        PIN {pin || "?"}
-                      </span>
-                      <span className="text-slate-400 uppercase text-[7.5px] font-sans font-black truncate leading-none mt-1" title={row.name}>
-                        {row.name}
-                      </span>
-                    </div>
-                    <span className={`text-[8px] font-black px-1.5 py-0.5 rounded text-center shrink-0 min-w-[28px] border leading-none transition-all duration-200 ${
-                      isOn 
-                        ? "bg-emerald-950/80 text-emerald-400 border-emerald-500/30 shadow-[0_0_4px_rgba(16,185,129,0.2)] font-black" 
-                        : "bg-red-950/80 text-red-400 border-red-500/30 font-medium"
-                    }`}>
-                      {isOn ? "ON" : "OFF"}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </foreignObject>
+        {/* Real-time Arduino PIN Monitoring side list removed from layout */}
 
         {/* Weighing Monitor panel removed from SVG and rendered as native React components in layout */}
         {/* --- AGGREGATE SECTION (LEFT) --- */}
         <g id="aggregate-bins">
           {[
-            { x: 68, label: "PASIR 1", isPasir: true, active: isRunning && gatePasir1SiloOpen },
-            { x: 148, label: "PASIR 2", isPasir: true, active: isRunning && gatePasir2SiloOpen },
-            { x: 228, label: "BATU 1", isPasir: false, active: isRunning && gateBatu1SiloOpen },
-            { x: 308, label: "BATU 2", isPasir: false, active: isRunning && gateBatu2SiloOpen }
+            { x: 68, label: "PASIR 1", isPasir: true, active: isAuto ? (isRunning && gatePasir1SiloOpen) : gatePasir1SiloOpen, weightText: `${(8000 - scales.pasir.actual * 0.7).toFixed(0)} kg` },
+            { x: 148, label: "PASIR 2", isPasir: true, active: isAuto ? (isRunning && gatePasir2SiloOpen) : gatePasir2SiloOpen, weightText: `${(5000 - scales.pasir.actual * 0.3).toFixed(0)} kg` },
+            { x: 228, label: "BATU 1", isPasir: false, active: isAuto ? (isRunning && gateBatu1SiloOpen) : gateBatu1SiloOpen, weightText: `${(12000 - scales.batu.actual * 0.6).toFixed(0)} kg` },
+            { x: 308, label: "BATU 2", isPasir: false, active: isAuto ? (isRunning && gateBatu2SiloOpen) : gateBatu2SiloOpen, weightText: `${(6000 - scales.batu.actual * 0.4).toFixed(0)} kg` }
           ].map((bin, i) => (
-            <g key={bin.label}>
+            <g 
+              key={bin.label}
+              className={!isAuto ? "cursor-pointer select-none" : ""}
+              onClick={(e) => {
+                if (!isAuto) {
+                  e.stopPropagation();
+                  setSelectedManualDevice({
+                    id: bin.label.toLowerCase().includes("pasir") 
+                      ? (bin.label.includes("1") ? "pasir1" : "pasir2")
+                      : (bin.label.includes("1") ? "batu1" : "batu2"),
+                    name: bin.label,
+                    x: bin.x + 35,
+                    y: 220
+                  });
+                }
+              }}
+            >
               <rect x={bin.x} y="175" width="70" height="100" fill="#2c3e50" stroke={theme.outline} strokeWidth="1.5" />
               <path d={`M${bin.x} 275 L${bin.x + 35} 305 L${bin.x + 70} 275`} fill="#2c3e50" stroke={theme.outline} strokeWidth="1.5" />
-              <text x={bin.x + 35} y="210" textAnchor="middle" fill="#94a3b8" fontSize="7.5" fontWeight="black" letterSpacing="1.5">BIN</text>
-              <text x={bin.x + 35} y="230" textAnchor="middle" fill="#00e5ff" fontSize="10" fontWeight="bold">{bin.label.replace(" 1", " #1").replace(" 2", " #2")}</text>
-              <text x={bin.x + 35} y="248" textAnchor="middle" fill="#888" fontSize="10">100%</text>
+              <text x={bin.x + 35} y="202" textAnchor="middle" fill="#94a3b8" fontSize="7" fontWeight="black" letterSpacing="1">BIN</text>
+              <text x={bin.x + 35} y="218" textAnchor="middle" fill="#00e5ff" fontSize="9" fontWeight="bold">{bin.label.replace(" 1", " #1").replace(" 2", " #2")}</text>
+              <text x={bin.x + 35} y="234" textAnchor="middle" fill={batchingPlantMode === 'SYSTEM_3' ? "#fbbf24" : "#888"} fontSize={batchingPlantMode === 'SYSTEM_3' ? "7.5" : "9"} fontWeight="bold">
+                {batchingPlantMode === 'SYSTEM_3' ? bin.weightText : "100%"}
+              </text>
+              {batchingPlantMode === 'SYSTEM_3' && (
+                <text x={bin.x + 35} y="246" textAnchor="middle" fill="#f43f5e" fontSize="6.5" fontWeight="black" letterSpacing="0.2">LOSS-IN-WEIGHT</text>
+              )}
               {/* Gate Valve: Blinks when active flow is open */}
               <rect 
                 x={bin.x + 25} 
@@ -599,7 +999,7 @@ const ScadaDiagram = ({
                 height="6" 
                 fill={bin.active ? theme.flow : theme.red} 
                 stroke="#000" 
-                className=""
+                className={bin.active ? "animate-pulse" : ""}
               />
               
               {/* Particle Stream falling from silo/bin gate down to scales hopper when bin gate is active */}
@@ -612,9 +1012,9 @@ const ScadaDiagram = ({
                       cy={311}
                       r={bin.isPasir ? 1.5 : 2.5}
                       fill={bin.isPasir ? "#d2b48c" : "#808080"}
-                      animate={{ cy: [311, 335], opacity: [1, 1, 0] }}
+                      animate={{ cy: [311, batchingPlantMode === 'SYSTEM_3' ? 415 : 335], opacity: [1, 1, 0] }}
                       transition={{ 
-                        duration: 0.25 + Math.random() * 0.15, 
+                        duration: batchingPlantMode === 'SYSTEM_3' ? 0.4 + Math.random() * 0.2 : 0.25 + Math.random() * 0.15, 
                         repeat: Infinity, 
                         delay: idx * 0.04, 
                         ease: "linear" 
@@ -629,151 +1029,325 @@ const ScadaDiagram = ({
 
         {/* Aggregate Hoppers with Sliding Gates */}
         <g id="hoppers">
-          {[
-            { 
-              x: 68, 
-              label: "TIMBANGAN PASIR", 
-              isPasir: true, 
-              isWeighing: isPasirActive, 
-              isOpen: gatePasirHopperOpen, 
-              clipId: "pasir-clip", 
-              fillColor: "#d2b48c", 
-              boxH: 50, 
-              boxY: 385, 
-              actual: scales.pasir.actual, 
-              target: scales.pasir.target, 
-              cx: 143 
-            },
-            { 
-              x: 228, 
-              label: "TIMBANGAN BATU", 
-              isPasir: false, 
-              isWeighing: isBatuActive, 
-              isOpen: gateBatuHopperOpen, 
-              clipId: "batu-clip", 
-              fillColor: "#808080", 
-              boxH: 50, 
-              boxY: 385, 
-              actual: scales.batu.actual, 
-              target: scales.batu.target, 
-              cx: 303 
+          {(() => {
+            if (batchingPlantMode === 'SYSTEM_3') {
+              return null; // Loss-In-Weight has no secondary hopper scales, materials drop directly onto conveyor!
             }
-          ].map((h) => {
-            const fillRatio = Math.min(1, Math.max(0, h.actual / (h.target || 1)));
-            const rectH = fillRatio * h.boxH;
-            return (
-              <g key={h.label}>
-                {/* Hopper Body Background */}
-                <path d={`M${h.x} 335 L${h.x + 150} 335 L${h.x + 100} 385 L${h.x + 50} 385 Z`} fill="#0f131a" stroke={theme.outline} strokeWidth="1.5" />
-                
-                {/* Realtime Smooth Level Fill */}
-                <rect 
-                  x={h.x} 
-                  y={h.boxY - rectH} 
-                  width="150" 
-                  height={rectH} 
-                  fill={h.fillColor} 
-                  clipPath={`url(#${h.clipId})`} 
-                  opacity="0.8" 
-                />
-                
-                {/* Re-render the outline above of the level fill so it looks clean */}
-                <path d={`M${h.x} 335 L${h.x + 150} 335 L${h.x + 100} 385 L${h.x + 50} 385 Z`} fill="none" stroke={theme.outline} strokeWidth="1.5" />
-                <text x={h.x + 75} y="352" textAnchor="middle" fill="#00e5ff" fontSize="8" fontWeight="black" letterSpacing="0.5" className="select-none">TIMBANGAN</text>
-                <text x={h.x + 75} y="363" textAnchor="middle" fill="#00e5ff" fontSize="8" fontWeight="black" letterSpacing="0.5" className="select-none">{h.isPasir ? "PASIR" : "BATU"}</text>
-
-                {/* Sliding Gate Pneumatic mechanism */}
-                <g>
-                  {/* Pneumatic Cylinder actuator */}
-                  <rect x={h.cx - 42} y="380" width="18" height="6" rx="1.5" fill="#475569" stroke={h.isOpen ? theme.flow : "#334155"} strokeWidth="1" />
-                  <line x1={h.cx - 24} y1="383" x2={h.isOpen ? h.cx - 25 : h.cx - 15} y2="383" stroke="#cbd5e1" strokeWidth="2" />
+            
+            if (batchingPlantMode === 'SYSTEM_2') {
+              // SYSTEM 2 = ACCUMULATIVE AGGREGATE SCALE
+              const accumActual = scales.pasir.actual + scales.batu.actual;
+              const accumTarget = scales.pasir.target + scales.batu.target;
+              const isOpen = gatePasirHopperOpen || gateBatuHopperOpen;
+              // Sesuai prinsip loadcell, visual filling dihitung mutlak dari kapasitas maksimal timbangan akumulatif
+              const fillRatio = Math.min(1, Math.max(0, accumActual / scaleCapacitiesAccumulative));
+              const rectH = fillRatio * 50;
+              const cx = 223;
+              
+              return (
+                <g key="accumulative_hopper">
+                  {/* Hopper Body Background */}
+                  <path d="M68 335 L378 335 L328 385 L118 385 Z" fill="#0f131a" stroke={theme.outline} strokeWidth="1.5" />
                   
-                  {/* Slits/Guides */}
-                  <line x1={h.cx - 25} y1="386" x2={h.cx + 25} y2="386" stroke="#475569" strokeWidth="1.5" />
-                  
-                  {/* Sliding Gate Blade */}
+                  {/* Level Fill */}
                   <rect 
-                     x={h.isOpen ? h.cx - 35 : h.cx - 15} 
-                     y="385" 
-                     width="30" 
-                     height="3" 
-                     fill={h.isOpen ? theme.flow : theme.red} 
-                     stroke="#000" 
-                     strokeWidth="0.5" 
+                    x="68" 
+                    y={385 - rectH} 
+                    width="310" 
+                    height={rectH} 
+                    fill="#a89276" 
+                    clipPath="url(#accum-clip)" 
+                    opacity="0.8" 
                   />
                   
-                  {/* Gate status and indicators */}
-                  <text x={h.cx} y="402" textAnchor="middle" fill={h.isOpen ? theme.flow : theme.red} fontSize="7.5" fontWeight="black" className="">
-                     {h.isOpen ? "DISCHARGING" : "GATE CLOSED"}
-                  </text>
-                  <circle cx={h.cx} cy="375" r="3.5" fill={h.isOpen ? theme.flow : theme.red} />
-                </g>
-
-                {/* Aggregate Cascade Particles falling from hoppers down to bottom belt conveyor when discharge is active */}
-                {h.isOpen && (
+                  {/* Outline above */}
+                  <path d="M68 335 L378 335 L328 385 L118 385 Z" fill="none" stroke={theme.outline} strokeWidth="1.5" />
+                  <text x={cx} y="353" textAnchor="middle" fill="#00e5ff" fontSize="9" fontWeight="black" letterSpacing="0.8" className="select-none">TIMBANGAN AGGREGATE</text>
+                  <text x={cx} y="371" textAnchor="middle" fill="#fbbf24" fontSize="10.5" fontWeight="bold" className="font-mono select-none">{accumActual.toFixed(0)} / {accumTarget.toFixed(0)} kg</text>
+                  
+                  {/* Sliding Gate Pneumatic mechanism */}
                   <g>
-                    {[...Array(8)].map((_, idx) => (
-                      <motion.circle
-                        key={idx}
-                        cx={h.cx - 12 + (idx * 3.2) + Math.sin(idx) * 2}
-                        cy={389}
-                        r={h.isPasir ? 1.5 : 2.5}
-                        fill={h.isPasir ? "#d2b48c" : "#808080"}
-                        animate={{ cy: [389, 415], opacity: [1, 1, 0] }}
-                        transition={{ 
-                          duration: 0.25 + Math.random() * 0.15, 
-                          repeat: Infinity, 
-                          delay: idx * 0.04, 
-                          ease: "linear" 
-                        }}
-                      />
-                    ))}
+                    {/* Pneumatic Cylinder actuator */}
+                    <rect x={cx - 42} y="380" width="18" height="6" rx="1.5" fill="#475569" stroke={isOpen ? theme.flow : "#334155"} strokeWidth="1" />
+                    <line x1={cx - 24} y1="383" x2={isOpen ? cx - 25 : cx - 15} y2="383" stroke="#cbd5e1" strokeWidth="2" />
+                    <line x1={cx - 25} y1="386" x2={cx + 25} y2="386" stroke="#475569" strokeWidth="1.5" />
+                    <rect 
+                       x={isOpen ? cx - 35 : cx - 15} 
+                       y="385" 
+                       width="30" 
+                       height="3" 
+                       fill={isOpen ? theme.flow : theme.red} 
+                       stroke="#000" 
+                       strokeWidth="0.5" 
+                    />
+                    <text x={cx} y="402" textAnchor="middle" fill={isOpen ? theme.flow : theme.red} fontSize="7.5" fontWeight="black">
+                       {isOpen ? "DISCHARGING TO BELT" : "GATE CLOSED"}
+                    </text>
+                    <circle cx={cx} cy="375" r="3.5" fill={isOpen ? theme.flow : theme.red} />
                   </g>
-                )}
-              </g>
-            );
-          })}
+                  
+                  {/* Cascade particles */}
+                  {isOpen && (
+                    <g>
+                      {[...Array(12)].map((_, idx) => (
+                        <motion.circle
+                          key={idx}
+                          cx={cx - 20 + (idx * 3.6) + Math.sin(idx) * 2}
+                          cy={389}
+                          r={idx % 2 === 0 ? 1.5 : 2.5}
+                          fill={idx % 2 === 0 ? "#d2b48c" : "#808080"}
+                          animate={{ cy: [389, 415], opacity: [1, 1, 0] }}
+                          transition={{ 
+                            duration: 0.25 + Math.random() * 0.15, 
+                            repeat: Infinity, 
+                            delay: idx * 0.03, 
+                            ease: "linear" 
+                          }}
+                        />
+                      ))}
+                    </g>
+                  )}
+                </g>
+              );
+            }
+            
+            // SYSTEM 1 = DUAL AGGREGATE SCALE
+            return [
+              { 
+                x: 68, 
+                label: "TIMBANGAN PASIR", 
+                isPasir: true, 
+                isWeighing: isPasirActive, 
+                isOpen: gatePasirHopperOpen, 
+                clipId: "pasir-clip", 
+                fillColor: "#d2b48c", 
+                boxH: 50, 
+                boxY: 385, 
+                actual: scales.pasir.actual, 
+                target: scales.pasir.target, 
+                cx: 143,
+                capacity: scaleCapacities.pasir
+              },
+              { 
+                x: 228, 
+                label: "TIMBANGAN BATU", 
+                isPasir: false, 
+                isWeighing: isBatuActive, 
+                isOpen: gateBatuHopperOpen, 
+                clipId: "batu-clip", 
+                fillColor: "#808080", 
+                boxH: 50, 
+                boxY: 385, 
+                actual: scales.batu.actual, 
+                target: scales.batu.target, 
+                cx: 303,
+                capacity: scaleCapacities.batu
+              }
+            ].map((h) => {
+              // Sesuai prinsip loadcell, visual filling dihitung mutlak dari kapasitas maksimal timbangan masing-masing
+              const fillRatio = Math.min(1, Math.max(0, h.actual / h.capacity));
+              const rectH = fillRatio * h.boxH;
+              return (
+                <g 
+                  key={h.label}
+                  className={!isAuto ? "cursor-pointer select-none" : ""}
+                  onClick={(e) => {
+                    if (!isAuto) {
+                      e.stopPropagation();
+                      setSelectedManualDevice({
+                        id: h.isPasir ? "dischargePasir" : "dischargeBatu",
+                        name: h.isPasir ? "PINTU BUANGAN PASIR" : "PINTU BUANGAN BATU",
+                        x: h.cx,
+                        y: 385
+                      });
+                    }
+                  }}
+                >
+                  {/* Hopper Body Background */}
+                  <path d={`M${h.x} 335 L${h.x + 150} 335 L${h.x + 100} 385 L${h.x + 50} 385 Z`} fill="#0f131a" stroke={theme.outline} strokeWidth="1.5" />
+                  
+                  {/* Realtime Smooth Level Fill */}
+                  <rect 
+                    x={h.x} 
+                    y={h.boxY - rectH} 
+                    width="150" 
+                    height={rectH} 
+                    fill={h.fillColor} 
+                    clipPath={`url(#${h.clipId})`} 
+                    opacity="0.8" 
+                  />
+                  
+                  {/* Re-render the outline above of the level fill so it looks clean */}
+                  <path d={`M${h.x} 335 L${h.x + 150} 335 L${h.x + 100} 385 L${h.x + 50} 385 Z`} fill="none" stroke={theme.outline} strokeWidth="1.5" />
+                  <text x={h.x + 75} y="349" textAnchor="middle" fill="#00e5ff" fontSize="8" fontWeight="black" letterSpacing="0.5" className="select-none">TIMBANGAN</text>
+                  <text x={h.x + 75} y="359" textAnchor="middle" fill="#00e5ff" fontSize="8" fontWeight="black" letterSpacing="0.5" className="select-none">{h.isPasir ? "PASIR" : "BATU"}</text>
+                  <text x={h.x + 75} y="371" textAnchor="middle" fill="#fbbf24" fontSize="8.5" fontWeight="bold" className="font-mono select-none">{h.actual.toFixed(0)} kg</text>
+                  <text x={h.x + 75} y="380" textAnchor="middle" fill="#94a3b8" fontSize="6.5" fontWeight="black" className="select-none">TARGET: {h.target.toFixed(0)}</text>
+   
+                  {/* Sliding Gate Pneumatic mechanism */}
+                  <g>
+                    {/* Pneumatic Cylinder actuator */}
+                    <rect x={h.cx - 42} y="380" width="18" height="6" rx="1.5" fill="#475569" stroke={h.isOpen ? theme.flow : "#334155"} strokeWidth="1" />
+                    <line x1={h.cx - 24} y1="383" x2={h.isOpen ? h.cx - 25 : h.cx - 15} y2="383" stroke="#cbd5e1" strokeWidth="2" />
+                    
+                    {/* Slits/Guides */}
+                    <line x1={h.cx - 25} y1="386" x2={h.cx + 25} y2="386" stroke="#475569" strokeWidth="1.5" />
+                    
+                    {/* Sliding Gate Blade */}
+                    <rect 
+                       x={h.isOpen ? h.cx - 35 : h.cx - 15} 
+                       y="385" 
+                       width="30" 
+                       height="3" 
+                       fill={h.isOpen ? theme.flow : theme.red} 
+                       stroke="#000" 
+                       strokeWidth="0.5" 
+                    />
+                    
+                    {/* Gate status and indicators */}
+                    <text x={h.cx} y="402" textAnchor="middle" fill={h.isOpen ? theme.flow : theme.red} fontSize="7.5" fontWeight="black" className="">
+                       {h.isOpen ? "DISCHARGING" : "GATE CLOSED"}
+                    </text>
+                    <circle cx={h.cx} cy="375" r="3.5" fill={h.isOpen ? theme.flow : theme.red} />
+                  </g>
+   
+                  {/* Aggregate Cascade Particles falling from hoppers down to bottom belt conveyor when discharge is active */}
+                  {h.isOpen && (
+                    <g>
+                      {[...Array(8)].map((_, idx) => (
+                        <motion.circle
+                          key={idx}
+                          cx={h.cx - 12 + (idx * 3.2) + Math.sin(idx) * 2}
+                          cy={389}
+                          r={h.isPasir ? 1.5 : 2.5}
+                          fill={h.isPasir ? "#d2b48c" : "#808080"}
+                          animate={{ cy: [389, 415], opacity: [1, 1, 0] }}
+                          transition={{ 
+                            duration: 0.25 + Math.random() * 0.15, 
+                            repeat: Infinity, 
+                            delay: idx * 0.04, 
+                            ease: "linear" 
+                          }}
+                        />
+                      ))}
+                    </g>
+                  )}
+                </g>
+              );
+            });
+          })()}
         </g>
 
         {/* Conveyor */}
-        <g id="conveyor">
+        <g 
+          id="conveyor"
+          className={!isAuto ? "cursor-pointer select-none" : ""}
+          onClick={(e) => {
+            if (!isAuto) {
+              e.stopPropagation();
+              setSelectedManualDevice({
+                id: "conveyorBottom",
+                name: "CONVEYOR BAWAH",
+                x: 232,
+                y: 415
+              });
+            }
+          }}
+        >
           <rect x="68" y="415" width="325" height="15" fill="#111" stroke={theme.outline} strokeWidth="1" />
-          <circle cx="83" cy="422.5" r="7" stroke={theme.outline} strokeWidth="1" />
-          <circle cx="378" cy="422.5" r="7" stroke={theme.outline} strokeWidth="1" />
+          
+          {/* Left Roller with Rotating Dynamo Fan Blades */}
+          <g transform="translate(83, 422.5)">
+            <circle cx="0" cy="0" r="7" fill="#111" stroke={theme.outline} strokeWidth="1" />
+            <g className={isBottomConvRunning ? "spin-cw-active" : ""}>
+              <path d="M 0 0 L -2 -5 A 5 5 0 0 1 2 -5 Z" fill="#00ffd0" opacity="0.85" />
+              <path d="M 0 0 L 5 -2 A 5 5 0 0 1 5 2 Z" fill="#00ffd0" opacity="0.85" />
+              <path d="M 0 0 L 2 5 A 5 5 0 0 1 -2 5 Z" fill="#00ffd0" opacity="0.85" />
+              <path d="M 0 0 L -5 2 A 5 5 0 0 1 -5 -2 Z" fill="#00ffd0" opacity="0.85" />
+            </g>
+            <circle cx="0" cy="0" r="1.5" fill="#181d26" stroke="#00ffd0" strokeWidth="0.5" />
+          </g>
+          
+          {/* Right Roller with Rotating Dynamo Fan Blades */}
+          <g transform="translate(378, 422.5)">
+            <circle cx="0" cy="0" r="7" fill="#111" stroke={theme.outline} strokeWidth="1" />
+            <g className={isBottomConvRunning ? "spin-cw-active" : ""}>
+              <path d="M 0 0 L -2 -5 A 5 5 0 0 1 2 -5 Z" fill="#00ffd0" opacity="0.85" />
+              <path d="M 0 0 L 5 -2 A 5 5 0 0 1 5 2 Z" fill="#00ffd0" opacity="0.85" />
+              <path d="M 0 0 L 2 5 A 5 5 0 0 1 -2 5 Z" fill="#00ffd0" opacity="0.85" />
+              <path d="M 0 0 L -5 2 A 5 5 0 0 1 -5 -2 Z" fill="#00ffd0" opacity="0.85" />
+            </g>
+            <circle cx="0" cy="0" r="1.5" fill="#181d26" stroke="#00ffd0" strokeWidth="0.5" />
+          </g>
+
           <motion.line 
             x1="93" y1="422.5" x2="368" y2="422.5" 
-            stroke={(isRunning && !isPaused && conveyorBottomActive) ? theme.flow : theme.pipe} 
+            stroke={isBottomConvRunning ? theme.flow : theme.pipe} 
             strokeWidth="3" 
             strokeDasharray="5 5"
-            animate={{ strokeDashoffset: (isRunning && !isPaused && conveyorBottomActive) ? [20, 0] : 0 }}
-            transition={{ duration: 0.5, repeat: Infinity, ease: "linear" }}
+            animate={{ strokeDashoffset: isBottomConvRunning ? [20, 0] : [0, 0] }}
+            transition={isBottomConvRunning ? { duration: 0.5, repeat: Infinity, ease: "linear" } : { duration: 0 }}
           />
         </g>
 
         {/* Main Conveyor to Mixer (Feeder) */}
-        <g id="feeder-conveyor">
+        <g 
+          id="feeder-conveyor"
+          className={!isAuto ? "cursor-pointer select-none" : ""}
+          onClick={(e) => {
+            if (!isAuto) {
+              e.stopPropagation();
+              setSelectedManualDevice({
+                id: "conveyorUpper",
+                name: "CONVEYOR ATAS",
+                x: 506,
+                y: 370
+              });
+            }
+          }}
+        >
           {/* Solid Body with Outline - Shifted up corresponding to aggregate conveyor */}
           <line x1="400" y1="450" x2="612.5" y2="290" stroke={theme.outline} strokeWidth="17" strokeLinecap="round" />
           <line x1="400" y1="450" x2="612.5" y2="290" stroke="#111" strokeWidth="15" strokeLinecap="round" />
           
-          {/* Roller Circles integrated into the ends */}
-          <circle cx="400" cy="450" r="8" fill="#111" stroke={theme.outline} strokeWidth="1" />
-          <circle cx="612.5" cy="290" r="8" fill="#111" stroke={theme.outline} strokeWidth="1" />
+          {/* Bottom-Left Roller with Rotating Dynamo Fan Blades */}
+          <g transform="translate(400, 450)">
+            <circle cx="0" cy="0" r="8" fill="#111" stroke={theme.outline} strokeWidth="1" />
+            <g className={isUpperConvRunning ? "spin-cw-active" : ""}>
+              <path d="M 0 0 L -2.5 -5.8 A 6 6 0 0 1 2.5 -5.8 Z" fill="#00ffd0" opacity="0.85" />
+              <path d="M 0 0 L 5.8 -2.5 A 6 6 0 0 1 5.8 2.5 Z" fill="#00ffd0" opacity="0.85" />
+              <path d="M 0 0 L 2.5 5.8 A 6 6 0 0 1 -2.5 5.8 Z" fill="#00ffd0" opacity="0.85" />
+              <path d="M 0 0 L -5.8 2.5 A 6 6 0 0 1 -5.8 -2.5 Z" fill="#00ffd0" opacity="0.85" />
+            </g>
+            <circle cx="0" cy="0" r="2" fill="#181d26" stroke="#00ffd0" strokeWidth="0.5" />
+          </g>
+          
+          {/* Top-Right Roller with Rotating Dynamo Fan Blades */}
+          <g transform="translate(612.5, 290)">
+            <circle cx="0" cy="0" r="8" fill="#111" stroke={theme.outline} strokeWidth="1" />
+            <g className={isUpperConvRunning ? "spin-cw-active" : ""}>
+              <path d="M 0 0 L -2.5 -5.8 A 6 6 0 0 1 2.5 -5.8 Z" fill="#00ffd0" opacity="0.85" />
+              <path d="M 0 0 L 5.8 -2.5 A 6 6 0 0 1 5.8 2.5 Z" fill="#00ffd0" opacity="0.85" />
+              <path d="M 0 0 L 2.5 5.8 A 6 6 0 0 1 -2.5 5.8 Z" fill="#00ffd0" opacity="0.85" />
+              <path d="M 0 0 L -5.8 2.5 A 6 6 0 0 1 -5.8 -2.5 Z" fill="#00ffd0" opacity="0.85" />
+            </g>
+            <circle cx="0" cy="0" r="2" fill="#181d26" stroke="#00ffd0" strokeWidth="0.5" />
+          </g>
           
           <motion.line 
             x1="400" y1="450" x2="612.5" y2="290" 
-            stroke={(isRunning && !isPaused && conveyorUpperActive) ? theme.flow : theme.pipe} 
+            stroke={isUpperConvRunning ? theme.flow : theme.pipe} 
             strokeWidth="3" 
             strokeDasharray="5 5"
-            animate={{ strokeDashoffset: (isRunning && !isPaused && conveyorUpperActive) ? [20, 0] : 0 }}
-            transition={{ duration: 0.5, repeat: Infinity, ease: "linear" }}
+            animate={{ strokeDashoffset: isUpperConvRunning ? [20, 0] : [0, 0] }}
+            transition={isUpperConvRunning ? { duration: 0.5, repeat: Infinity, ease: "linear" } : { duration: 0 }}
           />
         </g>
 
         {/* PHYSICAL AGGREGATE LAYER ON BELTS & CASCADE INTO MIXER */}
         <g id="conveyor-aggregates-layer">
           {/* Non-falling particles (moving on bottom, dropping, or moving up the inclined conveyor) */}
-          {particles.filter(p => p.stage !== 'falling').map((p) => (
+          {particles.filter(p => p.stage !== 'falling' && p.stage !== 'churning_in_mixer').map((p) => (
             <circle
               key={p.id}
               cx={p.x}
@@ -801,28 +1375,126 @@ const ScadaDiagram = ({
 
         {/* --- SILO SECTION (TOP RIGHT) --- */}
         <g id="silos">
+          {/* Total Cumulative Cement Stock Indicator */}
+          {(() => {
+            const totalSemenStock = siloWeights.reduce((a, b) => a + b, 0);
+            const totalSemenTon = totalSemenStock / 1000;
+            return (
+              <g transform="translate(550, 0)">
+                <rect 
+                  x="0" 
+                  y="2" 
+                  width="255" 
+                  height="20" 
+                  rx="3" 
+                  fill="#030712"
+                  stroke="#ef4444" 
+                  strokeWidth="1.2"
+                />
+                <text 
+                  x="127.5" 
+                  y="15" 
+                  textAnchor="middle" 
+                  fill="#ffffff" 
+                  fontSize="9px" 
+                  fontWeight="black"
+                  fontFamily="sans-serif"
+                >
+                  Stok semen : {Math.round(totalSemenStock).toLocaleString('id-ID')} kg ( {Math.round(totalSemenTon)} Ton )
+                </text>
+              </g>
+            );
+          })()}
+
           {[...Array(6)].map((_, i) => {
             const siloX = 550 + i * 45 + 15;
             const siloY = 150;
-            const isThisSiloSelected = selectedSiloNumber === (i + 1);
-            const isThisSiloActive = isSemen && isThisSiloSelected;
+            const isThisSiloSelected = isAuto 
+              ? (selectedSiloNumber === (i + 1))
+              : (activeSiloSemen.match(/Silo\s*(\d+)/i)?.[1] === String(i + 1));
+            const isThisSiloActive = isAuto
+              ? (isSemen && isThisSiloSelected)
+              : (screwSemenActive && isThisSiloSelected);
+            const weightVal = siloWeights[i] ?? 0;
+            const maxCap = 120000;
+            const fillRatio = Math.min(1, Math.max(0, weightVal / maxCap));
+            
+            // Draw silo fill heights
+            const bodyHeight = 100;
+            const fillHeight = bodyHeight * fillRatio;
+            const fillY = 130 - fillHeight;
             
             return (
-              <g key={i}>
-                {/* Cylinder main body */}
+              <g 
+                key={i}
+                className={!isAuto ? "cursor-pointer select-none" : ""}
+                onClick={(e) => {
+                  if (!isAuto) {
+                    e.stopPropagation();
+                    if (onManualDeviceToggle) {
+                      onManualDeviceToggle('selectSilo', i + 1 as any);
+                    }
+                    setSelectedManualDevice({
+                      id: `silo${i + 1}`,
+                      name: `SEMEN SILO ${i + 1}`,
+                      x: 550 + i * 45 + 15,
+                      y: 70
+                    });
+                  }
+                }}
+              >
+                {/* Cylinder background */}
                 <rect 
                   x={550 + i * 45} 
                   y="30" 
                   width="30" 
                   height="100" 
-                  fill={isThisSiloSelected ? "#0e1a2f" : "#0f1419"} 
+                  fill="#050a12" 
+                />
+                
+                {/* Cylinder filled level state */}
+                {fillRatio > 0 && (
+                  <rect 
+                    x={550 + i * 45} 
+                    y={fillY} 
+                    width="30" 
+                    height={fillHeight} 
+                    fill={isThisSiloSelected ? "#10b981" : "#475569"} 
+                    opacity={isThisSiloActive ? 0.85 : 0.6}
+                    className={isThisSiloActive ? "animate-[pulse_1.5s_infinite]" : ""}
+                  />
+                )}
+                
+                {/* Cylinder main body outline */}
+                <rect 
+                  x={550 + i * 45} 
+                  y="30" 
+                  width="30" 
+                  height="100" 
+                  fill="none" 
                   stroke={isThisSiloSelected ? "#10b981" : theme.outline} 
                   strokeWidth={isThisSiloSelected ? "1.5" : "1"} 
                 />
-                {/* Cone tip funnel */}
+
+                {/* Cone tip funnel background */}
                 <path 
                   d={`M${550 + i * 45} 130 L${550 + i * 45 + 15} 150 L${550 + i * 45 + 30} 130`} 
-                  fill={isThisSiloSelected ? "#0e1a2f" : "#0f1419"} 
+                  fill="#050a12"
+                />
+
+                {/* Cone tip filled level */}
+                {weightVal > 0 && (
+                  <path 
+                    d={`M${550 + i * 45 + (15 - 15 * Math.min(1, weightVal / 5000))} ${130 + (20 * (1 - Math.min(1, weightVal / 5000)))} L${550 + i * 45 + 15} 150 L${550 + i * 45 + 15 + (15 * Math.min(1, weightVal / 5000))} ${130 + (20 * (1 - Math.min(1, weightVal / 5000)))}`} 
+                    fill={isThisSiloSelected ? "#10b981" : "#475569"} 
+                    opacity={isThisSiloActive ? 0.85 : 0.6}
+                  />
+                )}
+
+                {/* Cone tip funnel outline */}
+                <path 
+                  d={`M${550 + i * 45} 130 L${550 + i * 45 + 15} 150 L${550 + i * 45 + 30} 130`} 
+                  fill="none" 
                   stroke={isThisSiloSelected ? "#10b981" : theme.outline} 
                   strokeWidth={isThisSiloSelected ? "1.5" : "1"} 
                 />
@@ -834,8 +1506,8 @@ const ScadaDiagram = ({
                   stroke={isThisSiloActive ? theme.flow : theme.pipe} 
                   strokeWidth="1.5"
                   strokeDasharray="4 4"
-                  animate={{ strokeDashoffset: isThisSiloActive ? [20, 0] : 0 }}
-                  transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                  animate={{ strokeDashoffset: isThisSiloActive ? [20, 0] : [0, 0] }}
+                  transition={isThisSiloActive ? { duration: 1, repeat: Infinity, ease: "linear" } : { duration: 0 }}
                 />
 
                 {/* Butterfly Valve at cone tip */}
@@ -845,6 +1517,7 @@ const ScadaDiagram = ({
                     fill={isThisSiloActive ? theme.flow : theme.red} 
                     stroke="#000" 
                     strokeWidth="1" 
+                    className={isThisSiloActive ? "animate-pulse" : ""}
                   />
                   <circle r="2" fill="#000" />
                 </g>
@@ -863,14 +1536,28 @@ const ScadaDiagram = ({
                 
                 <text 
                   x={siloX} 
-                  y="55" 
+                  y="185" 
                   textAnchor="middle" 
-                  fill={isThisSiloActive ? "#00ffd0" : isThisSiloSelected ? "#34d399" : "#3d5a80"} 
-                  fontSize="8.5" 
+                  fill={isThisSiloSelected ? "#00ffd0" : "#94a3b8"} 
+                  fontSize="7px" 
                   fontWeight="black"
                 >
-                  {isThisSiloActive ? scales.semen.actual.toFixed(0) : "0.0"}
+                  {weightVal.toLocaleString('id-ID')} Kg
                 </text>
+                
+                {/* Active Weighing overlay value inside Silo body */}
+                {isThisSiloActive && (
+                  <text 
+                    x={siloX} 
+                    y="55" 
+                    textAnchor="middle" 
+                    fill="#00ffd0" 
+                    fontSize="8.5" 
+                    fontWeight="black"
+                  >
+                    {scales.semen.actual.toFixed(0)}
+                  </text>
+                )}
               </g>
             );
           })}
@@ -890,7 +1577,8 @@ const ScadaDiagram = ({
           
           {/* Cement Level Filling Animation */}
           {(() => {
-            const r = Math.min(1, Math.max(0, scales.semen.actual / (scales.semen.target || 1)));
+            // Sesuai prinsip loadcell, visual filling dihitung mutlak dari kapasitas maksimal timbangan semen
+            const r = Math.min(1, Math.max(0, scales.semen.actual / scaleCapacities.semen));
             const rectH = r * 72;
             return (
               <rect 
@@ -919,16 +1607,31 @@ const ScadaDiagram = ({
           <text x="672.5" y="243" textAnchor="middle" fill={theme.outline} fontSize="7" fontWeight="black" letterSpacing="0.5">TIMBANGAN</text>
           <text x="672.5" y="253" textAnchor="middle" fill={theme.outline} fontSize="7" fontWeight="black" letterSpacing="0.5">SEMEN</text>
           
-          <circle cx="672.5" cy="292" r="8" fill="#0a0f14" stroke={theme.outline} strokeWidth="1" />
-          <circle cx="672.5" cy="292" r="5" fill={gateSemenHopperOpen ? theme.flow : theme.red} />
+          <g 
+            className={!isAuto ? "cursor-pointer select-none" : ""}
+            onClick={(e) => {
+              if (!isAuto) {
+                e.stopPropagation();
+                setSelectedManualDevice({
+                  id: "dischargeSemen",
+                  name: "VALVE DISCHARGE SEMEN",
+                  x: 672.5,
+                  y: 292
+                });
+              }
+            }}
+          >
+            <circle cx="672.5" cy="292" r="8" fill="#0a0f14" stroke={theme.outline} strokeWidth="1" />
+            <circle cx="672.5" cy="292" r="5" fill={gateSemenHopperOpen ? theme.flow : theme.red} />
+          </g>
           
           {/* Output to mixer */}
           <motion.path 
             d="M672.5 300 V320"
             fill="none" stroke={gateSemenHopperOpen ? theme.flow : theme.pipe} strokeWidth="3"
             strokeDasharray="4 4"
-            animate={{ strokeDashoffset: gateSemenHopperOpen ? [20, 0] : 0 }}
-            transition={{ duration: 0.8, repeat: Infinity, ease: "linear" }}
+            animate={{ strokeDashoffset: gateSemenHopperOpen ? [20, 0] : [0, 0] }}
+            transition={gateSemenHopperOpen ? { duration: 0.8, repeat: Infinity, ease: "linear" } : { duration: 0 }}
           />
 
           {/* Animated Gray Cement Dust Plume inside mixer feeding funnel */}
@@ -970,7 +1673,21 @@ const ScadaDiagram = ({
             const isTankAir = t.label === "TANK AIR";
             const isOpen = isTankAir ? isWaterOpen : isAdditiveOpen;
             return (
-              <g key={t.label}>
+              <g 
+                key={t.label}
+                className={(!isAuto && isTankAir) ? "cursor-pointer select-none" : ""}
+                onClick={(e) => {
+                  if (!isAuto && isTankAir) {
+                    e.stopPropagation();
+                    setSelectedManualDevice({
+                      id: "valveIsiAir",
+                      name: "VALVE WATER INLET",
+                      x: t.x + 20,
+                      y: 80
+                    });
+                  }
+                }}
+              >
                 <ellipse cx={t.x + 20} cy="40" rx="20" ry="8" fill="#2c3e50" stroke={theme.outline} />
                 <rect x={t.x} y="40" width="40" height="60" fill="#2c3e50" stroke={theme.outline} />
                 <ellipse cx={t.x + 20} cy="100" rx="20" ry="8" fill="#2c3e50" stroke={theme.outline} />
@@ -1009,8 +1726,8 @@ const ScadaDiagram = ({
                   stroke={isOpen ? theme.flow : theme.pipe} 
                   strokeWidth="1.5"
                   strokeDasharray="4 4"
-                  animate={{ strokeDashoffset: isOpen ? [20, 0] : 0 }}
-                  transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                  animate={{ strokeDashoffset: isOpen ? [20, 0] : [0, 0] }}
+                  transition={isOpen ? { duration: 1, repeat: Infinity, ease: "linear" } : { duration: 0 }}
                 />
               </g>
             );
@@ -1031,7 +1748,8 @@ const ScadaDiagram = ({
           
           {/* Water Level Filling Animation */}
           {(() => {
-            const r = Math.min(1, Math.max(0, scales.air.actual / (scales.air.target || 1)));
+            // Sesuai prinsip loadcell, visual filling dihitung mutlak dari kapasitas maksimal timbangan air & aditif
+            const r = Math.min(1, Math.max(0, scales.air.actual / scaleCapacities.air));
             const rectH = r * 58;
             return (
               <rect 
@@ -1060,16 +1778,31 @@ const ScadaDiagram = ({
           <text x="800" y="240" textAnchor="middle" fill={theme.outline} fontSize="7" fontWeight="black">TIMBANGAN</text>
           <text x="800" y="250" textAnchor="middle" fill={theme.outline} fontSize="7" fontWeight="black">AIR & ADITIF</text>
           
-          <circle cx="800" cy="278" r="7" fill="#0a0f14" stroke={theme.outline} strokeWidth="1" />
-          <circle cx="800" cy="278" r="4" fill={gateWaterHopperOpen ? theme.flow : theme.red} />
+          <g 
+            className={!isAuto ? "cursor-pointer select-none" : ""}
+            onClick={(e) => {
+              if (!isAuto) {
+                e.stopPropagation();
+                setSelectedManualDevice({
+                  id: "dischargeAir",
+                  name: "VALVE DISCHARGE AIR",
+                  x: 800,
+                  y: 278
+                });
+              }
+            }}
+          >
+            <circle cx="800" cy="278" r="7" fill="#0a0f14" stroke={theme.outline} strokeWidth="1" />
+            <circle cx="800" cy="278" r="4" fill={isWaterDischargeOpen ? theme.flow : theme.red} className={isWaterDischargeOpen ? "animate-pulse" : ""} />
+          </g>
           
           {/* Outlet water pipeline discharging downstream - routed above 300 to cleanly bypass the integrated PLC panel */}
           <motion.path 
             d="M800 285 V292 H700 V320"
             fill="none" stroke={gateWaterHopperOpen ? theme.flow : theme.pipe} strokeWidth="2.5"
             strokeDasharray="4 4"
-            animate={{ strokeDashoffset: gateWaterHopperOpen ? [20, 0] : 0 }}
-            transition={{ duration: 0.8, repeat: Infinity, ease: "linear" }}
+            animate={{ strokeDashoffset: gateWaterHopperOpen ? [20, 0] : [0, 0] }}
+            transition={gateWaterHopperOpen ? { duration: 0.8, repeat: Infinity, ease: "linear" } : { duration: 0 }}
           />
 
           {/* Water Discharge Droplets entering mixer */}
@@ -1100,63 +1833,648 @@ const ScadaDiagram = ({
           {/* Input Funnel - Centered over mixer (677.5) and wide enough to cover conveyor and hopper */}
           <path d="M607.5 320 L747.5 320 L717.5 350 L637.5 350 Z" fill="#222" stroke={theme.outline} strokeWidth="1.5" />
           
-          {/* Mixer Frame Body Box */}
-          <rect x="577.5" y="350" width="200" height="100" rx="4" fill="#1e293b" stroke={theme.outline} strokeWidth="2" />
+          {/* Dynamic material mass rising with aggregate weight in Waiting Hopper mode */}
+          {waitingHopperEnabled && waitingHopperWeight > 0 && (() => {
+            // Sesuai prinsip loadcell, visual filling dihitung mutlak dari kapasitas fisik waiting hopper
+            const ratio = Math.min(1.0, waitingHopperWeight / scaleCapacitiesWaitingHopper);
+            const h = ratio * 26;
+            return (
+              <path 
+                d={`M ${637.5 - h} ${350 - h} L ${717.5 + h} ${350 - h} L 717.5 350 L 637.5 350 Z`} 
+                fill="#8a7c6f" 
+                opacity="0.85" 
+              />
+            );
+          })()}
 
-          {/* Swirling wet concrete paste background layer if mixer is loading or mixing */}
-          {isMixerRotating && (
-            <motion.rect 
-              x="581.5" 
-              y="370" 
-              width="192" 
-              height="74" 
-              rx="2" 
-              fill="#4b5563" 
-              opacity="0.25"
-              animate={{ opacity: [0.2, 0.35, 0.2] }}
-              transition={{ duration: 1.5, repeat: Infinity }}
+          {/* Double Pneumatic Hinged Gate Flapper animation */}
+          <g 
+            className={!isAuto ? "cursor-pointer select-none" : ""}
+            onClick={(e) => {
+              if (!isAuto) {
+                e.stopPropagation();
+                setSelectedManualDevice({
+                  id: "waitingHopperGate",
+                  name: "WAITING HOPPER GATE",
+                  x: 677.5,
+                  y: 350
+                });
+              }
+            }}
+          >
+            <motion.line 
+              x1="637.5" y1="350" 
+              x2={waitingHopperGateOpen ? "637.5" : "677.5"} 
+              y2={waitingHopperGateOpen ? "362" : "350"} 
+              stroke={waitingHopperGateOpen ? "#22c55e" : "#ef4444"} 
+              strokeWidth="3.5" 
             />
+            <motion.line 
+              x1="717.5" y1="350" 
+              x2={waitingHopperGateOpen ? "717.5" : "677.5"} 
+              y2={waitingHopperGateOpen ? "362" : "350"} 
+              stroke={waitingHopperGateOpen ? "#22c55e" : "#ef4444"} 
+              strokeWidth="3.5" 
+            />
+          </g>
+
+          {/* Floating live digital HMI tag bubble for Waiting Hopper Status */}
+          {waitingHopperEnabled && (
+            <g transform="translate(677.5, 292)" className="select-none pointer-events-none">
+              {/* Pulsating outline box */}
+              <rect 
+                x="-52" y="-12" width="104" height="24" rx="6" 
+                fill="#0f172a" 
+                stroke={
+                  waitingHopperState === 'WAITING_HOPPER_FILLING' ? '#f59e0b' :
+                  waitingHopperState === 'WAITING_HOPPER_READY' ? '#06b6d4' :
+                  waitingHopperState === 'WAITING_HOPPER_DISCHARGING' ? '#22c55e' :
+                  waitingHopperState === 'WAITING_HOPPER_EMPTY' ? '#ef4444' : '#64748b'
+                }
+                strokeWidth="1.5"
+                className={
+                  waitingHopperState === 'WAITING_HOPPER_FILLING' ? 'animate-pulse' :
+                  waitingHopperState === 'WAITING_HOPPER_DISCHARGING' ? 'animate-bounce' : ''
+                }
+              />
+              {/* Base overlay outline */}
+              <rect 
+                x="-52" y="-12" width="104" height="24" rx="6" 
+                fill="transparent" 
+                stroke={
+                  waitingHopperState === 'WAITING_HOPPER_FILLING' ? '#f59e0b' :
+                  waitingHopperState === 'WAITING_HOPPER_READY' ? '#06b6d4' :
+                  waitingHopperState === 'WAITING_HOPPER_DISCHARGING' ? '#22c55e' :
+                  waitingHopperState === 'WAITING_HOPPER_EMPTY' ? '#ef4444' : '#475569'
+                }
+                strokeWidth="1"
+              />
+              <text 
+                textAnchor="middle" y="-2" 
+                fill={
+                  waitingHopperState === 'WAITING_HOPPER_FILLING' ? '#fbbf24' :
+                  waitingHopperState === 'WAITING_HOPPER_READY' ? '#22d3ee' :
+                  waitingHopperState === 'WAITING_HOPPER_DISCHARGING' ? '#4ade80' :
+                  waitingHopperState === 'WAITING_HOPPER_EMPTY' ? '#f87171' : '#94a3b8'
+                }
+                className="font-mono font-black tracking-widest text-[7px]"
+              >
+                {
+                  waitingHopperState === 'WAITING_HOPPER_FILLING' ? 'CO-FILLING' :
+                  waitingHopperState === 'WAITING_HOPPER_READY' ? 'WH: READY' :
+                  waitingHopperState === 'WAITING_HOPPER_DISCHARGING' ? 'DISCHARGING' :
+                  waitingHopperState === 'WAITING_HOPPER_EMPTY' ? 'WH: EMPTY' : 'WH: IDLE'
+                }
+              </text>
+              <text textAnchor="middle" y="7" fill="#64748b" className="font-mono text-[5.5px] font-black">
+                {Math.round(waitingHopperWeight)} Kg
+              </text>
+            </g>
           )}
+          
+          {/* Mixer Frame Body Box */}
+          <rect x="577.5" y="350" width="200" height="100" rx="4" fill="#050914" stroke={theme.outline} strokeWidth="2" />
+
+          {/* Real-time Dynamic Concrete Level and Churn Animations inside Mixer Area */}
+          {(() => {
+            return (
+              <g clipPath="url(#mixer-clip)">
+                {/* Flowing Water Effect inside the Mixer - Distributed Spray Bar */}
+                {gateWaterHopperOpen && (
+                  <g>
+                    {/* 1. Evenly distributed vertical spray streams running the entire length of the water pipe */}
+                    {[...Array(18)].map((_, i) => {
+                      const streamX = 585 + (i * 10.6); // Spaced perfectly across the 190px top span of mixer
+                      const speed = 0.45 + (i % 3) * 0.12;
+                      const delay = (i % 4) * 0.08;
+                      return (
+                        <motion.line
+                          key={`mixer-water-stream-evenly-${i}`}
+                          x1={streamX}
+                          y1={352}
+                          x2={streamX}
+                          y2={surfaceY}
+                          stroke="#38bdf8"
+                          strokeWidth={1.2 + (i % 2) * 0.8}
+                          strokeDasharray="6 8"
+                          opacity={0.75}
+                          animate={{
+                            strokeDashoffset: [0, -28]
+                          }}
+                          transition={{
+                            duration: speed,
+                            repeat: Infinity,
+                            ease: "linear",
+                            delay: delay
+                          }}
+                        />
+                      );
+                    })}
+
+                    {/* Additional delicate misty secondary spray threads for dense, high-volume visual feel */}
+                    {[...Array(12)].map((_, i) => {
+                      const streamX = 590 + (i * 15.6);
+                      const speed = 0.35 + (i % 2) * 0.1;
+                      const delay = i * 0.06;
+                      return (
+                        <motion.line
+                          key={`mixer-water-spray-dense-${i}`}
+                          x1={streamX}
+                          y1={352}
+                          x2={streamX}
+                          y2={surfaceY}
+                          stroke="rgba(56, 189, 248, 0.45)"
+                          strokeWidth="0.8"
+                          strokeDasharray="4 12"
+                          animate={{
+                            strokeDashoffset: [0, -32]
+                          }}
+                          transition={{
+                            duration: speed,
+                            repeat: Infinity,
+                            ease: "linear",
+                            delay: delay
+                          }}
+                        />
+                      );
+                    })}
+
+                    {/* 2. Multiple distributed splash ripples where water spray hits the surface */}
+                    {[595, 630, 665, 700, 735, 760].map((rippleX, idx) => {
+                      return (
+                        <g key={`water-ripple-point-${idx}`}>
+                          <motion.ellipse
+                            cx={rippleX}
+                            cy={surfaceY}
+                            rx="10"
+                            ry="3"
+                            fill="none"
+                            stroke="#e0f2fe"
+                            strokeWidth="1"
+                            animate={{
+                              rx: [1, 20],
+                              ry: [0.2, 5],
+                              opacity: [1, 0]
+                            }}
+                            transition={{
+                              duration: 0.7,
+                              repeat: Infinity,
+                              ease: "easeOut",
+                              delay: idx * 0.12
+                            }}
+                          />
+                          <motion.ellipse
+                            cx={rippleX}
+                            cy={surfaceY}
+                            rx="10"
+                            ry="3"
+                            fill="none"
+                            stroke="#38bdf8"
+                            strokeWidth="0.75"
+                            animate={{
+                              rx: [2, 14],
+                              ry: [0.5, 3.5],
+                              opacity: [0.9, 0]
+                            }}
+                            transition={{
+                              duration: 0.7,
+                              repeat: Infinity,
+                              ease: "easeOut",
+                              delay: idx * 0.12 + 0.25
+                            }}
+                          />
+                        </g>
+                      );
+                    })}
+
+                    {/* 3. Horizontal shifting water currents and highlights across the entire width */}
+                    <motion.path
+                      d={`M 582 ${surfaceY} Q 615 ${surfaceY - 3} 645 ${surfaceY} Q 675 ${surfaceY + 3} 705 ${surfaceY} Q 735 ${surfaceY - 3} 770 ${surfaceY}`}
+                      fill="none"
+                      stroke="#0284c7"
+                      strokeWidth="2.5"
+                      opacity="0.7"
+                      strokeDasharray="18 18"
+                      animate={{
+                        strokeDashoffset: [0, 50]
+                      }}
+                      transition={{
+                        duration: 1.4,
+                        repeat: Infinity,
+                        ease: "linear"
+                      }}
+                    />
+                    <motion.path
+                      d={`M 582 ${surfaceY} Q 615 ${surfaceY + 2} 645 ${surfaceY} Q 675 ${surfaceY - 2} 705 ${surfaceY} Q 735 ${surfaceY + 2} 770 ${surfaceY}`}
+                      fill="none"
+                      stroke="#38bdf8"
+                      strokeWidth="1.5"
+                      opacity="0.75"
+                      strokeDasharray="12 14"
+                      animate={{
+                        strokeDashoffset: [40, -10]
+                      }}
+                      transition={{
+                        duration: 1.1,
+                        repeat: Infinity,
+                        ease: "linear"
+                      }}
+                    />
+
+                    {/* 4. Fine water splash beads distributed across wide spacing points escaping from the impact line */}
+                    {[595, 630, 665, 700, 735, 760].map((splashX, idx) => (
+                      <g key={`sparkles-${idx}`}>
+                        {[...Array(4)].map((_, i) => {
+                          const angle = ((i + 1) * (Math.PI / 5)) - (Math.PI / 2);
+                          const velocityX = Math.cos(angle) * (6 + Math.random() * 12);
+                          const velocityY = Math.sin(angle) * (10 + Math.random() * 16);
+                          return (
+                            <motion.circle
+                              key={`bead-${idx}-${i}`}
+                              cx={splashX}
+                              cy={surfaceY - 1}
+                              r={0.8 + Math.random() * 1.2}
+                              fill="#bae6fd"
+                              opacity={0.85}
+                              animate={{
+                                x: [0, velocityX],
+                                y: [0, velocityY],
+                                opacity: [1, 0.8, 0]
+                              }}
+                              transition={{
+                                duration: 0.35 + Math.random() * 0.15,
+                                repeat: Infinity,
+                                ease: "easeOut",
+                                delay: i * 0.05 + idx * 0.03
+                              }}
+                            />
+                          );
+                        })}
+                      </g>
+                    ))}
+                  </g>
+                )}
+
+                {/* Cement Dust Smoke Cloud/Particles inside Mixer */}
+                {gateSemenHopperOpen && (
+                  <g>
+                    {/* Soft ambient swirling dust plumes using our custom dust-blur filter */}
+                    <motion.ellipse
+                      cx="635"
+                      cy="385"
+                      rx="40"
+                      ry="28"
+                      fill="#9cb4c2"
+                      filter="url(#dust-blur)"
+                      opacity={0.35}
+                      animate={{
+                        scale: [1, 1.2, 0.95],
+                        x: [-10, 15, -10],
+                        y: [-5, 5, -5],
+                        rotate: [0, 8, -6, 0]
+                      }}
+                      transition={{
+                        duration: 3.5,
+                        repeat: Infinity,
+                        ease: "easeInOut"
+                      }}
+                    />
+                    <motion.ellipse
+                      cx="715"
+                      cy="390"
+                      rx="45"
+                      ry="32"
+                      fill="#819ba8"
+                      filter="url(#dust-blur)"
+                      opacity={0.3}
+                      animate={{
+                        scale: [1.1, 0.9, 1.15],
+                        x: [10, -12, 10],
+                        y: [4, -6, 4],
+                        rotate: [15, -10, 15]
+                      }}
+                      transition={{
+                        duration: 4.2,
+                        repeat: Infinity,
+                        ease: "easeInOut",
+                        delay: 0.5
+                      }}
+                    />
+                    <motion.ellipse
+                      cx="675"
+                      cy="375"
+                      rx="55"
+                      ry="32"
+                      fill="#a5bcc9"
+                      filter="url(#dust-blur)"
+                      opacity={0.25}
+                      animate={{
+                        scale: [0.95, 1.1, 0.95],
+                        x: [-6, 8, -6],
+                        y: [6, -4, 6]
+                      }}
+                      transition={{
+                        duration: 2.8,
+                        repeat: Infinity,
+                        ease: "easeInOut",
+                        delay: 0.9
+                      }}
+                    />
+
+                    {/* Falling fine cement powder streams and speckles falling onto the mixture */}
+                    {[...Array(14)].map((_, i) => {
+                      const xPos = 600 + (i * 12.5); // Spaced across the mixer top
+                      const delay = (i % 4) * 0.12;
+                      const speed = 0.5 + (i % 3) * 0.15;
+                      return (
+                        <g key={`cement-stream-${i}`}>
+                          {/* Falling stream thread */}
+                          <motion.line
+                            x1={xPos}
+                            y1={352}
+                            x2={xPos}
+                            y2={surfaceY}
+                            stroke="#8ea4b0"
+                            strokeWidth="1.2"
+                            strokeDasharray="4 8"
+                            opacity={0.55}
+                            animate={{
+                              strokeDashoffset: [0, -20]
+                            }}
+                            transition={{
+                              duration: speed,
+                              repeat: Infinity,
+                              ease: "linear",
+                              delay: delay
+                            }}
+                          />
+                          {/* Drifting powder speckle */}
+                          <motion.circle
+                            cx={xPos + Math.sin(i) * 3}
+                            cy={352}
+                            r={0.8 + (i % 2) * 0.5}
+                            fill="#cbd5e1"
+                            opacity={0.7}
+                            animate={{
+                              cy: [352, surfaceY],
+                              x: [xPos + Math.sin(i) * 3, xPos + (Math.sin(i) * 3) + (Math.cos(i) * 8)],
+                              opacity: [0.8, 0.9, 0]
+                            }}
+                            transition={{
+                              duration: speed * 1.5,
+                              repeat: Infinity,
+                              ease: "easeIn",
+                              delay: delay
+                            }}
+                          />
+                        </g>
+                      );
+                    })}
+                  </g>
+                )}
+
+                {visualConcreteHeight > 0 && (
+                  <>
+                    {/* Continuous Volumetric Concrete Mass (Satisfies 3.5 m³ Scale Level) */}
+                    <g transform={`translate(579.5, ${surfaceY})`}>
+                      {/* Background wave - deep shadow concrete slurry */}
+                      <motion.path
+                        d="M -100,0 Q -75,-6 -50,0 Q -25,6 0,0 Q 25,-6 50,0 Q 75,6 100,0 Q 125,-6 150,0 Q 175,6 200,0 Q 225,-6 250,0 Q 275,6 300,0 L 300,200 L -100,200 Z"
+                        fill="url(#concrete-bg-gradient)"
+                        animate={isMixerRotating ? {
+                          x: [-40, 40],
+                          y: [-3, 3]
+                        } : { x: 0, y: 0 }}
+                        transition={isMixerRotating ? {
+                          x: { repeat: Infinity, repeatType: "mirror", duration: 1.8, ease: "linear" },
+                          y: { repeat: Infinity, repeatType: "mirror", duration: 0.9, ease: "easeInOut" }
+                        } : undefined}
+                      />
+
+                      {/* Foreground wave - primary rich wet concrete mass */}
+                      <motion.path
+                        d="M -100,0 Q -75,6 -50,0 Q -25,-6 0,0 Q 25,6 50,0 Q 75,-6 100,0 Q 125,6 150,0 Q 175,-6 200,0 Q 225,6 250,0 Q 275,-6 300,0 L 300,200 L -100,200 Z"
+                        fill="url(#concrete-gradient)"
+                        animate={isMixerRotating ? {
+                          x: [30, -30],
+                          y: [3, -3]
+                        } : { x: 0, y: 0 }}
+                        transition={isMixerRotating ? {
+                          x: { repeat: Infinity, repeatType: "mirror", duration: 1.4, ease: "linear" },
+                          y: { repeat: Infinity, repeatType: "mirror", duration: 0.7, ease: "easeInOut" }
+                        } : undefined}
+                      />
+                    </g>
+
+                    {/* Industrial heavy slurry details & bubbles in the main mix */}
+                    {isMixerRotating && !isPaused && (
+                      <g opacity="0.65">
+                        <motion.circle cx="605" cy={surfaceY + 16} r="2.5" fill="#303541" animate={{ y: [0, -6, 0], x: [0, 3, 0] }} transition={{ repeat: Infinity, duration: 1.6 }} />
+                        <motion.circle cx="635" cy={surfaceY + 10} r="1.8" fill="#505868" animate={{ y: [0, 5, 0] }} transition={{ repeat: Infinity, duration: 1.9 }} />
+                        <motion.circle cx="675" cy={surfaceY + 22} r="3.0" fill="#292e3a" animate={{ y: [0, -8, 0], x: [0, -4, 0] }} transition={{ repeat: Infinity, duration: 2.2 }} />
+                        <motion.circle cx="705" cy={surfaceY + 14} r="2.0" fill="#464e5d" animate={{ y: [0, 4, 0] }} transition={{ repeat: Infinity, duration: 1.4 }} />
+                        <motion.circle cx="745" cy={surfaceY + 18} r="2.8" fill="#323846" animate={{ y: [0, -4, 0], x: [0, 3, 0] }} transition={{ repeat: Infinity, duration: 1.8 }} />
+                      </g>
+                    )}
+                  </>
+                )}
+              </g>
+            );
+          })()}
+
+          {/* Real-time Mixer Volume Digital HMI Segment Label */}
+          <g transform="translate(677.5, 368)">
+            <rect x="-48" y="-10" width="96" height="15" rx="3.5" fill="rgba(6, 11, 23, 0.85)" stroke="rgba(0, 229, 255, 0.45)" strokeWidth="0.85" />
+            <text textAnchor="middle" y="0" fill="#00ffd0" className="font-mono text-[7.5px] font-bold">
+              {currentMixerVolume.toFixed(2)} m³ / {mixerMaxMixing.toFixed(1)} m³
+            </text>
+            <text textAnchor="middle" y="8" fill="#8892b0" className="font-sans text-[5.5px] font-bold tracking-wide">
+              MIXER FILL LEVEL: {Math.round(mixerFillPercent)}%
+            </text>
+          </g>
           
           {/* Twin Shaft Animation */}
           <g id="twin-shafts" opacity={isMixerRotating ? 1 : 0.3}>
             {/* Left Shaft */}
             <g transform="translate(637.5, 400)">
-              <circle r="25" fill="none" stroke="rgba(0,0,0,0.2)" strokeWidth="1" />
+              <circle r="44" fill="none" stroke="rgba(0, 229, 255, 0.15)" strokeWidth="1" />
               <g className={isMixerRotating ? "spin-ccw-active" : ""}>
-                <line x1="-22" y1="0" x2="22" y2="0" stroke="#00e5ff" strokeWidth="3" opacity="0.8" />
-                <line x1="0" y1="-22" x2="0" y2="22" stroke="#00e5ff" strokeWidth="3" opacity="0.8" />
+                <line x1="-41" y1="0" x2="41" y2="0" stroke="#00e5ff" strokeWidth="3.5" opacity="0.85" />
+                <line x1="0" y1="-41" x2="0" y2="41" stroke="#00e5ff" strokeWidth="3.5" opacity="0.85" />
                 {/* Paddle Profiles */}
-                <rect x="-24" y="-3" width="6" height="6" fill="#00e5ff" rx="1" />
-                <rect x="18" y="-3" width="6" height="6" fill="#00e5ff" rx="1" />
-                <rect x="-3" y="-24" width="6" height="6" fill="#00e5ff" rx="1" />
-                <rect x="-3" y="18" width="6" height="6" fill="#00e5ff" rx="1" />
-                <circle r="5" fill="#334155" />
+                <rect x="-44" y="-3.5" width="7" height="7" fill="#00e5ff" rx="1.5" />
+                <rect x="37" y="-3.5" width="7" height="7" fill="#00e5ff" rx="1.5" />
+                <rect x="-3.5" y="-44" width="7" height="7" fill="#00e5ff" rx="1.5" />
+                <rect x="-3.5" y="37" width="7" height="7" fill="#00e5ff" rx="1.5" />
+                <circle r="7" fill="#334155" stroke="#00e5ff" strokeWidth="1" />
               </g>
             </g>
             {/* Right Shaft */}
             <g transform="translate(717.5, 400)">
-              <circle r="25" fill="none" stroke="rgba(0,0,0,0.2)" strokeWidth="1" />
-              <g className={isMixerRotating ? "spin-cw-active" : ""}>
-                <line x1="-22" y1="0" x2="22" y2="0" stroke="#00e5ff" strokeWidth="3" opacity="0.8" />
-                <line x1="0" y1="-22" x2="0" y2="22" stroke="#00e5ff" strokeWidth="3" opacity="0.8" />
-                {/* Paddle Profiles */}
-                <rect x="-24" y="-3" width="6" height="6" fill="#00e5ff" rx="1" />
-                <rect x="18" y="-3" width="6" height="6" fill="#00e5ff" rx="1" />
-                <rect x="-3" y="-24" width="6" height="6" fill="#00e5ff" rx="1" />
-                <rect x="-3" y="18" width="6" height="6" fill="#00e5ff" rx="1" />
-                <circle r="5" fill="#334155" />
+              <circle r="44" fill="none" stroke="rgba(0, 229, 255, 0.15)" strokeWidth="1" />
+              {/* Offset right shaft by 45 degrees so the elongated blades intermesh realistically rather than colliding */}
+              <g transform="rotate(45)">
+                <g className={isMixerRotating ? "spin-cw-active" : ""}>
+                  <line x1="-41" y1="0" x2="41" y2="0" stroke="#00e5ff" strokeWidth="3.5" opacity="0.85" />
+                  <line x1="0" y1="-41" x2="0" y2="41" stroke="#00e5ff" strokeWidth="3.5" opacity="0.85" />
+                  {/* Paddle Profiles */}
+                  <rect x="-44" y="-3.5" width="7" height="7" fill="#00e5ff" rx="1.5" />
+                  <rect x="37" y="-3.5" width="7" height="7" fill="#00e5ff" rx="1.5" />
+                  <rect x="-3.5" y="-44" width="7" height="7" fill="#00e5ff" rx="1.5" />
+                  <rect x="-3.5" y="37" width="7" height="7" fill="#00e5ff" rx="1.5" />
+                  <circle r="7" fill="#334155" stroke="#00e5ff" strokeWidth="1" />
+                </g>
               </g>
             </g>
           </g>
 
+          {/* Active Concrete Churning Splashes & Slurry Overlay (Rendered ON TOP of shafts to immerse them) */}
+          {(() => {
+            if (!hasMaterial) return null;
 
-          {/* Gear/Motor on side */}
-          <circle cx="562.5" cy="400" r="15" fill="#333" stroke={theme.outline} />
-          <circle cx="562.5" cy="400" r="5" fill={isMixerRotating ? theme.flow : "#555"} />
+            return (
+              <g clipPath="url(#mixer-clip)">
+                {/* Wet cement slurry splashing drops popping off the surface during rotation */}
+                {isMixerRotating && !isPaused && [...Array(12)].map((_, idx) => {
+                  const splashX = 590 + idx * 16 + (idx % 2 === 0 ? 3 : -3);
+                  return (
+                    <motion.circle
+                      key={`surf-spl-${idx}`}
+                      cx={splashX}
+                      cy={surfaceY}
+                      r={1.2 + (idx % 3) * 0.6}
+                      fill="#7a8292" // cohesive slate wet slurry color
+                      opacity="0.8"
+                      animate={{
+                        y: [0, -12 - (idx % 4) * 4, 0],
+                        x: [0, (idx % 2 === 0 ? 6 : -6), 0],
+                        scale: [1, 1.2, 0.4]
+                      }}
+                      transition={{
+                        duration: 0.55 + (idx % 3) * 0.12,
+                        repeat: Infinity,
+                        delay: idx * 0.05,
+                        ease: "easeOut"
+                      }}
+                    />
+                  );
+                })}
+
+                {/* Churning aggregates strictly submerged within the Concrete Body Mass */}
+                <g clipPath="url(#concrete-level-clip)">
+                  {/* Rotating Gravel/Stone Aggregate Chunks in the Left Churn (CCW orbit) */}
+                  {isMixerRotating && !isPaused && [...Array(6)].map((_, idx) => {
+                    const angleStart = (idx * (360 / 6)) + (idx * 15);
+                    const radius = 15 + (idx % 3) * 11;
+                    const size = 1.0 + (idx % 2) * 1.0; // Subtle texture dots
+                    const fillCol = idx % 3 === 0 ? "#4a4f5c" : idx % 3 === 1 ? "#736b5e" : "#5a6270"; // blended cement stones
+                    return (
+                      <motion.circle
+                        key={`l-churn-${idx}`}
+                        cx={637.5}
+                        cy={400}
+                        r={size}
+                        fill={fillCol}
+                        opacity="0.55"
+                        animate={{
+                          cx: [
+                            637.5 + Math.cos((angleStart * Math.PI) / 180) * radius,
+                            637.5 + Math.cos(((angleStart - 360) * Math.PI) / 180) * radius
+                          ],
+                          cy: [
+                            400 + Math.sin((angleStart * Math.PI) / 180) * radius * 0.75,
+                            400 + Math.sin(((angleStart - 360) * Math.PI) / 180) * radius * 0.75
+                          ]
+                        }}
+                        transition={{
+                          duration: 1.4 + (idx % 3) * 0.3,
+                          repeat: Infinity,
+                          ease: "linear"
+                        }}
+                      />
+                    );
+                  })}
+
+                  {/* Rotating Gravel/Stone Aggregate Chunks in the Right Churn (CW orbit) */}
+                  {isMixerRotating && !isPaused && [...Array(6)].map((_, idx) => {
+                    const angleStart = (idx * (360 / 6)) + (idx * 21);
+                    const radius = 15 + (idx % 3) * 11;
+                    const size = 1.0 + (idx % 2) * 1.0; // Subtle texture dots
+                    const fillCol = idx % 3 === 0 ? "#4a4f5c" : idx % 3 === 1 ? "#736b5e" : "#5a6270";
+                    return (
+                      <motion.circle
+                        key={`r-churn-${idx}`}
+                        cx={717.5}
+                        cy={400}
+                        r={size}
+                        fill={fillCol}
+                        opacity="0.55"
+                        animate={{
+                          cx: [
+                            717.5 + Math.cos((angleStart * Math.PI) / 180) * radius,
+                            717.5 + Math.cos(((angleStart + 360) * Math.PI) / 180) * radius
+                          ],
+                          cy: [
+                            400 + Math.sin((angleStart * Math.PI) / 180) * radius * 0.75,
+                            400 + Math.sin(((angleStart + 360) * Math.PI) / 180) * radius * 0.75
+                          ]
+                        }}
+                        transition={{
+                          duration: 1.4 + (idx % 3) * 0.3,
+                          repeat: Infinity,
+                          ease: "linear"
+                        }}
+                      />
+                    );
+                  })}
+                </g>
+              </g>
+            );
+          })()}
+
+          {/* Gear/Motor on side - Updated with rotating dynamo/motor cooling fan */}
+          <g transform="translate(562.5, 400)">
+            {/* Outer stator housing */}
+            <circle cx="0" cy="0" r="15" fill="#181d26" stroke={theme.outline} strokeWidth="1.5" />
+            {/* Vent slots inside the motor cover */}
+            <circle cx="0" cy="0" r="11.5" fill="none" stroke="#2c3e50" strokeWidth="1.2" strokeDasharray="3 3.5" />
+            
+            {/* Spinning cooling fan blades */}
+            <g className={(isMixerRotating && !isPaused) ? "spin-cw-active" : ""}>
+              {[...Array(5)].map((_, i) => {
+                const angle = (i * 360) / 5;
+                return (
+                  <path
+                    key={`motor-fan-blade shadow-${i}`}
+                    d="M 0 0 Q -2.5 -4.5 -3.5 -10 A 10 10 0 0 1 3.5 -10 Q 2.5 -4.5 0 0"
+                    fill="#38bdf8"
+                    opacity="0.85"
+                    transform={`rotate(${angle})`}
+                  />
+                );
+              })}
+            </g>
+            {/* Central hub / axle shaft status circle */}
+            <circle cx="0" cy="0" r="3.5" fill={(isMixerRotating && !isPaused) ? theme.flow : "#475569"} stroke={(isMixerRotating && !isPaused) ? "#fff" : "none"} strokeWidth="0.5" />
+          </g>
 
           {/* Industrial Discharge Chute under Mixer */}
-          <g id="discharge-chute" transform="translate(677.5, 450)">
+          <g 
+            id="discharge-chute" 
+            transform="translate(677.5, 450)"
+            className={!isAuto ? "cursor-pointer select-none" : ""}
+            onClick={(e) => {
+              if (!isAuto) {
+                e.stopPropagation();
+                setSelectedManualDevice({
+                  id: "mixerDischargeGate",
+                  name: "PINTU MIXER DISCHARGE",
+                  x: 677.5,
+                  y: 450
+                });
+              }
+            }}
+          >
             {/* Chute funnel outline */}
             <polygon 
               points="-25,0 25,0 15,38 -15,38" 
@@ -1267,10 +2585,10 @@ const ScadaDiagram = ({
 
         {/* INDUSTRIAL MIXING TIMER (Moved to right of Mixer as requested) */}
         {(() => {
-          const isDischargingSec = productionState === 'DISCHARGING CONCRETE';
+          const isDischargingSec = !!concreteDischargeActive;
           return (
-            <foreignObject x="795" y="325" width="160" height="165">
-              <div className="w-full h-full bg-transparent p-2 flex flex-col justify-between items-center relative overflow-hidden">
+            <foreignObject x="795" y="325" width="160" height="240">
+              <div className="w-full h-full bg-transparent p-2 flex flex-col justify-start gap-1 items-center relative">
                 {/* Header */}
                 <div className="w-full flex justify-center items-center pb-1 select-none">
                   <span className={`text-[12.5px] font-sans font-bold tracking-wider uppercase flex items-center gap-1.5 ${(productionState === 'COMPLETE' || isDone) ? 'text-emerald-400' : isDischargingSec ? 'text-red-500' : 'text-[#00ffd0]'}`}>
@@ -1334,8 +2652,8 @@ const ScadaDiagram = ({
                       const C = 2 * Math.PI * r; // ~238.76
                       
                       if (isDischargingSec) {
-                        const maxDoorTime = 34; // 34 seconds discharge sequencer
-                        const dTimeRemaining = Math.max(0, 34 - dischargeTimeSec);
+                        const maxDoorTime = 35; // 35 seconds discharge sequencer
+                        const dTimeRemaining = Math.max(0, 35 - dischargeTimeSec);
                         const pct = Math.min(1, Math.max(0, dTimeRemaining / maxDoorTime));
                         const offset = C - (pct * C);
                         
@@ -1357,7 +2675,7 @@ const ScadaDiagram = ({
                         );
                       } else {
                         const maxTime = activeMixingTime || 1;
-                        const curTime = (productionState === 'COMPLETE' || isDone) ? 0 : (productionState === 'MIXING' ? mixingCountdown : activeMixingTime);
+                        const curTime = (productionState === 'COMPLETE' || isDone) ? 0 : (mixerState === 'mixing' ? mixingCountdown : activeMixingTime);
                         const pct = Math.min(1, Math.max(0, curTime / maxTime));
                         const offset = C - (pct * C);
                         
@@ -1394,11 +2712,11 @@ const ScadaDiagram = ({
                       className=""
                     >
                       {isDischargingSec ? (
-                        Math.max(0, Math.ceil(34 - dischargeTimeSec))
+                        Math.max(0, Math.ceil(35 - dischargeTimeSec))
                       ) : (productionState === 'COMPLETE' || isDone) ? (
                         0
                       ) : (
-                        productionState === 'MIXING' ? mixingCountdown : activeMixingTime
+                        mixerState === 'mixing' ? mixingCountdown : activeMixingTime
                       )}
                     </text>
 
@@ -1408,8 +2726,11 @@ const ScadaDiagram = ({
 
                 {/* Batch Info Segment */}
                 <div className="w-full flex flex-col justify-center items-center select-none bg-transparent py-1.5 px-1 leading-normal text-center space-y-1">
+                  <span className="text-[11px] font-mono font-black text-amber-400 tracking-wide uppercase">
+                    Target Mix {activeVolume || 0} m³
+                  </span>
                   <span className="text-[11px] font-mono font-extrabold text-[#00ff9c] tracking-wide uppercase">
-                    CURRENT BATCH : {productionState === 'COMPLETE' ? targetBatch : Math.min(targetBatch, isRunning ? (currentBatch + 1) : currentBatch)}/{targetBatch || 1}
+                    MIX {productionState === 'COMPLETE' ? targetBatch : Math.min(targetBatch, isRunning ? (currentBatch + 1) : currentBatch)} DARI {targetBatch || 1}
                   </span>
                   <span className="text-[10px] font-mono font-bold text-slate-400 tracking-wide uppercase">
                     STATUS : <span className={productionState === 'COMPLETE' ? "text-[#00ff9c]" : isRunning ? "text-cyan-400 animate-pulse font-extrabold" : "text-slate-500"}>
@@ -1425,6 +2746,144 @@ const ScadaDiagram = ({
 
 
         {/* PLC Control panel removed from SVG view and rendered as clean native components underneath */}      </svg>
+
+      {/* Manual Auxiliary Panel for Compressor, Vibrator, Klakson */}
+      {!isAuto && (
+        <div className="absolute top-3 left-3 bg-[#0a0f1d]/90 backdrop-blur border border-slate-700/60 p-2 rounded flex flex-col gap-2 shadow-lg select-none z-10 w-44">
+          <div className="text-[10px] font-bold text-cyan-400 tracking-wider border-b border-slate-700/50 pb-1 flex items-center justify-between font-mono">
+            <span>AUXILIARY HMI</span>
+            <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-ping" />
+          </div>
+          
+          {/* Compressor Button */}
+          <button 
+            type="button"
+            className={`flex items-center justify-between p-1.5 rounded text-xs font-semibold cursor-pointer select-none transition-colors duration-150 ${
+              compressorActive 
+                ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/55 font-bold' 
+                : 'bg-slate-800/40 text-slate-400 border border-slate-700/40 hover:bg-slate-800/80 font-medium'
+            }`}
+            onClick={(e) => {
+              e.stopPropagation();
+              setSelectedManualDevice({
+                id: "compressor",
+                name: "KOMPRESOR ANGIN",
+                x: -30,
+                y: 360
+              });
+            }}
+          >
+            <span className="font-mono text-[10px]">KOMPRESOR</span>
+            <span className={`w-2 h-2 rounded-full ${compressorActive ? 'bg-emerald-500 animate-pulse' : 'bg-slate-600'}`} />
+          </button>
+
+          {/* Vibrator Button */}
+          <button 
+            type="button"
+            className={`flex items-center justify-between p-1.5 rounded text-xs font-semibold cursor-pointer select-none transition-colors duration-150 ${
+              vibratorActive 
+                ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/55 font-bold' 
+                : 'bg-slate-800/40 text-slate-400 border border-slate-700/40 hover:bg-slate-800/80 font-medium'
+            }`}
+            onClick={(e) => {
+              e.stopPropagation();
+              setSelectedManualDevice({
+                id: "vibrator",
+                name: "VIBRATOR HOPPER",
+                x: -30,
+                y: 410
+              });
+            }}
+          >
+            <span className="font-mono text-[10px]">VIBRATOR</span>
+            <span className={`w-2 h-2 rounded-full ${vibratorActive ? 'bg-emerald-500 animate-pulse' : 'bg-slate-600'}`} />
+          </button>
+
+          {/* Klakson Button */}
+          <button 
+            type="button"
+            className={`flex items-center justify-between p-1.5 rounded text-xs font-semibold cursor-pointer select-none transition-colors duration-150 ${
+              getDeviceStatus('klakson')
+                ? 'bg-amber-600/20 text-amber-400 border border-amber-500/55 font-bold' 
+                : 'bg-slate-800/40 text-slate-400 border border-slate-700/40 hover:bg-slate-800/80 font-medium'
+            }`}
+            onClick={(e) => {
+              e.stopPropagation();
+              setSelectedManualDevice({
+                id: "klakson",
+                name: "KLAKSON WARNING",
+                x: -30,
+                y: 460
+              });
+            }}
+          >
+            <span className="font-mono text-[10px]">KLAKSON</span>
+            <span className={`w-2 h-2 rounded-full ${getDeviceStatus('klakson') ? 'bg-amber-500 animate-pulse' : 'bg-slate-600'}`} />
+          </button>
+        </div>
+      )}
+
+      {/* Modern Dynamic Pop-up Control card for Manual Operation */}
+      {selectedManualDevice && (
+        <div 
+          className="absolute bg-[#0b1329]/95 backdrop-blur-md border border-[#38bdf8]/60 p-3 rounded-lg shadow-2xl z-20 w-64 text-white font-sans select-none flex flex-col gap-2.5 animation-fade-in"
+          style={{
+            left: `${Math.min(90, Math.max(10, ((selectedManualDevice.x + 120) / 1250) * 100))}%`,
+            top: `${Math.min(85, Math.max(20, ((selectedManualDevice.y + 30) / 640) * 100))}%`,
+            transform: 'translate(-50%, -100%)',
+            marginTop: '-12px'
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between border-b border-slate-700/55 pb-1.5">
+            <span className="text-[10px] font-bold text-cyan-400 tracking-wider font-mono">
+              {selectedManualDevice.name.toUpperCase()}
+            </span>
+            <button 
+              type="button"
+              className="text-slate-400 hover:text-white transition-colors duration-100 hover:bg-slate-800/60 w-5 h-5 rounded flex items-center justify-center font-bold text-xs cursor-pointer"
+              onClick={(e) => {
+                e.stopPropagation();
+                setSelectedManualDevice(null);
+              }}
+            >
+              ×
+            </button>
+          </div>
+
+          {/* Real-time Status */}
+          <div className="flex items-center justify-between text-xs py-0.5">
+            <span className="text-slate-400">Status Alat:</span>
+            <span className={`font-bold font-mono px-1.5 py-0.5 rounded text-[10px] flex items-center gap-1.5 ${
+              getDeviceStatus(selectedManualDevice.id)
+                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+            }`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${getDeviceStatus(selectedManualDevice.id) ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
+              {getDeviceStatus(selectedManualDevice.id) ? 'ON / AKTIF' : 'OFF / MATI'}
+            </span>
+          </div>
+
+          {/* Control Button */}
+          <button
+            type="button"
+            className={`w-full py-2 px-3 rounded-md text-xs font-bold tracking-wider uppercase cursor-pointer select-none transition-all duration-150 border text-center ${
+              getDeviceStatus(selectedManualDevice.id)
+                ? 'bg-rose-600 hover:bg-rose-700 border-rose-500 text-white shadow-lg shadow-rose-950/40 active:scale-95'
+                : 'bg-emerald-600 hover:bg-emerald-700 border-emerald-500 text-white shadow-lg shadow-emerald-950/40 active:scale-95'
+            }`}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (onManualDeviceToggle) {
+                onManualDeviceToggle(selectedManualDevice.id);
+              }
+            }}
+          >
+            {getDeviceStatus(selectedManualDevice.id) ? 'MATIKAN / TUTUP' : 'HIDUPKAN / BUKA'}
+          </button>
+        </div>
+      )}
     </div>
   );
 };
@@ -1437,7 +2896,58 @@ interface RelayLog {
 }
 
 export default function App() {
+  const [scaleCapacities, setScaleCapacities] = useState<{
+    pasir: number;
+    batu: number;
+    semen: number;
+    air: number;
+    mixerGeometris: number;
+    mixerMaxMixing: number;
+  }>(() => {
+    const saved = localStorage.getItem('scale_capacities_config');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed.pasir === 'number') {
+          return {
+            pasir: parsed.pasir,
+            batu: parsed.batu,
+            semen: parsed.semen || 800,
+            air: parsed.air || 400,
+            mixerGeometris: typeof parsed.mixerGeometris === 'number' ? parsed.mixerGeometris : 4.0,
+            mixerMaxMixing: typeof parsed.mixerMaxMixing === 'number' ? parsed.mixerMaxMixing : 3.5,
+          };
+        }
+      } catch (e) {
+        console.error("Gagal load scale capacities: ", e);
+      }
+    }
+    return {
+      pasir: 1000,
+      batu: 1000,
+      semen: 800,
+      air: 400,
+      mixerGeometris: 4.0,
+      mixerMaxMixing: 3.5,
+    };
+  });
+
+  useEffect(() => {
+    localStorage.setItem('scale_capacities_config', JSON.stringify(scaleCapacities));
+  }, [scaleCapacities]);
+
+  const scaleCapacitiesAccumulative = scaleCapacities.pasir + scaleCapacities.batu;
+  const scaleCapacitiesWaitingHopper = scaleCapacities.pasir + scaleCapacities.batu;
+
   const [scales, setScales] = useState(INITIAL_SCALES);
+  const scalesRef = useRef(scales);
+  scalesRef.current = scales;
+
+  const setScalesSync = (updater: (prev: typeof INITIAL_SCALES) => typeof INITIAL_SCALES) => {
+    const next = updater(scalesRef.current);
+    scalesRef.current = next;
+    setScales(next);
+  };
   const [isRunning, setIsRunning] = useState(false);
   const [currentStep, setCurrentStep] = useState<MaterialType | 'idle' | 'mixing'>('idle');
   
@@ -1459,6 +2969,30 @@ export default function App() {
   });
 
   // Batch configuration states with LocalStorage persistence for complete offline desktop reliability
+  const [siloWeights, setSiloWeights] = useState<number[]>(() => {
+    const saved = localStorage.getItem('silo_weights');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length === 6) {
+          return parsed.map(v => typeof v === 'number' ? v : 80000);
+        }
+      } catch (e) {
+        console.error("Gagal load silo_weights:", e);
+      }
+    }
+    return [42150, 35800, 28290, 31400, 19500, 48900];
+  });
+
+  useEffect(() => {
+    localStorage.setItem('silo_weights', JSON.stringify(siloWeights));
+  }, [siloWeights]);
+
+  const [isFillSiloOpen, setIsFillSiloOpen] = useState(false);
+  const [selectedFillSiloIdx, setSelectedFillSiloIdx] = useState<number>(0);
+  const [fillSiloAmountText, setFillSiloAmountText] = useState<string>("20000");
+  const [customAlertMessage, setCustomAlertMessage] = useState<string | null>(null);
+
   const [isBatchConfigOpen, setIsBatchConfigOpen] = useState(false);
   const [activeVolume, setActiveVolume] = useState<number>(() => {
     const saved = localStorage.getItem('active_volume');
@@ -1556,19 +3090,106 @@ export default function App() {
   const [gateSemenHopperOpen, setGateSemenHopperOpen] = useState(false);
   const [gateWaterHopperOpen, setGateWaterHopperOpen] = useState(false);
 
+  // --- INDUSTRIAL WAITING HOPPER SYSTEM STATES ---
+  const [waitingHopperEnabled, setWaitingHopperEnabled] = useState<boolean>(() => {
+    return localStorage.getItem('waiting_hopper_enabled') === 'true';
+  });
+  const [waitingHopperState, setWaitingHopperState] = useState<'WAITING_HOPPER_IDLE' | 'WAITING_HOPPER_FILLING' | 'WAITING_HOPPER_READY' | 'WAITING_HOPPER_DISCHARGING' | 'WAITING_HOPPER_EMPTY'>('WAITING_HOPPER_IDLE');
+  const [waitingHopperGateOpen, setWaitingHopperGateOpen] = useState(false);
+  const waitingHopperGateOpenRef = useRef(false);
+
+  const [waitingHopperPulseOn, setWaitingHopperPulseOn] = useState<number>(() => {
+    const s = localStorage.getItem('waiting_hopper_pulse_on');
+    return s ? parseFloat(s) : 2.0;
+  });
+  const [waitingHopperPulseOff, setWaitingHopperPulseOff] = useState<number>(() => {
+    const s = localStorage.getItem('waiting_hopper_pulse_off');
+    return s ? parseFloat(s) : 1.0;
+  });
+  const [waitingHopperWaterDelay, setWaitingHopperWaterDelay] = useState<number>(() => {
+    const s = localStorage.getItem('waiting_hopper_water_delay');
+    return s ? parseFloat(s) : 3.0;
+  });
+  const [waitingHopperWaterPrecharge, setWaitingHopperWaterPrecharge] = useState<number>(() => {
+    const s = localStorage.getItem('waiting_hopper_water_precharge');
+    return s ? parseFloat(s) : 30.0;
+  });
+
+  const waitingHopperStateRef = useRef<'WAITING_HOPPER_IDLE' | 'WAITING_HOPPER_FILLING' | 'WAITING_HOPPER_READY' | 'WAITING_HOPPER_DISCHARGING' | 'WAITING_HOPPER_EMPTY'>('WAITING_HOPPER_IDLE');
+  const [waitingHopperWeight, setWaitingHopperWeight] = useState(0);
+  const waitingHopperWeightRef = useRef(0);
+  const waitingHopperTimerRef = useRef(0); 
+  const waitingHopperPrechargeTimerRef = useRef(0);
+  const system1WaitingSeqRef = useRef<'idle' | 'sand_discharging' | 'sand_empty_delay' | 'stone_discharging' | 'done'>('idle');
+  const system1WaitingSeqTimerRef = useRef<number>(0);
+  const aggregateTransitQueueRef = useRef<{ amount: number; ticksNeeded: number }[]>([]);
+  const aggregateInMixerRef = useRef<number>(0);
+
+  const setWaitingHopperStateSync = (val: 'WAITING_HOPPER_IDLE' | 'WAITING_HOPPER_FILLING' | 'WAITING_HOPPER_READY' | 'WAITING_HOPPER_DISCHARGING' | 'WAITING_HOPPER_EMPTY') => {
+    waitingHopperStateRef.current = val;
+    setWaitingHopperState(val);
+  };
+
+  const setWaitingHopperGateOpenSync = (val: boolean) => {
+    waitingHopperGateOpenRef.current = val;
+    setWaitingHopperGateOpen(val);
+  };
+
+  const setWaitingHopperWeightSync = (val: number) => {
+    waitingHopperWeightRef.current = val;
+    setWaitingHopperWeight(val);
+  };
+
+  // Persists settings
+  useEffect(() => {
+    localStorage.setItem('waiting_hopper_enabled', waitingHopperEnabled ? 'true' : 'false');
+  }, [waitingHopperEnabled]);
+  useEffect(() => {
+    localStorage.setItem('waiting_hopper_pulse_on', waitingHopperPulseOn.toString());
+  }, [waitingHopperPulseOn]);
+  useEffect(() => {
+    localStorage.setItem('waiting_hopper_pulse_off', waitingHopperPulseOff.toString());
+  }, [waitingHopperPulseOff]);
+  useEffect(() => {
+    localStorage.setItem('waiting_hopper_water_delay', waitingHopperWaterDelay.toString());
+  }, [waitingHopperWaterDelay]);
+  useEffect(() => {
+    localStorage.setItem('waiting_hopper_water_precharge', waitingHopperWaterPrecharge.toString());
+  }, [waitingHopperWaterPrecharge]);
+
+  // FOUR INDEPENDENT REFS FOR UNINTERRUPTED WEIGHING COMPLETION TRACKING (Early Draining Protection)
+  const pasirWeighedRef = useRef(false);
+  const batuWeighedRef = useRef(false);
+  const semenWeighedRef = useRef(false);
+  const airWeighedRef = useRef(false);
+
   // Synchronous, zero-lag Ref source-of-truth for physical relay synchronization
   const gatePasirHopperOpenRef = useRef(false);
   const gateBatuHopperOpenRef = useRef(false);
   const gateSemenHopperOpenRef = useRef(false);
   const gateWaterHopperOpenRef = useRef(false);
 
+  const [conveyorBottomPhase, setConveyorBottomPhase] = useState<'STANDBY' | 'PRESTART' | 'TRANSFER' | 'POSTRUN'>('STANDBY');
+  const conveyorBottomPhaseRef = useRef<'STANDBY' | 'PRESTART' | 'TRANSFER' | 'POSTRUN'>('STANDBY');
+  const conveyorBottomTimerRef = useRef<number>(0);
+
   const setGatePasirHopperOpenSync = (val: boolean) => {
     gatePasirHopperOpenRef.current = val;
     setGatePasirHopperOpen(val);
+    if (batchingPlantMode === 'SYSTEM_2' && isAuto && isRunning) {
+      const active = val || gateBatuHopperOpenRef.current || conveyorBottomPhaseRef.current !== 'STANDBY';
+      conveyorBottomActiveRef.current = active;
+      setConveyorBottomActive(active);
+    }
   };
   const setGateBatuHopperOpenSync = (val: boolean) => {
     gateBatuHopperOpenRef.current = val;
     setGateBatuHopperOpen(val);
+    if (batchingPlantMode === 'SYSTEM_2' && isAuto && isRunning) {
+      const active = gatePasirHopperOpenRef.current || val || conveyorBottomPhaseRef.current !== 'STANDBY';
+      conveyorBottomActiveRef.current = active;
+      setConveyorBottomActive(active);
+    }
   };
   const setGateSemenHopperOpenSync = (val: boolean) => {
     gateSemenHopperOpenRef.current = val;
@@ -1585,10 +3206,16 @@ export default function App() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        return parsed.map((rl: any) => ({
-          ...rl,
-          timestamp: new Date(rl.timestamp)
-        }));
+        if (Array.isArray(parsed)) {
+          return parsed
+            .filter((rl: any) => rl && typeof rl === 'object' && typeof rl.message === 'string')
+            .map((rl: any) => ({
+              id: rl.id || Math.random().toString(36).substring(7).toUpperCase(),
+              timestamp: new Date(rl.timestamp || Date.now()),
+              message: rl.message,
+              type: rl.type || 'info'
+            }));
+        }
       } catch (e) {
         console.error("Gagal load relay logs:", e);
       }
@@ -1607,12 +3234,25 @@ export default function App() {
   const conveyorUpperActiveRef = useRef(false);
 
   const setConveyorBottomActiveSync = (val: boolean) => {
-    conveyorBottomActiveRef.current = val;
-    setConveyorBottomActive(val);
+    if (batchingPlantMode === 'SYSTEM_2' && isAuto && isRunning) {
+      const active = gatePasirHopperOpenRef.current || gateBatuHopperOpenRef.current || conveyorBottomPhaseRef.current !== 'STANDBY';
+      conveyorBottomActiveRef.current = active;
+      setConveyorBottomActive(active);
+    } else {
+      conveyorBottomActiveRef.current = val;
+      setConveyorBottomActive(val);
+    }
   };
   const setConveyorUpperActiveSync = (val: boolean) => {
     conveyorUpperActiveRef.current = val;
     setConveyorUpperActive(val);
+  };
+
+  const setConveyorBottomPhaseSync = (val: 'STANDBY' | 'PRESTART' | 'TRANSFER' | 'POSTRUN') => {
+    conveyorBottomPhaseRef.current = val;
+    setConveyorBottomPhase(val);
+    const shouldBeActive = val === 'PRESTART' || val === 'TRANSFER' || val === 'POSTRUN';
+    setConveyorBottomActiveSync(shouldBeActive);
   };
   const [mixerShaftActive, setMixerShaftActive] = useState(false);
   
@@ -1623,6 +3263,8 @@ export default function App() {
   const [mixerStatusText, setMixerStatusText] = useState("IDLE");
   
   // Numerical monitors & counters
+  const [compressorActive, setCompressorActive] = useState(false);
+  const [vibratorActive, setVibratorActive] = useState(false);
   const [mixingCountdown, setMixingCountdown] = useState(0);
   const [dischargeTimeSec, setDischargeTimeSec] = useState(0);
   const [batchId, setBatchId] = useState("");
@@ -1631,6 +3273,91 @@ export default function App() {
   const [activePins, setActivePins] = useState<Record<string, boolean>>({});
   const [alarmMessage, setAlarmMessage] = useState<string | null>(null);
   const [configTrigger, setConfigTrigger] = useState(0);
+
+  const [batchingPlantMode, setBatchingPlantMode] = useState<'SYSTEM_1' | 'SYSTEM_2' | 'SYSTEM_3'>(() => {
+    return (localStorage.getItem('batching_plant_mode') as 'SYSTEM_1' | 'SYSTEM_2' | 'SYSTEM_3') || 'SYSTEM_1';
+  });
+
+  const [operationMode, setOperationMode] = useState<'SIMULASI' | 'PRODUKSI'>(() => {
+    return (localStorage.getItem('operation_mode') || 'SIMULASI') as 'SIMULASI' | 'PRODUKSI';
+  });
+
+  const operationModeRef = useRef<'SIMULASI' | 'PRODUKSI'>(operationMode);
+
+  useEffect(() => {
+    operationModeRef.current = operationMode;
+    localStorage.setItem('operation_mode', operationMode);
+  }, [operationMode]);
+
+  // ----------------------------------------------------
+  // REAL LOADCELL TELEMETRY DIRECT BINDING (SINGLE SOURCE OF TRUTH)
+  // ----------------------------------------------------
+  useEffect(() => {
+    const getTelemetryValue = (data: any, keys: string[]): number | null => {
+      if (!data) return null;
+      for (const k of keys) {
+        if (typeof data[k] === 'number') {
+          return data[k];
+        }
+      }
+      return null;
+    };
+
+    const handleTelemetry = (data: any) => {
+      if (operationModeRef.current !== 'PRODUKSI') return;
+
+      // Extract sensor weights using common aliases mapped to loadcells
+      const valPasir = getTelemetryValue(data, ['pasir', 'sand', 'w_pasir', 'weight_pasir', 'p']);
+      const valBatu = getTelemetryValue(data, ['batu', 'stone', 'w_batu', 'weight_batu', 'b']);
+      const valSemen = getTelemetryValue(data, ['semen', 'cement', 'w_semen', 'weight_semen', 's']);
+      const valAir = getTelemetryValue(data, ['air', 'water', 'w_air', 'weight_air', 'a']);
+      const valWaiting = getTelemetryValue(data, ['waiting', 'waiting_hopper', 'w_waiting', 'weight_waiting', 'wh']);
+
+      // Perform a clean, atomic scale update matching telemetry weights
+      if (valPasir !== null || valBatu !== null || valSemen !== null || valAir !== null) {
+        setScalesSync(prev => {
+          const next = { ...prev };
+          if (valPasir !== null) next.pasir.actual = parseFloat(valPasir.toFixed(1));
+          if (valBatu !== null) next.batu.actual = parseFloat(valBatu.toFixed(1));
+          if (valSemen !== null) next.semen.actual = parseFloat(valSemen.toFixed(1));
+          if (valAir !== null) next.air.actual = parseFloat(valAir.toFixed(1));
+          return next;
+        });
+      }
+
+      if (valWaiting !== null) {
+        setWaitingHopperWeightSync(parseFloat(valWaiting.toFixed(1)));
+      }
+    };
+
+    webSerialService.registerTelemetryCallback(handleTelemetry);
+    return () => {
+      webSerialService.unregisterTelemetryCallback(handleTelemetry);
+    };
+  }, []);
+
+  const [flowControlGates, setFlowControlGates] = useState<any>(() => {
+    const saved = localStorage.getItem('flow_control_gates_config');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {}
+    }
+    return {
+      pasir1: { key: 'pasir1', gateOnTime: 1.5, gateOffTime: 1.5 },
+      pasir2: { key: 'pasir2', gateOnTime: 1.5, gateOffTime: 1.5 },
+      batu1: { key: 'batu1', gateOnTime: 1.5, gateOffTime: 1.5 },
+      batu2: { key: 'batu2', gateOnTime: 1.5, gateOffTime: 1.5 },
+    };
+  });
+
+  useEffect(() => {
+    localStorage.setItem('batching_plant_mode', batchingPlantMode);
+  }, [batchingPlantMode]);
+
+  useEffect(() => {
+    localStorage.setItem('flow_control_gates_config', JSON.stringify(flowControlGates));
+  }, [flowControlGates]);
 
   // Trigger config reloading on save events
   useEffect(() => {
@@ -1661,14 +3388,14 @@ export default function App() {
         case 1:  return mixerShaftActive; // Mixer
         case 2:  return conveyorUpperActiveRef.current; // Konveyor atas
         case 3:  return conveyorBottomActiveRef.current; // Konveyor bawah
-        case 4:  return false; // Kompressor
+        case 4:  return compressorActive; // Kompressor
         case 5:  return gatePasir1SiloOpen; // Pintu pasir 1
         case 6:  return gatePasir2SiloOpen; // Pintu pasir 2
         case 7:  return gateBatu1SiloOpen; // Pintu batu 1
         case 8:  return gateBatu2SiloOpen; // Pintu batu 2
         case 9:  return gatePasirHopperOpenRef.current; // Dump material (Pasir Dump)
         case 10: return gateBatuHopperOpenRef.current; // Dump material 2 (Batu Dump)
-        case 11: return false; // Vibrator
+        case 11: return vibratorActive; // Vibrator
         case 12: return gateWaterHopperOpenRef.current; // Tuang air (Water Scale Dump Gate)
         case 13: return valveWaterActive; // Tuang additive (originally spare/water fill valve)
         case 14: return !!(mixerDoor1OpenActive || mixerDoor2OpenActive || mixerDoor3OpenActive); // Pintu mixer buka
@@ -1681,9 +3408,19 @@ export default function App() {
         case 21: return !!(screwSemenActive && siloNum === "5"); // Silo 5
         case 22: return !!(screwSemenActive && siloNum === "6"); // Silo 6
         case 23: return gateSemenHopperOpenRef.current; // Dump semen (Cement scale dumper gate)
+        case 24: return waitingHopperGateOpenRef.current; // Pintu Waiting Hopper Gate (Relay #24)
       }
 
       // 2. Dynamic, flexible keyword name fallbacks
+      if (normName.includes("waiting") && normName.includes("hopper")) {
+        return waitingHopperGateOpenRef.current;
+      }
+      if (normName.includes("pintu") && normName.includes("waiting")) {
+        return waitingHopperGateOpenRef.current;
+      }
+      if (normName.includes("chute") && normName.includes("gate")) {
+        return waitingHopperGateOpenRef.current;
+      }
       if (normName.includes("mixer") && normName.includes("buka")) {
         return !!(mixerDoor1OpenActive || mixerDoor2OpenActive || mixerDoor3OpenActive);
       }
@@ -2072,7 +3809,19 @@ export default function App() {
         id: l.id,
         recipeName: l.recipeName,
         volume: l.volume || 1.0,
-        timestamp: l.timestamp.toLocaleTimeString()
+        timestamp: l.timestamp.toLocaleString('id-ID'),
+        targets: l.targets,
+        actuals: l.actuals,
+        mixingCycles: l.mixingCycles || 1,
+        slump: l.slump || "12cm",
+        siloSemen: l.siloSemen || "SILO 1",
+        pelanggan: l.pelanggan || "PT. FARIKA",
+        lokasi: l.lokasi || "PEKANBARU",
+        noKendaraan: l.noKendaraan || "BM 9999 AA",
+        sopir: l.sopir || "Budi",
+        productionMode: l.productionMode || "AUTO",
+        startTime: l.startTime || "",
+        endTime: l.endTime || ""
       }));
   }, [logs]);
   const [recipesList, setRecipesList] = useState<Recipe[]>(() => {
@@ -2139,6 +3888,40 @@ export default function App() {
   const [slump, setSlump] = useState<number | null>(null);
   const [mixingTime, setMixingTime] = useState(0);
   const [isAuto, setIsAuto] = useState(true);
+  const isAutoRef = useRef(isAuto);
+  useEffect(() => {
+    isAutoRef.current = isAuto;
+  }, [isAuto]);
+
+  const [minMixerGateOpenTime, setMinMixerGateOpenTime] = useState<number>(() => {
+    const s = localStorage.getItem('min_mixer_gate_open_time');
+    return s ? parseInt(s, 10) : 10;
+  });
+  const minMixerGateOpenTimeRef = useRef(minMixerGateOpenTime);
+  useEffect(() => {
+    localStorage.setItem('min_mixer_gate_open_time', minMixerGateOpenTime.toString());
+    minMixerGateOpenTimeRef.current = minMixerGateOpenTime;
+  }, [minMixerGateOpenTime]);
+
+  const [manualStartTime, setManualStartTime] = useState<string>(() => {
+    return localStorage.getItem('hmi_manual_start_time') || "";
+  });
+
+  const [autoStartTime, setAutoStartTime] = useState<string>("");
+  const [activePrintLog, setActivePrintLog] = useState<any | null>(null);
+
+  const manualGateOpenTimeMsRef = useRef<number>(0);
+  const isManualGateOpenTimeValidRef = useRef<boolean>(false);
+  const manualGateSequenceStateRef = useRef<'IDLE' | 'OPENING'>('IDLE');
+
+  const mixerDoorStateTextRef = useRef("CLOSED");
+  const mixerDoorPercentRef = useRef(0);
+  useEffect(() => {
+    mixerDoorStateTextRef.current = mixerDoorStateText;
+  }, [mixerDoorStateText]);
+  useEffect(() => {
+    mixerDoorPercentRef.current = mixerDoorPercent;
+  }, [mixerDoorPercent]);
   const [isPrint, setIsPrint] = useState(true);
   const [moistureControl, setMoistureControl] = useState(false);
   const [quarryAggregate, setQuarryAggregate] = useState(false);
@@ -2152,27 +3935,46 @@ export default function App() {
   }, [isPaused]);
 
   // -- Material isolated jogging states (prioritas lokal manual) --
-  const [joggingPasir, setJoggingPasir] = useState(false);
-  const [joggingBatu, setJoggingBatu] = useState(false);
+
+  const [joggingPasir1, setJoggingPasir1] = useState(false);
+  const [joggingPasir2, setJoggingPasir2] = useState(false);
+  const [joggingBatu1, setJoggingBatu1] = useState(false);
+  const [joggingBatu2, setJoggingBatu2] = useState(false);
   const [joggingSemen, setJoggingSemen] = useState(false);
   const [joggingAir, setJoggingAir] = useState(false);
 
-  const joggingPasirRef = useRef(false);
-  const joggingBatuRef = useRef(false);
+  const joggingPasir1Ref = useRef(false);
+  const joggingPasir2Ref = useRef(false);
+  const joggingBatu1Ref = useRef(false);
+  const joggingBatu2Ref = useRef(false);
   const joggingSemenRef = useRef(false);
   const joggingAirRef = useRef(false);
 
-  useEffect(() => { joggingPasirRef.current = joggingPasir; }, [joggingPasir]);
-  useEffect(() => { joggingBatuRef.current = joggingBatu; }, [joggingBatu]);
+  useEffect(() => { joggingPasir1Ref.current = joggingPasir1; }, [joggingPasir1]);
+  useEffect(() => { joggingPasir2Ref.current = joggingPasir2; }, [joggingPasir2]);
+  useEffect(() => { joggingBatu1Ref.current = joggingBatu1; }, [joggingBatu1]);
+  useEffect(() => { joggingBatu2Ref.current = joggingBatu2; }, [joggingBatu2]);
   useEffect(() => { joggingSemenRef.current = joggingSemen; }, [joggingSemen]);
   useEffect(() => { joggingAirRef.current = joggingAir; }, [joggingAir]);
+
+  const activeSiloSemenRef = useRef(activeSiloSemen);
+  useEffect(() => { activeSiloSemenRef.current = activeSiloSemen; }, [activeSiloSemen]);
 
   // --- SCADA INDUSTRIAL SEQUENCING AND SIMULATION TICKER ---
   const simIntervalRef = useRef<NodeJS.Timeout | null>(null);
   
   // Local variables to bypass state asynchronous lag inside the 100ms loop
   const weighingActiveRef = useRef(false);
+  const aggregateReadyLoggedRef = useRef(false);
+  const aggregateDischargeLoggedRef = useRef(false);
+  const conveyorTransferStartLoggedRef = useRef(false);
+  const conveyorTransferCompleteLoggedRef = useRef(false);
   const mixerStateRef = useRef<'waiting' | 'discharging_hoppers' | 'mixing' | 'discharging_concrete' | 'complete'>('waiting');
+  const [mixerState, setMixerState] = useState<'waiting' | 'discharging_hoppers' | 'mixing' | 'discharging_concrete' | 'complete'>('waiting');
+  const setMixerStateSync = (val: 'waiting' | 'discharging_hoppers' | 'mixing' | 'discharging_concrete' | 'complete') => {
+    mixerStateRef.current = val;
+    setMixerState(val);
+  };
   const dischargeTimerMsRef = useRef(0);
   const mixingTimerMsRef = useRef(0);
   const doorStepRef = useRef(1);
@@ -2190,22 +3992,58 @@ export default function App() {
     air: 1
   });
   const batchQueueRef = useRef<any[]>([]);
+
+  // Tracking actual weights for individual sub-materials
+  const actualPasir1Ref = useRef<number>(0);
+  const actualPasir2Ref = useRef<number>(0);
+  const actualBatu1Ref = useRef<number>(0);
+  const actualBatu2Ref = useRef<number>(0);
+  const actualSemenRef = useRef<number>(0);
+  const actualAirRef = useRef<number>(0);
+
+  // Cumulative actual weights for the entire batch volume (across all mixing cycles)
+  const accumPasir1Ref = useRef<number>(0);
+  const accumPasir2Ref = useRef<number>(0);
+  const accumBatu1Ref = useRef<number>(0);
+  const accumBatu2Ref = useRef<number>(0);
+  const accumSemenRef = useRef<number>(0);
+  const accumAirRef = useRef<number>(0);
+
+  // Manual cumulative dispensed material trackers for logging actuals in manual production mode
+  const manualPasir1Ref = useRef<number>(0);
+  const manualPasir2Ref = useRef<number>(0);
+  const manualBatu1Ref = useRef<number>(0);
+  const manualBatu2Ref = useRef<number>(0);
+  const manualSemenRef = useRef<number>(0);
+  const manualAirRef = useRef<number>(0);
+
   const weighingCycleRef = useRef(1);
   const currentBatchRef = useRef<number>(0);
   const targetBatchRef = useRef<number>(0);
   const totalCyclesRef = useRef<number>(1);
 
-  const weighingJogStatesRef = useRef<Record<MaterialType, { phase: 'fast' | 'jeda' | 'jog_on' | 'jog_off' | 'done'; timer: number; pulseCount: number; }>>({
-    pasir: { phase: 'fast', timer: 0, pulseCount: 0 },
-    batu: { phase: 'fast', timer: 0, pulseCount: 0 },
+  const weighingJogStatesRef = useRef<Record<string, { phase: 'fast' | 'jeda' | 'jog_on' | 'jog_off' | 'done'; timer: number; pulseCount: number; }>>({
+    pasir1: { phase: 'fast', timer: 0, pulseCount: 0 },
+    pasir2: { phase: 'fast', timer: 0, pulseCount: 0 },
+    batu1: { phase: 'fast', timer: 0, pulseCount: 0 },
+    batu2: { phase: 'fast', timer: 0, pulseCount: 0 },
     semen: { phase: 'fast', timer: 0, pulseCount: 0 },
     air: { phase: 'fast', timer: 0, pulseCount: 0 }
   });
 
+  const hopperDischargeStatesRef = useRef<Record<string, { phase: 'waiting' | 'opening' | 'draining' | 'clearing' | 'closing' | 'done'; timer: number; }>>({
+    pasir: { phase: 'waiting', timer: 0 },
+    batu: { phase: 'waiting', timer: 0 },
+    semen: { phase: 'waiting', timer: 0 },
+    air: { phase: 'waiting', timer: 0 }
+  });
+
   const getJoggingSettings = () => {
     const DEFAULT_JOGING_DATA = [
-      { material: "Pasir", targetPercent: 90, jeda: 1.5, onTime: 0.5, offTime: 1.2, tolerance: 10 },
-      { material: "Batu", targetPercent: 92, jeda: 1.5, onTime: 0.4, offTime: 1.3, tolerance: 12 },
+      { material: "Pasir 1", targetPercent: 90, jeda: 1.5, onTime: 0.5, offTime: 1.2, tolerance: 10 },
+      { material: "Pasir 2", targetPercent: 90, jeda: 1.5, onTime: 0.5, offTime: 1.2, tolerance: 10 },
+      { material: "Batu 1", targetPercent: 92, jeda: 1.5, onTime: 0.4, offTime: 1.3, tolerance: 12 },
+      { material: "Batu 2", targetPercent: 92, jeda: 1.5, onTime: 0.4, offTime: 1.3, tolerance: 12 },
       { material: "Semen", targetPercent: 95, jeda: 2.0, onTime: 0.3, offTime: 1.5, tolerance: 5 },
       { material: "Air", targetPercent: 96, jeda: 1.0, onTime: 0.2, offTime: 1.0, tolerance: 2 }
     ];
@@ -2271,6 +4109,79 @@ export default function App() {
     }
   };
 
+  // Silo filling simulation states
+  const [activeFillingSiloIdx, setActiveFillingSiloIdx] = useState<number | null>(null);
+  const [fillingProgress, setFillingProgress] = useState<number>(0); // 0 to 100 %
+  const fillingIntervalRef = useRef<any>(null);
+
+  useEffect(() => {
+    return () => {
+      if (fillingIntervalRef.current) clearInterval(fillingIntervalRef.current);
+    };
+  }, []);
+
+  const startFillSilo = (siloIdx: number, amountKg: number) => {
+    if (siloIdx < 0 || siloIdx >= 6) return;
+    
+    const start = siloWeights[siloIdx];
+    
+    if (start >= 120000) {
+      setCustomAlertMessage("Silo sudah penuh (Kapasitas Maksimal 120.000 kg)");
+      return;
+    }
+
+    if (start + amountKg > 120000) {
+      setCustomAlertMessage("Silo belum mampu menampung jumlah semen tersebut, silakan tunggu sampai kapasitas tampung memadai");
+      return;
+    }
+
+    const target = start + amountKg;
+
+    setIsFillSiloOpen(false);
+    setActiveFillingSiloIdx(siloIdx);
+    setFillingProgress(0);
+
+    // Create start log
+    setRelayLogs(l => [{
+      id: 'FILL-START-' + Math.random().toString(36).substring(7).toUpperCase(),
+      timestamp: new Date(),
+      message: `[SILO] Memulai pengisian Silo ${siloIdx + 1} sebesar ${amountKg.toLocaleString('id-ID')} kg...`,
+      type: 'info'
+    }, ...l]);
+
+    let current = start;
+    const step = Math.max(10, Math.ceil((target - start) / 50)); // divide into 50 steps
+    
+    if (fillingIntervalRef.current) clearInterval(fillingIntervalRef.current);
+    
+    fillingIntervalRef.current = setInterval(() => {
+      current = Math.min(target, current + step);
+      
+      setSiloWeights(prev => {
+        const next = [...prev];
+        next[siloIdx] = current;
+        return next;
+      });
+
+      const prog = Math.round(((current - start) / (target - start)) * 100);
+      setFillingProgress(prog);
+
+      if (current >= target) {
+        clearInterval(fillingIntervalRef.current);
+        fillingIntervalRef.current = null;
+        setActiveFillingSiloIdx(null);
+        
+        // Save completed log
+        setRelayLogs(l => [{
+          id: 'FILL-DONE-' + Math.random().toString(36).substring(7).toUpperCase(),
+          timestamp: new Date(),
+          message: `[SILO] Pengisian Silo ${siloIdx + 1} SELESAI. Berat akhir: ${target.toLocaleString('id-ID')} kg.`,
+          type: 'done'
+        }, ...l]);
+      }
+    }, 60);
+  };
+
   const startBatch = (config: {
     recipe: Recipe;
     volume: number;
@@ -2309,6 +4220,60 @@ export default function App() {
     const totalC = config.mixingCycles || 1;
     setTotalCycles(totalC);
     totalCyclesRef.current = totalC;
+
+    const vPerCycle = parseFloat((config.volume / totalC).toFixed(2));
+    setVolumePerBatch(vPerCycle);
+    setVolumePerCycle(vPerCycle);
+
+    if (!isAuto) {
+      // Manual Production Recording Module Isolation
+      setIsRunning(true);
+      setIsDone(false);
+      setIsPaused(false);
+      isPausedRef.current = false;
+      setProductionState('STARTING');
+      setMixerStatusText('PRODUKSI BERJALAN (MANUAL)');
+      setCurrentBatch(0);
+      currentBatchRef.current = 0;
+      setTargetBatch(totalC);
+      targetBatchRef.current = totalC;
+      setMixerShaftActive(true);
+
+      // Reset manual cumulative dispensed material trackers
+      manualPasir1Ref.current = 0;
+      manualPasir2Ref.current = 0;
+      manualBatu1Ref.current = 0;
+      manualBatu2Ref.current = 0;
+      manualSemenRef.current = 0;
+      manualAirRef.current = 0;
+
+      const generatedId = `BP-${new Date().getFullYear()}${String(new Date().getMonth()+1).padStart(2,'0')}-${Math.round(Math.random()*8999 + 1000)}`;
+      setBatchId(generatedId);
+
+      const timeStr = new Date().toLocaleTimeString('id-ID');
+      setManualStartTime(timeStr);
+      localStorage.setItem('hmi_manual_start_time', timeStr);
+
+      manualGateOpenTimeMsRef.current = 0;
+      isManualGateOpenTimeValidRef.current = false;
+      manualGateSequenceStateRef.current = 'IDLE';
+
+      setRelayLogs([
+        {
+          id: 'START-MANUAL-' + Math.random().toString(36).substring(7).toUpperCase(),
+          timestamp: new Date(),
+          message: "SESI PRODUKSI MANUAL DIMULAI",
+          type: 'info'
+        }
+      ]);
+
+      playKlakson(1200); // Sound start horn
+      return;
+    }
+
+    const timeStr = new Date().toLocaleTimeString('id-ID');
+    setAutoStartTime(timeStr);
+
     setCurrentCycle(1);
     setWeighingCycle(1);
     weighingCycleRef.current = 1;
@@ -2317,10 +4282,6 @@ export default function App() {
     currentBatchRef.current = 0;
     setTargetBatch(totalC);
     targetBatchRef.current = totalC;
-    
-    const vPerCycle = parseFloat((config.volume / totalC).toFixed(2));
-    setVolumePerBatch(vPerCycle);
-    setVolumePerCycle(vPerCycle);
 
     // Initial batch ID
     const generatedId = `BP-${new Date().getFullYear()}${String(new Date().getMonth()+1).padStart(2,'0')}-${Math.round(Math.random()*8999 + 1000)}`;
@@ -2358,6 +4319,23 @@ export default function App() {
     batchQueueRef.current = initialQueue;
     currentBatchNoRef.current = 1;
     weighingCycleRef.current = 1;
+
+    // Reset actual weight tracking refs for starting batch
+    actualPasir1Ref.current = 0;
+    actualPasir2Ref.current = 0;
+    actualBatu1Ref.current = 0;
+    actualBatu2Ref.current = 0;
+    actualSemenRef.current = 0;
+    actualAirRef.current = 0;
+
+    // Reset running total accumulator refs across all mixing cycles
+    accumPasir1Ref.current = 0;
+    accumPasir2Ref.current = 0;
+    accumBatu1Ref.current = 0;
+    accumBatu2Ref.current = 0;
+    accumSemenRef.current = 0;
+    accumAirRef.current = 0;
+
     weighedBatchNosRef.current = {
       pasir: 1,
       batu: 1,
@@ -2383,13 +4361,32 @@ export default function App() {
 
     // Reset machine state refs
     weighingActiveRef.current = true;
-    mixerStateRef.current = 'waiting';
+    aggregateReadyLoggedRef.current = false;
+    aggregateDischargeLoggedRef.current = false;
+    conveyorTransferStartLoggedRef.current = false;
+    conveyorTransferCompleteLoggedRef.current = false;
+    setMixerStateSync('waiting');
     dischargeTimerMsRef.current = 0;
     mixingTimerMsRef.current = 0;
     doorStepRef.current = 1;
     doorTimerMsRef.current = 0;
     sandDischargeStartedRef.current = false;
     sandCompletedElapsedSecRef.current = null;
+
+    // Reset Waiting Hopper state structure & early draining protection refs
+    pasirWeighedRef.current = false;
+    batuWeighedRef.current = false;
+    semenWeighedRef.current = false;
+    airWeighedRef.current = false;
+    setWaitingHopperStateSync('WAITING_HOPPER_IDLE');
+    setWaitingHopperGateOpenSync(false);
+    setWaitingHopperWeightSync(0);
+    aggregateTransitQueueRef.current = [];
+    aggregateInMixerRef.current = 0;
+    waitingHopperTimerRef.current = 0;
+    waitingHopperPrechargeTimerRef.current = 0;
+    setConveyorBottomPhaseSync('STANDBY');
+    conveyorBottomTimerRef.current = 0;
 
     // Reset machine state hooks
     setIsWeighingActive(true);
@@ -2400,6 +4397,7 @@ export default function App() {
     setDischargeTimeSec(0);
     setConcreteDischargeActive(false);
     setMixerShaftActive(true);
+    setConveyorUpperActiveSync(true); // turn on main belt feeder immediately at start
     setBatchProgress(0);
     setMixerOccupied(false);
 
@@ -2413,14 +4411,36 @@ export default function App() {
     
     // Reset weighing jog controller state tracking structures
     weighingJogStatesRef.current = {
-      pasir: { phase: 'fast', timer: 0, pulseCount: 0 },
-      batu: { phase: 'fast', timer: 0, pulseCount: 0 },
+      pasir1: { phase: 'fast', timer: 0, pulseCount: 0 },
+      pasir2: { phase: 'fast', timer: 0, pulseCount: 0 },
+      batu1: { phase: 'fast', timer: 0, pulseCount: 0 },
+      batu2: { phase: 'fast', timer: 0, pulseCount: 0 },
       semen: { phase: 'fast', timer: 0, pulseCount: 0 },
       air: { phase: 'fast', timer: 0, pulseCount: 0 }
     };
 
-    // Clear relay activities logs for a fresh batching production run
-    setRelayLogs([]);
+    hopperDischargeStatesRef.current = {
+      pasir: { phase: 'waiting', timer: 0 },
+      batu: { phase: 'waiting', timer: 0 },
+      semen: { phase: 'waiting', timer: 0 },
+      air: { phase: 'waiting', timer: 0 }
+    };
+
+    // Clear relay activities logs for a fresh batching production run and log initial sequences
+    setRelayLogs([
+      {
+        id: 'START-' + Math.random().toString(36).substring(7).toUpperCase(),
+        timestamp: new Date(),
+        message: "PRODUCTION START",
+        type: 'info'
+      },
+      {
+        id: 'TOP-ON-' + Math.random().toString(36).substring(7).toUpperCase(),
+        timestamp: new Date(),
+        message: "TOP CONVEYOR ON",
+        type: 'info'
+      }
+    ]);
     setGatePasir1SiloOpen(false);
     setGatePasir2SiloOpen(false);
     setGateBatu1SiloOpen(false);
@@ -2431,7 +4451,173 @@ export default function App() {
     setMixerDoorClosingActive(false);
   };
 
+  const handleManualDeviceToggle = (deviceKey: string, valForce?: boolean) => {
+    if (isAuto) return;
+
+    const createManualRelayLog = (name: string, act: boolean) => {
+      const actionText = act ? 'ON' : 'OFF';
+      const eventId = 'MANUAL-' + Math.random().toString(36).substring(7).toUpperCase();
+      setRelayLogs(prev => [
+        {
+          id: eventId,
+          timestamp: new Date(),
+          message: `[MANUAL] ${name.toUpperCase()} (${actionText})`,
+          type: act ? 'on' : 'off'
+        },
+        ...prev.slice(0, 48)
+      ]);
+    };
+
+    switch (deviceKey) {
+      case 'pasir1': {
+        const nextVal = valForce !== undefined ? valForce : !gatePasir1SiloOpen;
+        setGatePasir1SiloOpen(nextVal);
+        createManualRelayLog('Pintu Pasir 1', nextVal);
+        break;
+      }
+      case 'pasir2': {
+        const nextVal = valForce !== undefined ? valForce : !gatePasir2SiloOpen;
+        setGatePasir2SiloOpen(nextVal);
+        createManualRelayLog('Pintu Pasir 2', nextVal);
+        break;
+      }
+      case 'batu1': {
+        const nextVal = valForce !== undefined ? valForce : !gateBatu1SiloOpen;
+        setGateBatu1SiloOpen(nextVal);
+        createManualRelayLog('Pintu Batu 1', nextVal);
+        break;
+      }
+      case 'batu2': {
+        const nextVal = valForce !== undefined ? valForce : !gateBatu2SiloOpen;
+        setGateBatu2SiloOpen(nextVal);
+        createManualRelayLog('Pintu Batu 2', nextVal);
+        break;
+      }
+      case 'silo1':
+      case 'silo2':
+      case 'silo3':
+      case 'silo4':
+      case 'silo5':
+      case 'silo6': {
+        const nextVal = valForce !== undefined ? valForce : !screwSemenActive;
+        setScrewSemenActive(nextVal);
+        createManualRelayLog(`Screw Semen (${activeSiloSemen})`, nextVal);
+        break;
+      }
+      case 'selectSilo': {
+        const num = valForce as any;
+        setActiveSiloSemen(`Silo ${num}`);
+        const eventId = 'MANUAL-SILO-' + Math.random().toString(36).substring(7).toUpperCase();
+        setRelayLogs(prev => [
+          {
+            id: eventId,
+            timestamp: new Date(),
+            message: `[MANUAL] PILIH SEMEN SILO -> SILO ${num}`,
+            type: 'info'
+          },
+          ...prev.slice(0, 48)
+        ]);
+        break;
+      }
+      case 'valveIsiAir': {
+        const nextVal = valForce !== undefined ? valForce : !valveWaterActive;
+        setValveWaterActive(nextVal);
+        createManualRelayLog('Valve Water Inlet', nextVal);
+        break;
+      }
+      case 'dischargeAir': {
+        const nextVal = valForce !== undefined ? valForce : !gateWaterHopperOpen;
+        setGateWaterHopperOpenSync(nextVal);
+        createManualRelayLog('Valve Discharge Air', nextVal);
+        break;
+      }
+      case 'dischargeSemen': {
+        const nextVal = valForce !== undefined ? valForce : !gateSemenHopperOpen;
+        setGateSemenHopperOpenSync(nextVal);
+        createManualRelayLog('Valve Discharge Semen', nextVal);
+        break;
+      }
+      case 'dischargePasir': {
+        const nextVal = valForce !== undefined ? valForce : !gatePasirHopperOpen;
+        setGatePasirHopperOpenSync(nextVal);
+        createManualRelayLog('Pintu Buangan Pasir', nextVal);
+        break;
+      }
+      case 'dischargeBatu': {
+        const nextVal = valForce !== undefined ? valForce : !gateBatuHopperOpen;
+        setGateBatuHopperOpenSync(nextVal);
+        createManualRelayLog('Pintu Buangan Batu', nextVal);
+        break;
+      }
+      case 'conveyorBottom': {
+        const nextVal = valForce !== undefined ? valForce : !conveyorBottomActive;
+        setConveyorBottomActiveSync(nextVal);
+        createManualRelayLog('Feeder Conveyor Bawah', nextVal);
+        break;
+      }
+      case 'conveyorUpper': {
+        const nextVal = valForce !== undefined ? valForce : !conveyorUpperActive;
+        setConveyorUpperActiveSync(nextVal);
+        createManualRelayLog('Inclined Conveyor Atas', nextVal);
+        break;
+      }
+      case 'waitingHopperGate': {
+        const nextVal = valForce !== undefined ? valForce : !waitingHopperGateOpen;
+        setWaitingHopperGateOpenSync(nextVal);
+        createManualRelayLog('Waiting Hopper Gate', nextVal);
+        break;
+      }
+      case 'mixerDischargeGate': {
+        const nextVal = valForce !== undefined ? valForce : !(mixerDoorPercent > 0);
+        if (nextVal) {
+          setMixerDoorPercent(100);
+          setMixerDoorStateText("OPENED");
+          setConcreteDischargeActive(true);
+          setMixerDoor1OpenActive(true);
+          setMixerDoor2OpenActive(true);
+          setMixerDoor3OpenActive(true);
+          setMixerDoorClosingActive(false);
+        } else {
+          setMixerDoorPercent(0);
+          setMixerDoorStateText("CLOSED");
+          setConcreteDischargeActive(false);
+          setMixerDoor1OpenActive(false);
+          setMixerDoor2OpenActive(false);
+          setMixerDoor3OpenActive(false);
+          setMixerDoorClosingActive(true);
+          setTimeout(() => {
+            setMixerDoorClosingActive(false);
+          }, 1500);
+        }
+        createManualRelayLog('Pintu Mixer Discharge', nextVal);
+        break;
+      }
+      case 'compressor': {
+        const nextVal = valForce !== undefined ? valForce : !compressorActive;
+        setCompressorActive(nextVal);
+        createManualRelayLog('Kompresor Angin', nextVal);
+        break;
+      }
+      case 'vibrator': {
+        const nextVal = valForce !== undefined ? valForce : !vibratorActive;
+        setVibratorActive(nextVal);
+        createManualRelayLog('Vibrator Hopper', nextVal);
+        break;
+      }
+      case 'klakson': {
+        const nextVal = valForce !== undefined ? valForce : !klaksonActive;
+        setKlaksonActive(nextVal);
+        createManualRelayLog('Klakson Warning', nextVal);
+        break;
+      }
+    }
+  };
+
   const stopBatch = () => {
+    if (isRunning && !isAuto) {
+      saveManualLog();
+    }
+
     setIsRunning(false);
     setIsPaused(false);
     isPausedRef.current = false;
@@ -2457,6 +4643,13 @@ export default function App() {
     setGateWaterHopperOpenSync(false);
     setConveyorBottomActiveSync(false);
     setConveyorUpperActiveSync(false);
+    setConveyorBottomPhaseSync('STANDBY');
+    conveyorBottomTimerRef.current = 0;
+    setWaitingHopperGateOpenSync(false);
+    setWaitingHopperStateSync('WAITING_HOPPER_IDLE');
+    setWaitingHopperWeightSync(0);
+    aggregateTransitQueueRef.current = [];
+    aggregateInMixerRef.current = 0;
     setMixerShaftActive(false);
     setMixerDoorPercent(0);
     setMixerDoorStateText("CLOSED");
@@ -2490,29 +4683,239 @@ export default function App() {
     }, ...prev]);
   };
 
-  const handleStartPauseClick = () => {
-    if (!isRunning) {
-      if (isAuto) {
-        setIsBatchConfigOpen(true);
-      } else {
-        startBatch({
-          recipe: selectedRecipe,
-          volume: activeVolume,
-          mixingCycles: activeMixingCount,
-          slump: activeSlump,
-          siloSemen: activeSiloSemen,
-          mixingTime: activeMixingTime,
-          pelanggan: activePelanggan,
-          lokasi: activeLokasi,
-          noKendaraan: activeNoKendaraan,
-          sopir: activeSopir
-        });
+  const handleManualProductionTick = () => {
+    // Read current door state from Ref safely
+    const currentDoorState = mixerDoorStateTextRef.current;
+    const minOpenSec = minMixerGateOpenTimeRef.current;
+
+    if (currentDoorState === "OPENED") {
+      if (manualGateSequenceStateRef.current === 'IDLE') {
+        manualGateSequenceStateRef.current = 'OPENING';
+        manualGateOpenTimeMsRef.current = 0;
+        isManualGateOpenTimeValidRef.current = false;
+        
+        setRelayLogs(prev => [
+          {
+            id: 'MANUAL-DET-OPEN-' + Math.random().toString(36).substring(7).toUpperCase(),
+            timestamp: new Date(),
+            message: `[DETEKSI MANUAL] Pintu Mixer dideteksi TERBUKA. Mengukur durasi (Target minimal: ${minOpenSec}s)`,
+            type: 'on'
+          },
+          ...prev
+        ]);
+      } else if (manualGateSequenceStateRef.current === 'OPENING') {
+        manualGateOpenTimeMsRef.current += 100;
+        
+        // Visual indicator: simulate concrete levels reducing in manual discharge for realistic animation
+        setMixerDoorPercent(100);
+        setConcreteDischargeActive(true);
+
+        const elapsedSec = manualGateOpenTimeMsRef.current / 1000;
+        if (elapsedSec >= minOpenSec && !isManualGateOpenTimeValidRef.current) {
+          isManualGateOpenTimeValidRef.current = true;
+          
+          setRelayLogs(prev => [
+            {
+              id: 'MANUAL-DET-VAL-' + Math.random().toString(36).substring(7).toUpperCase(),
+              timestamp: new Date(),
+              message: `[DETEKSI MANUAL] Durasi buka pintu (${elapsedSec.toFixed(1)}s) melebihi batas minimal. Siklus valid! Menunggu pintu ditutup...`,
+              type: 'done'
+            },
+            ...prev
+          ]);
+        }
       }
-    } else {
-      // Toggle pause state
-      setIsPaused(prev => !prev);
+    } else { // CLOSED
+      if (manualGateSequenceStateRef.current === 'OPENING') {
+        const totalOpenSec = manualGateOpenTimeMsRef.current / 1000;
+        
+        if (isManualGateOpenTimeValidRef.current) {
+          // Complete manual production cycle counted!
+          const nextB = currentBatchRef.current + 1;
+          currentBatchRef.current = nextB;
+          setCurrentBatch(nextB);
+
+          playKlakson(700); // sound horn upon successfully counted manual batch!
+          
+          setRelayLogs(prev => [
+            {
+              id: 'MANUAL-CYC-COMP-' + Math.random().toString(36).substring(7).toUpperCase(),
+              timestamp: new Date(),
+              message: `[DETEKSI MANUAL] BATCH MANUAL KE-${nextB} BERHASIL (Discharge durasi: ${totalOpenSec.toFixed(1)}s)`,
+              type: 'done'
+            },
+            ...prev
+          ]);
+        } else {
+          // Too short! DO NOT COUNT CYCLE
+          setRelayLogs(prev => [
+            {
+              id: 'MANUAL-CYC-FAIL-' + Math.random().toString(36).substring(7).toUpperCase(),
+              timestamp: new Date(),
+              message: `[DETEKSI MANUAL] Siklus BATAL: Pintu ditutup terlalu cepat (${totalOpenSec.toFixed(1)}s), kurang dari batas minimal (${minOpenSec}s). JANGAN HITUNG SIKLUS.`,
+              type: 'off'
+            },
+            ...prev
+          ]);
+        }
+
+        // Reset manual tracking variables
+        manualGateSequenceStateRef.current = 'IDLE';
+        manualGateOpenTimeMsRef.current = 0;
+        isManualGateOpenTimeValidRef.current = false;
+        
+        // Hide concrete visual flowing
+        setConcreteDischargeActive(false);
+      }
     }
   };
+
+  const handleStartPauseClick = () => {
+    if (!isRunning) {
+      setIsBatchConfigOpen(true);
+    } else {
+      // Toggle pause state (Auto mode only)
+      if (isAuto) {
+        setIsPaused(prev => !prev);
+      }
+    }
+  };
+
+  // Dedicated manual scale simulation when in simulation mode (runs independently of auto batch runs)
+  useEffect(() => {
+    if (operationMode !== 'SIMULASI') return;
+
+    const interval = setInterval(() => {
+      // In auto mode, if isRunning is true, the automatic weighing system handles it.
+      // So we only update manually if isRunning is false, OR if it's manual mode (!isAuto).
+      if (isRunning && isAuto) return;
+
+      setScalesSync(prev => {
+        const next = { ...prev };
+        let changed = false;
+
+        // 1. Sand (Pasir)
+        if (gatePasir1SiloOpen || gatePasir2SiloOpen) {
+          const inc = (8 + Math.random() * 4) * 0.1; // 0.8 - 1.2 kg per tick
+          next.pasir.actual = parseFloat(Math.min(1000, next.pasir.actual + inc).toFixed(1));
+          changed = true;
+        }
+
+        // 2. Gravel (Batu)
+        if (gateBatu1SiloOpen || gateBatu2SiloOpen) {
+          const inc = (10 + Math.random() * 5) * 0.1; // 1.0 - 1.5 kg per tick
+          next.batu.actual = parseFloat(Math.min(1000, next.batu.actual + inc).toFixed(1));
+          changed = true;
+        }
+
+        // 3. Cement (Semen)
+        if (screwSemenActive) {
+          const inc = (6 + Math.random() * 3) * 0.1; // 0.6 - 0.9 kg per tick
+          next.semen.actual = parseFloat(Math.min(800, next.semen.actual + inc).toFixed(1));
+          changed = true;
+        }
+
+        // 4. Water (Air)
+        if (valveWaterActive) {
+          const inc = (4 + Math.random() * 2) * 0.1; // 0.4 - 0.6 kg per tick
+          next.air.actual = parseFloat(Math.min(400, next.air.actual + inc).toFixed(1));
+          changed = true;
+        }
+
+        // 5. Semen discharge
+        if (gateSemenHopperOpen) {
+          const dec = (15 + Math.random() * 8) * 0.1;
+          next.semen.actual = parseFloat(Math.max(0, next.semen.actual - dec).toFixed(1));
+          changed = true;
+        }
+
+        // 6. Water discharge
+        if (gateWaterHopperOpen) {
+          const dec = (10 + Math.random() * 5) * 0.1;
+          next.air.actual = parseFloat(Math.max(0, next.air.actual - dec).toFixed(1));
+          changed = true;
+        }
+
+        // 7. Sand and Gravel discharge/dump
+        if (conveyorBottomActive || gatePasirHopperOpen || gateBatuHopperOpen) {
+          const decPasir = (25 + Math.random() * 15) * 0.1;
+          const decBatu = (30 + Math.random() * 20) * 0.1;
+          if (conveyorBottomActive || gatePasirHopperOpen) {
+            next.pasir.actual = parseFloat(Math.max(0, next.pasir.actual - decPasir).toFixed(1));
+          }
+          if (conveyorBottomActive || gateBatuHopperOpen) {
+            next.batu.actual = parseFloat(Math.max(0, next.batu.actual - decBatu).toFixed(1));
+          }
+          changed = true;
+        }
+
+        return changed ? next : prev;
+      });
+    }, 100);
+
+    return () => clearInterval(interval);
+  }, [
+    operationMode,
+    isAuto,
+    isRunning,
+    gatePasir1SiloOpen,
+    gatePasir2SiloOpen,
+    gateBatu1SiloOpen,
+    gateBatu2SiloOpen,
+    screwSemenActive,
+    valveWaterActive,
+    gateSemenHopperOpen,
+    gateWaterHopperOpen,
+    conveyorBottomActive,
+    gatePasirHopperOpen,
+    gateBatuHopperOpen
+  ]);
+
+  // Record previous scales to compute increments in real-time for manual logging
+  const prevScalesRef = useRef(scales);
+
+  useEffect(() => {
+    if (isRunning && !isAuto) {
+      const prev = prevScalesRef.current;
+      
+      // 1. Pasir
+      const diffPasir = scales.pasir.actual - prev.pasir.actual;
+      if (diffPasir > 0) {
+        if (gatePasir1SiloOpen) {
+          manualPasir1Ref.current += diffPasir;
+        } else if (gatePasir2SiloOpen) {
+          manualPasir2Ref.current += diffPasir;
+        } else {
+          manualPasir1Ref.current += diffPasir;
+        }
+      }
+
+      // 2. Batu
+      const diffBatu = scales.batu.actual - prev.batu.actual;
+      if (diffBatu > 0) {
+        if (gateBatu1SiloOpen) {
+          manualBatu1Ref.current += diffBatu;
+        } else if (gateBatu2SiloOpen) {
+          manualBatu2Ref.current += diffBatu;
+        } else {
+          manualBatu1Ref.current += diffBatu;
+        }
+      }
+
+      // 3. Semen
+      const diffSemen = scales.semen.actual - prev.semen.actual;
+      if (diffSemen > 0) {
+        manualSemenRef.current += diffSemen;
+      }
+
+      // 4. Air
+      const diffAir = scales.air.actual - prev.air.actual;
+      if (diffAir > 0) {
+        manualAirRef.current += diffAir;
+      }
+    }
+    prevScalesRef.current = scales;
+  }, [scales, isRunning, isAuto, gatePasir1SiloOpen, gatePasir2SiloOpen, gateBatu1SiloOpen, gateBatu2SiloOpen]);
 
   // MASTER TICK PLC SIMULATOR TIMER LOOP (100ms intervals)
   useEffect(() => {
@@ -2521,21 +4924,26 @@ export default function App() {
       setAmpere(parseFloat((9.3 + Math.random() * 0.4).toFixed(1)));
       setSlump(parseFloat((11.5 + Math.random() * 1.5).toFixed(1)));
 
-      simIntervalRef.current = setInterval(() => {
+      const tickHandler = () => {
         if (isPausedRef.current) return;
 
         // Fail-safe: check if communication connection is disconnected or lost during batch
         if (webSerialService.getStatus() === "DISCONNECTED") {
           setAlarmMessage("ALARM KESELAMATAN: Komunikasi HMI ke Board Arduino Mega terputus selama proses produksi!");
         }
+
+        if (!isAutoRef.current) {
+          handleManualProductionTick();
+          return;
+        }
         
         // --- 1. WEIGHING ENGINE STATE (TICKING IN REALTIME) ---
         if (weighingActiveRef.current) {
           // Dynamic currentStep state selection for sequential visual HMI tracking
           let step: 'pasir' | 'batu' | 'semen' | 'air' | 'idle' = 'idle';
-          if (weighingJogStatesRef.current.pasir.phase !== 'done') {
+          if (weighingJogStatesRef.current.pasir1.phase !== 'done' || weighingJogStatesRef.current.pasir2.phase !== 'done') {
             step = 'pasir';
-          } else if (weighingJogStatesRef.current.batu.phase !== 'done') {
+          } else if (weighingJogStatesRef.current.batu1.phase !== 'done' || weighingJogStatesRef.current.batu2.phase !== 'done') {
             step = 'batu';
           } else if (weighingJogStatesRef.current.semen.phase !== 'done') {
             step = 'semen';
@@ -2544,45 +4952,57 @@ export default function App() {
           }
           setCurrentStep(step);
 
-          setScales(prev => {
+          setScalesSync(prev => {
             const updated = { ...prev };
             let allComplete = true;
             const joggingSettings = getJoggingSettings();
 
-            const isAnyManualJogActive = 
-              joggingPasirRef.current || 
-              joggingBatuRef.current || 
+             const isAnyManualJogActive = 
+              joggingPasir1Ref.current || 
+              joggingPasir2Ref.current || 
+              joggingBatu1Ref.current || 
+              joggingBatu2Ref.current || 
               joggingSemenRef.current || 
               joggingAirRef.current;
 
             // 1. Sand (Pasir)
-            const pasirConfig = joggingSettings.find((r: any) => r.material === "Pasir") || { targetPercent: 90, jeda: 1.5, onTime: 0.5, offTime: 1.2, tolerance: 10 };
+            const pasir1Config = joggingSettings.find((r: any) => r.material === "Pasir 1") || joggingSettings.find((r: any) => r.material === "Pasir") || { targetPercent: 90, jeda: 1.5, onTime: 0.5, offTime: 1.2, tolerance: 10 };
+            const pasir2Config = joggingSettings.find((r: any) => r.material === "Pasir 2") || joggingSettings.find((r: any) => r.material === "Pasir") || { targetPercent: 90, jeda: 1.5, onTime: 0.5, offTime: 1.2, tolerance: 10 };
             const pasirTarget = updated.pasir.target;
-            const fastLimit_pasir = (pasirConfig.targetPercent / 100) * pasirTarget;
-            const jogState_pasir = weighingJogStatesRef.current.pasir;
+            const tFactor = parseFloat((activeVolume / totalCyclesRef.current).toFixed(2));
+            const recP1 = (selectedRecipe as any).pasir1 !== undefined ? (selectedRecipe as any).pasir1 : Math.round((selectedRecipe?.targets.pasir ?? 400) * 0.7);
+            const pasir1Target = Math.min(pasirTarget, Math.round(recP1 * tFactor));
+            const pasir2Target = Math.max(0, pasirTarget - pasir1Target);
+
+            const fastLimit_pasir1 = (pasir1Config.targetPercent / 100) * pasir1Target;
+            const fastLimit_pasir2 = pasir1Target + (pasir2Config.targetPercent / 100) * pasir2Target;
+
+            const jogState_pasir1 = weighingJogStatesRef.current.pasir1;
+            const jogState_pasir2 = weighingJogStatesRef.current.pasir2;
 
             if (pasirTarget > 0) {
               // Safety interlock: jika target material sudah >= setpoint, actuator tetap OFF
-              if (updated.pasir.actual >= pasirTarget) {
+              if (updated.pasir.actual >= pasirTarget || updated.pasir.isComplete || pasirWeighedRef.current) {
                 updated.pasir.isActive = false;
                 updated.pasir.isComplete = true;
                 setGatePasirSiloOpen(false);
                 setGatePasir1SiloOpen(false);
                 setGatePasir2SiloOpen(false);
-                jogState_pasir.phase = 'done';
+                jogState_pasir1.phase = 'done';
+                jogState_pasir2.phase = 'done';
               } else {
                 // If currently manual-jogging this specific material:
-                if (joggingPasirRef.current) {
+                if (joggingPasir1Ref.current || joggingPasir2Ref.current) {
                   allComplete = false;
                   updated.pasir.isActive = true;
                   
                   // Turn on sand actuators (Independent channel)
                   setGatePasirSiloOpen(true);
-                  setGatePasir1SiloOpen(true);
-                  setGatePasir2SiloOpen(false);
+                  setGatePasir1SiloOpen(joggingPasir1Ref.current);
+                  setGatePasir2SiloOpen(joggingPasir2Ref.current);
                   
                   // Increment Sand weight smoothly
-                  const inc = (4 + Math.random() * 3) * 0.1; // 0.4 - 0.7 kg / tick
+                  const inc = operationModeRef.current === 'PRODUKSI' ? 0 : (4 + Math.random() * 3) * 0.1; // 0.4 - 0.7 kg / tick
                   updated.pasir.actual = Math.min(pasirTarget, updated.pasir.actual + inc);
                   
                   if (updated.pasir.actual >= pasirTarget) {
@@ -2591,7 +5011,8 @@ export default function App() {
                     setGatePasirSiloOpen(false);
                     setGatePasir1SiloOpen(false);
                     setGatePasir2SiloOpen(false);
-                    jogState_pasir.phase = 'done';
+                    jogState_pasir1.phase = 'done';
+                    jogState_pasir2.phase = 'done';
                   }
                 } 
                 // Else, if someone is manual-jogging ANOTHER material, isolate sand and keep it OFF
@@ -2603,135 +5024,284 @@ export default function App() {
                 }
                 // Else, automatic batching:
                 else if (isAuto) {
-                  if (jogState_pasir.phase !== 'done') {
+                  if (jogState_pasir1.phase !== 'done') {
                     allComplete = false;
                     updated.pasir.isActive = true;
 
-                    if (jogState_pasir.phase === 'fast') {
+                    if (jogState_pasir1.phase === 'fast') {
                       setGatePasirSiloOpen(true);
-                      if (updated.pasir.actual < pasirTarget / 2) {
-                        setGatePasir1SiloOpen(true);
-                        setGatePasir2SiloOpen(false);
-                      } else {
-                        setGatePasir1SiloOpen(false);
-                        setGatePasir2SiloOpen(true);
-                      }
+                      setGatePasir1SiloOpen(true);
+                      setGatePasir2SiloOpen(false);
 
-                      const inc = (12 + Math.random() * 6) * 0.1;
+                      const inc = operationModeRef.current === 'PRODUKSI' ? 0 : (12 + Math.random() * 6) * 0.1;
+                      updated.pasir.actual = Math.min(pasir1Target, updated.pasir.actual + inc);
+
+                      const isPasirJogActive = isJoggingActive(pasir1Config);
+                      if (!isPasirJogActive) {
+                        if (updated.pasir.actual >= pasir1Target) {
+                          setGatePasirSiloOpen(false);
+                          setGatePasir1SiloOpen(false);
+                          setGatePasir2SiloOpen(false);
+                          jogState_pasir1.phase = 'done';
+
+                          setRelayLogs(l => [{
+                            id: Math.random().toString(36).substring(7).toUpperCase(),
+                            timestamp: new Date(),
+                            message: "PASIR1 COMPLETE",
+                            type: 'done'
+                          }, {
+                            id: Math.random().toString(36).substring(7).toUpperCase(),
+                            timestamp: new Date(),
+                            message: "[BATCH CONCRETE] Pasir 1 selesai langsung (Single Feed Normal - JOGGING OFF). Berat: " + updated.pasir.actual.toFixed(1) + " Kg.",
+                            type: 'done'
+                          }, ...l]);
+                        }
+                      } else {
+                        if (updated.pasir.actual >= fastLimit_pasir1) {
+                          setGatePasirSiloOpen(false);
+                          setGatePasir1SiloOpen(false);
+                          setGatePasir2SiloOpen(false);
+                          jogState_pasir1.phase = 'jeda';
+                          jogState_pasir1.timer = 0;
+                          
+                          setRelayLogs(l => [{
+                            id: Math.random().toString(36).substring(7).toUpperCase(),
+                            timestamp: new Date(),
+                            message: "[FAST FEED] Pasir 1 mencapai " + pasir1Config.targetPercent + "% (" + fastLimit_pasir1.toFixed(0) + " Kg). Pintu silo ditutup. Jeda...",
+                            type: 'info'
+                          }, ...l]);
+                        }
+                      }
+                    }
+                    else if (jogState_pasir1.phase === 'jeda') {
+                      setGatePasirSiloOpen(false);
+                      setGatePasir1SiloOpen(false);
+                      setGatePasir2SiloOpen(false);
+
+                      jogState_pasir1.timer += 100;
+                      if (jogState_pasir1.timer >= pasir1Config.jeda * 1000) {
+                        const remainingDeficit = pasir1Target - updated.pasir.actual;
+                        if (remainingDeficit <= pasir1Config.tolerance) {
+                          jogState_pasir1.phase = 'done';
+
+                          setRelayLogs(l => [{
+                            id: Math.random().toString(36).substring(7).toUpperCase(),
+                            timestamp: new Date(),
+                            message: "PASIR1 COMPLETE",
+                            type: 'done'
+                          }, {
+                            id: Math.random().toString(36).substring(7).toUpperCase(),
+                            timestamp: new Date(),
+                            message: "[STABIL] Pasir 1 stabil. Sisa: " + remainingDeficit.toFixed(1) + " Kg <= Toleransi (" + pasir1Config.tolerance + " Kg). SELESAI Pasir 1.",
+                            type: 'done'
+                          }, ...l]);
+                        } else {
+                          jogState_pasir1.phase = 'jog_on';
+                          jogState_pasir1.timer = 0;
+                          jogState_pasir1.pulseCount += 1;
+
+                          setRelayLogs(l => [{
+                            id: Math.random().toString(36).substring(7).toUpperCase(),
+                            timestamp: new Date(),
+                            message: "[JOGGING] Pasir 1 kurang " + remainingDeficit.toFixed(1) + " Kg. Memulai Gate Jog ke-" + jogState_pasir1.pulseCount + ".",
+                            type: 'info'
+                          }, ...l]);
+                        }
+                      }
+                    }
+                    else if (jogState_pasir1.phase === 'jog_on') {
+                      setGatePasirSiloOpen(true);
+                      setGatePasir1SiloOpen(true);
+                      setGatePasir2SiloOpen(false);
+
+                      const inc = operationModeRef.current === 'PRODUKSI' ? 0 : (4 + Math.random() * 3) * 0.1;
+                      updated.pasir.actual = Math.min(pasir1Target, updated.pasir.actual + inc);
+
+                      jogState_pasir1.timer += 100;
+                      if (jogState_pasir1.timer >= pasir1Config.onTime * 1000) {
+                        setGatePasirSiloOpen(false);
+                        setGatePasir1SiloOpen(false);
+                        setGatePasir2SiloOpen(false);
+                        jogState_pasir1.phase = 'jog_off';
+                        jogState_pasir1.timer = 0;
+                      }
+                    }
+                    else if (jogState_pasir1.phase === 'jog_off') {
+                      setGatePasirSiloOpen(false);
+                      setGatePasir1SiloOpen(false);
+                      setGatePasir2SiloOpen(false);
+
+                      jogState_pasir1.timer += 100;
+                      if (jogState_pasir1.timer >= pasir1Config.offTime * 1000) {
+                        const remainingDeficit = pasir1Target - updated.pasir.actual;
+                        if (remainingDeficit <= pasir1Config.tolerance) {
+                          jogState_pasir1.phase = 'done';
+
+                          setRelayLogs(l => [{
+                            id: Math.random().toString(36).substring(7).toUpperCase(),
+                            timestamp: new Date(),
+                            message: "PASIR1 COMPLETE",
+                            type: 'done'
+                          }, {
+                            id: Math.random().toString(36).substring(7).toUpperCase(),
+                            timestamp: new Date(),
+                            message: "[STABIL] Pasir 1 selesai setelah " + jogState_pasir1.pulseCount + " pulsa. Sisa: " + remainingDeficit.toFixed(1) + " Kg.",
+                            type: 'done'
+                          }, ...l]);
+                        } else {
+                          jogState_pasir1.phase = 'jog_on';
+                          jogState_pasir1.timer = 0;
+                          jogState_pasir1.pulseCount += 1;
+
+                          setRelayLogs(l => [{
+                            id: Math.random().toString(36).substring(7).toUpperCase(),
+                            timestamp: new Date(),
+                            message: "[JOGGING] Pasir 1 kurang " + remainingDeficit.toFixed(1) + " Kg. Trigger pulse ke-" + jogState_pasir1.pulseCount + "...",
+                            type: 'info'
+                          }, ...l]);
+                        }
+                      }
+                    }
+                  }
+                  else if (jogState_pasir2.phase !== 'done') {
+                    allComplete = false;
+                    updated.pasir.isActive = true;
+
+                    if (jogState_pasir2.phase === 'fast') {
+                      setGatePasirSiloOpen(true);
+                      setGatePasir1SiloOpen(false);
+                      setGatePasir2SiloOpen(true);
+
+                      const inc = operationModeRef.current === 'PRODUKSI' ? 0 : (12 + Math.random() * 6) * 0.1;
                       updated.pasir.actual = Math.min(pasirTarget, updated.pasir.actual + inc);
 
-                      const isPasirJogActive = isJoggingActive(pasirConfig);
+                      const isPasirJogActive = isJoggingActive(pasir2Config);
                       if (!isPasirJogActive) {
                         if (updated.pasir.actual >= pasirTarget) {
                           setGatePasirSiloOpen(false);
                           setGatePasir1SiloOpen(false);
                           setGatePasir2SiloOpen(false);
-                          jogState_pasir.phase = 'done';
+                          jogState_pasir2.phase = 'done';
                           updated.pasir.isComplete = true;
                           updated.pasir.isActive = false;
 
                           setRelayLogs(l => [{
                             id: Math.random().toString(36).substring(7).toUpperCase(),
                             timestamp: new Date(),
-                            message: "[BATCH CONCRETE] Pasir selesai langsung (Single Feed Normal - JOGGING OFF). Berat: " + updated.pasir.actual.toFixed(1) + " Kg.",
+                            message: "PASIR2 COMPLETE",
+                            type: 'done'
+                          }, {
+                            id: Math.random().toString(36).substring(7).toUpperCase(),
+                            timestamp: new Date(),
+                            message: "[BATCH CONCRETE] Pasir 2 selesai langsung (Single Feed Normal - JOGGING OFF). Berat: " + updated.pasir.actual.toFixed(1) + " Kg.",
                             type: 'done'
                           }, ...l]);
                         }
                       } else {
-                        if (updated.pasir.actual >= fastLimit_pasir) {
+                        if (updated.pasir.actual >= fastLimit_pasir2) {
                           setGatePasirSiloOpen(false);
                           setGatePasir1SiloOpen(false);
                           setGatePasir2SiloOpen(false);
-                          jogState_pasir.phase = 'jeda';
-                          jogState_pasir.timer = 0;
+                          jogState_pasir2.phase = 'jeda';
+                          jogState_pasir2.timer = 0;
                           
                           setRelayLogs(l => [{
                             id: Math.random().toString(36).substring(7).toUpperCase(),
                             timestamp: new Date(),
-                            message: "[FAST FEED] Pasir mencapai " + pasirConfig.targetPercent + "% (" + fastLimit_pasir.toFixed(0) + " Kg). Pintu silo ditutup. Jeda...",
+                            message: "[FAST FEED] Pasir 2 mencapai " + pasir2Config.targetPercent + "% (" + fastLimit_pasir2.toFixed(0) + " Kg). Pintu silo ditutup. Jeda...",
                             type: 'info'
                           }, ...l]);
                         }
                       }
                     }
-                    else if (jogState_pasir.phase === 'jeda') {
+                    else if (jogState_pasir2.phase === 'jeda') {
                       setGatePasirSiloOpen(false);
                       setGatePasir1SiloOpen(false);
                       setGatePasir2SiloOpen(false);
 
-                      jogState_pasir.timer += 100;
-                      if (jogState_pasir.timer >= pasirConfig.jeda * 1000) {
+                      jogState_pasir2.timer += 100;
+                      if (jogState_pasir2.timer >= pasir2Config.jeda * 1000) {
                         const remainingDeficit = pasirTarget - updated.pasir.actual;
-                        if (remainingDeficit <= pasirConfig.tolerance) {
-                          jogState_pasir.phase = 'done';
+                        if (remainingDeficit <= pasir2Config.tolerance) {
+                          jogState_pasir2.phase = 'done';
                           updated.pasir.isComplete = true;
                           updated.pasir.isActive = false;
 
                           setRelayLogs(l => [{
                             id: Math.random().toString(36).substring(7).toUpperCase(),
                             timestamp: new Date(),
-                            message: "[STABIL] Pasir stabil. Sisa: " + remainingDeficit.toFixed(1) + " Kg <= Toleransi (" + pasirConfig.tolerance + " Kg). SELESAI.",
+                            message: "PASIR2 COMPLETE",
+                            type: 'done'
+                          }, {
+                            id: Math.random().toString(36).substring(7).toUpperCase(),
+                            timestamp: new Date(),
+                            message: "[STABIL] Pasir 2 stabil. Sisa: " + remainingDeficit.toFixed(1) + " Kg <= Toleransi (" + pasir2Config.tolerance + " Kg). SELESAI Pasir (1+2).",
                             type: 'done'
                           }, ...l]);
                         } else {
-                          jogState_pasir.phase = 'jog_on';
-                          jogState_pasir.timer = 0;
-                          jogState_pasir.pulseCount += 1;
+                          jogState_pasir2.phase = 'jog_on';
+                          jogState_pasir2.timer = 0;
+                          jogState_pasir2.pulseCount += 1;
 
                           setRelayLogs(l => [{
                             id: Math.random().toString(36).substring(7).toUpperCase(),
                             timestamp: new Date(),
-                            message: "[JOGGING] Pasir kurang " + remainingDeficit.toFixed(1) + " Kg. Memulai Gate Jog ke-" + jogState_pasir.pulseCount + ".",
+                            message: "[JOGGING] Pasir 2 kurang " + remainingDeficit.toFixed(1) + " Kg. Memulai Gate Jog ke-" + jogState_pasir2.pulseCount + ".",
                             type: 'info'
                           }, ...l]);
                         }
                       }
                     }
-                    else if (jogState_pasir.phase === 'jog_on') {
+                    else if (jogState_pasir2.phase === 'jog_on') {
                       setGatePasirSiloOpen(true);
-                      setGatePasir1SiloOpen(true);
-                      setGatePasir2SiloOpen(false);
+                      setGatePasir1SiloOpen(false);
+                      setGatePasir2SiloOpen(true);
 
-                      const inc = (4 + Math.random() * 3) * 0.1;
+                      const inc = operationModeRef.current === 'PRODUKSI' ? 0 : (4 + Math.random() * 3) * 0.1;
                       updated.pasir.actual = Math.min(pasirTarget, updated.pasir.actual + inc);
 
-                      jogState_pasir.timer += 100;
-                      if (jogState_pasir.timer >= pasirConfig.onTime * 1000) {
+                      jogState_pasir2.timer += 100;
+                      if (jogState_pasir2.timer >= pasir2Config.onTime * 1000) {
                         setGatePasirSiloOpen(false);
                         setGatePasir1SiloOpen(false);
                         setGatePasir2SiloOpen(false);
-                        jogState_pasir.phase = 'jog_off';
-                        jogState_pasir.timer = 0;
+                        jogState_pasir2.phase = 'jog_off';
+                        jogState_pasir2.timer = 0;
                       }
                     }
-                    else if (jogState_pasir.phase === 'jog_off') {
+                    else if (jogState_pasir2.phase === 'jog_off') {
                       setGatePasirSiloOpen(false);
                       setGatePasir1SiloOpen(false);
                       setGatePasir2SiloOpen(false);
 
-                      jogState_pasir.timer += 100;
-                      if (jogState_pasir.timer >= pasirConfig.offTime * 1000) {
+                      jogState_pasir2.timer += 100;
+                      if (jogState_pasir2.timer >= pasir2Config.offTime * 1000) {
                         const remainingDeficit = pasirTarget - updated.pasir.actual;
-                        if (remainingDeficit <= pasirConfig.tolerance) {
-                          jogState_pasir.phase = 'done';
+                        if (remainingDeficit <= pasir2Config.tolerance) {
+                          jogState_pasir2.phase = 'done';
                           updated.pasir.isComplete = true;
                           updated.pasir.isActive = false;
 
                           setRelayLogs(l => [{
                             id: Math.random().toString(36).substring(7).toUpperCase(),
                             timestamp: new Date(),
-                            message: "[STABIL] Pasir selesai setelah " + jogState_pasir.pulseCount + " pulsa. Sisa: " + remainingDeficit.toFixed(1) + " Kg.",
+                            message: "PASIR2 COMPLETE",
+                            type: 'done'
+                          }, {
+                            id: Math.random().toString(36).substring(7).toUpperCase(),
+                            timestamp: new Date(),
+                            message: "[STABIL] Pasir 2 selesai setelah " + jogState_pasir2.pulseCount + " pulsa. Sisa: " + remainingDeficit.toFixed(1) + " Kg.",
                             type: 'done'
                           }, ...l]);
                         } else {
-                          jogState_pasir.phase = 'jog_on';
-                          jogState_pasir.timer = 0;
-                          jogState_pasir.pulseCount += 1;
+                          jogState_pasir2.phase = 'jog_on';
+                          jogState_pasir2.timer = 0;
+                          jogState_pasir2.pulseCount += 1;
 
                           setRelayLogs(l => [{
                             id: Math.random().toString(36).substring(7).toUpperCase(),
                             timestamp: new Date(),
-                            message: "[JOGGING] Pasir kurang " + remainingDeficit.toFixed(1) + " Kg. Trigger pulse ke-" + jogState_pasir.pulseCount + "...",
+                            message: "[JOGGING] Pasir 2 kurang " + remainingDeficit.toFixed(1) + " Kg. Trigger pulse ke-" + jogState_pasir2.pulseCount + "...",
                             type: 'info'
                           }, ...l]);
                         }
@@ -2757,33 +5327,42 @@ export default function App() {
             }
 
             // 2. Stone (Batu)
-            const batuConfig = joggingSettings.find((r: any) => r.material === "Batu") || { targetPercent: 92, jeda: 1.5, onTime: 0.4, offTime: 1.3, tolerance: 12 };
+            const batu1Config = joggingSettings.find((r: any) => r.material === "Batu 1") || joggingSettings.find((r: any) => r.material === "Batu") || { targetPercent: 92, jeda: 1.5, onTime: 0.4, offTime: 1.3, tolerance: 12 };
+            const batu2Config = joggingSettings.find((r: any) => r.material === "Batu 2") || joggingSettings.find((r: any) => r.material === "Batu") || { targetPercent: 92, jeda: 1.5, onTime: 0.4, offTime: 1.3, tolerance: 12 };
             const batuTarget = updated.batu.target;
-            const fastLimit_batu = (batuConfig.targetPercent / 100) * batuTarget;
-            const jogState_batu = weighingJogStatesRef.current.batu;
+            const recB1 = (selectedRecipe as any).batu1 !== undefined ? (selectedRecipe as any).batu1 : Math.round((selectedRecipe?.targets.batu ?? 400) * 0.7);
+            const batu1Target = Math.min(batuTarget, Math.round(recB1 * tFactor));
+            const batu2Target = Math.max(0, batuTarget - batu1Target);
+
+            const fastLimit_batu1 = (batu1Config.targetPercent / 100) * batu1Target;
+            const fastLimit_batu2 = batu1Target + (batu2Config.targetPercent / 100) * batu2Target;
+
+            const jogState_batu1 = weighingJogStatesRef.current.batu1;
+            const jogState_batu2 = weighingJogStatesRef.current.batu2;
 
             if (batuTarget > 0) {
               // Safety interlock: jika target material sudah >= setpoint, actuator tetap OFF
-              if (updated.batu.actual >= batuTarget) {
+              if (updated.batu.actual >= batuTarget || updated.batu.isComplete || batuWeighedRef.current) {
                 updated.batu.isActive = false;
                 updated.batu.isComplete = true;
                 setGateBatuSiloOpen(false);
                 setGateBatu1SiloOpen(false);
                 setGateBatu2SiloOpen(false);
-                jogState_batu.phase = 'done';
+                jogState_batu1.phase = 'done';
+                jogState_batu2.phase = 'done';
               } else {
                 // If currently manual-jogging this specific material:
-                if (joggingBatuRef.current) {
+                if (joggingBatu1Ref.current || joggingBatu2Ref.current) {
                   allComplete = false;
                   updated.batu.isActive = true;
                   
                   // Turn on stone actuators (Independent channel)
                   setGateBatuSiloOpen(true);
-                  setGateBatu1SiloOpen(true);
-                  setGateBatu2SiloOpen(false);
+                  setGateBatu1SiloOpen(joggingBatu1Ref.current);
+                  setGateBatu2SiloOpen(joggingBatu2Ref.current);
                   
                   // Increment Stone weight smoothly
-                  const inc = (5 + Math.random() * 3) * 0.1; // 0.5 - 0.8 kg / tick
+                  const inc = operationModeRef.current === 'PRODUKSI' ? 0 : (5 + Math.random() * 3) * 0.1; // 0.5 - 0.8 kg / tick
                   updated.batu.actual = Math.min(batuTarget, updated.batu.actual + inc);
                   
                   if (updated.batu.actual >= batuTarget) {
@@ -2792,7 +5371,8 @@ export default function App() {
                     setGateBatuSiloOpen(false);
                     setGateBatu1SiloOpen(false);
                     setGateBatu2SiloOpen(false);
-                    jogState_batu.phase = 'done';
+                    jogState_batu1.phase = 'done';
+                    jogState_batu2.phase = 'done';
                   }
                 } 
                 // Else, if someone is manual-jogging ANOTHER material, isolate stone and keep it OFF
@@ -2804,143 +5384,304 @@ export default function App() {
                 }
                 // Else, automatic batching:
                 else if (isAuto) {
-                  if (jogState_batu.phase !== 'done') {
-                    allComplete = false;
-                    updated.batu.isActive = true;
+                  const isSandBatchFinished = (updated.pasir.target === 0 || (jogState_pasir1.phase === 'done' && jogState_pasir2.phase === 'done'));
+                  const shouldWeighStone = (batchingPlantMode !== 'SYSTEM_2') || isSandBatchFinished;
 
-                    if (jogState_batu.phase === 'fast') {
-                      setGateBatuSiloOpen(true);
-                      if (updated.batu.actual < batuTarget / 2) {
+                  if (shouldWeighStone) {
+                    if (jogState_batu1.phase !== 'done') {
+                      allComplete = false;
+                      updated.batu.isActive = true;
+
+                      if (jogState_batu1.phase === 'fast') {
+                        setGateBatuSiloOpen(true);
                         setGateBatu1SiloOpen(true);
                         setGateBatu2SiloOpen(false);
-                      } else {
-                        setGateBatu1SiloOpen(false);
-                        setGateBatu2SiloOpen(true);
-                      }
 
-                      const inc = (15 + Math.random() * 8) * 0.1;
-                      updated.batu.actual = Math.min(batuTarget, updated.batu.actual + inc);
+                        const inc = operationModeRef.current === 'PRODUKSI' ? 0 : (15 + Math.random() * 8) * 0.1;
+                        updated.batu.actual = Math.min(batu1Target, updated.batu.actual + inc);
 
-                      const isBatuJogActive = isJoggingActive(batuConfig);
-                      if (!isBatuJogActive) {
-                        if (updated.batu.actual >= batuTarget) {
-                          setGateBatuSiloOpen(false);
-                          setGateBatu1SiloOpen(false);
-                          setGateBatu2SiloOpen(false);
-                          jogState_batu.phase = 'done';
-                          updated.batu.isComplete = true;
-                          updated.batu.isActive = false;
+                        const isBatuJogActive = isJoggingActive(batu1Config);
+                        if (!isBatuJogActive) {
+                          if (updated.batu.actual >= batu1Target) {
+                            setGateBatuSiloOpen(false);
+                            setGateBatu1SiloOpen(false);
+                            setGateBatu2SiloOpen(false);
+                            jogState_batu1.phase = 'done';
 
-                          setRelayLogs(l => [{
-                            id: Math.random().toString(36).substring(7).toUpperCase(),
-                            timestamp: new Date(),
-                            message: "[BATCH CONCRETE] Batu selesai langsung (Single Feed Normal - JOGGING OFF). Berat: " + updated.batu.actual.toFixed(1) + " Kg.",
-                            type: 'done'
-                          }, ...l]);
-                        }
-                      } else {
-                        if (updated.batu.actual >= fastLimit_batu) {
-                          setGateBatuSiloOpen(false);
-                          setGateBatu1SiloOpen(false);
-                          setGateBatu2SiloOpen(false);
-                          jogState_batu.phase = 'jeda';
-                          jogState_batu.timer = 0;
-                          
-                          setRelayLogs(l => [{
-                            id: Math.random().toString(36).substring(7).toUpperCase(),
-                            timestamp: new Date(),
-                            message: "[FAST FEED] Batu mencapai " + batuConfig.targetPercent + "% (" + fastLimit_batu.toFixed(0) + " Kg). Pintu silo ditutup. Jeda...",
-                            type: 'info'
-                          }, ...l]);
-                        }
-                      }
-                    }
-                    else if (jogState_batu.phase === 'jeda') {
-                      setGateBatuSiloOpen(false);
-                      setGateBatu1SiloOpen(false);
-                      setGateBatu2SiloOpen(false);
-
-                      jogState_batu.timer += 100;
-                      if (jogState_batu.timer >= batuConfig.jeda * 1000) {
-                        const remainingDeficit = batuTarget - updated.batu.actual;
-                        if (remainingDeficit <= batuConfig.tolerance) {
-                          jogState_batu.phase = 'done';
-                          updated.batu.isComplete = true;
-                          updated.batu.isActive = false;
-
-                          setRelayLogs(l => [{
-                            id: Math.random().toString(36).substring(7).toUpperCase(),
-                            timestamp: new Date(),
-                            message: "[STABIL] Batu stabil. Sisa: " + remainingDeficit.toFixed(1) + " Kg <= Toleransi (" + batuConfig.tolerance + " Kg). SELESAI.",
-                            type: 'done'
-                          }, ...l]);
+                            setRelayLogs(l => [{
+                              id: Math.random().toString(36).substring(7).toUpperCase(),
+                              timestamp: new Date(),
+                              message: "BATU1 COMPLETE",
+                              type: 'done'
+                            }, {
+                              id: Math.random().toString(36).substring(7).toUpperCase(),
+                              timestamp: new Date(),
+                              message: "[BATCH CONCRETE] Batu 1 selesai langsung (Single Feed Normal - JOGGING OFF). Berat: " + updated.batu.actual.toFixed(1) + " Kg.",
+                              type: 'done'
+                            }, ...l]);
+                          }
                         } else {
-                          jogState_batu.phase = 'jog_on';
-                          jogState_batu.timer = 0;
-                          jogState_batu.pulseCount += 1;
-
-                          setRelayLogs(l => [{
-                            id: Math.random().toString(36).substring(7).toUpperCase(),
-                            timestamp: new Date(),
-                            message: "[JOGGING] Batu kurang " + remainingDeficit.toFixed(1) + " Kg. Memulai Gate Jog ke-" + jogState_batu.pulseCount + ".",
-                            type: 'info'
-                          }, ...l]);
+                          if (updated.batu.actual >= fastLimit_batu1) {
+                            setGateBatuSiloOpen(false);
+                            setGateBatu1SiloOpen(false);
+                            setGateBatu2SiloOpen(false);
+                            jogState_batu1.phase = 'jeda';
+                            jogState_batu1.timer = 0;
+                            
+                            setRelayLogs(l => [{
+                              id: Math.random().toString(36).substring(7).toUpperCase(),
+                              timestamp: new Date(),
+                              message: "[FAST FEED] Batu 1 mencapai " + batu1Config.targetPercent + "% (" + fastLimit_batu1.toFixed(0) + " Kg). Pintu silo ditutup. Jeda...",
+                              type: 'info'
+                            }, ...l]);
+                          }
                         }
                       }
-                    }
-                    else if (jogState_batu.phase === 'jog_on') {
-                      setGateBatuSiloOpen(true);
-                      setGateBatu1SiloOpen(true);
-                      setGateBatu2SiloOpen(false);
-
-                      const inc = (5 + Math.random() * 3) * 0.1;
-                      updated.batu.actual = Math.min(batuTarget, updated.batu.actual + inc);
-
-                      jogState_batu.timer += 100;
-                      if (jogState_batu.timer >= batuConfig.onTime * 1000) {
+                      else if (jogState_batu1.phase === 'jeda') {
                         setGateBatuSiloOpen(false);
                         setGateBatu1SiloOpen(false);
                         setGateBatu2SiloOpen(false);
-                        jogState_batu.phase = 'jog_off';
-                        jogState_batu.timer = 0;
+
+                        jogState_batu1.timer += 100;
+                        if (jogState_batu1.timer >= batu1Config.jeda * 1000) {
+                          const remainingDeficit = batu1Target - updated.batu.actual;
+                          if (remainingDeficit <= batu1Config.tolerance) {
+                            jogState_batu1.phase = 'done';
+
+                            setRelayLogs(l => [{
+                              id: Math.random().toString(36).substring(7).toUpperCase(),
+                              timestamp: new Date(),
+                              message: "BATU1 COMPLETE",
+                              type: 'done'
+                            }, {
+                              id: Math.random().toString(36).substring(7).toUpperCase(),
+                              timestamp: new Date(),
+                              message: "[STABIL] Batu 1 stabil. Sisa: " + remainingDeficit.toFixed(1) + " Kg <= Toleransi (" + batu1Config.tolerance + " Kg). SELESAI Batu 1.",
+                              type: 'done'
+                            }, ...l]);
+                          } else {
+                            jogState_batu1.phase = 'jog_on';
+                            jogState_batu1.timer = 0;
+                            jogState_batu1.pulseCount += 1;
+
+                            setRelayLogs(l => [{
+                              id: Math.random().toString(36).substring(7).toUpperCase(),
+                              timestamp: new Date(),
+                              message: "[JOGGING] Batu 1 kurang " + remainingDeficit.toFixed(1) + " Kg. Memulai Gate Jog ke-" + jogState_batu1.pulseCount + ".",
+                              type: 'info'
+                            }, ...l]);
+                          }
+                        }
                       }
-                    }
-                    else if (jogState_batu.phase === 'jog_off') {
-                      setGateBatuSiloOpen(false);
-                      setGateBatu1SiloOpen(false);
-                      setGateBatu2SiloOpen(false);
+                      else if (jogState_batu1.phase === 'jog_on') {
+                        setGateBatuSiloOpen(true);
+                        setGateBatu1SiloOpen(true);
+                        setGateBatu2SiloOpen(false);
 
-                      jogState_batu.timer += 100;
-                      if (jogState_batu.timer >= batuConfig.offTime * 1000) {
-                        const remainingDeficit = batuTarget - updated.batu.actual;
-                        if (remainingDeficit <= batuConfig.tolerance) {
-                          jogState_batu.phase = 'done';
-                          updated.batu.isComplete = true;
-                          updated.batu.isActive = false;
+                        const inc = operationModeRef.current === 'PRODUKSI' ? 0 : (5 + Math.random() * 3) * 0.1;
+                        updated.batu.actual = Math.min(batu1Target, updated.batu.actual + inc);
 
-                          setRelayLogs(l => [{
-                            id: Math.random().toString(36).substring(7).toUpperCase(),
-                            timestamp: new Date(),
-                            message: "[STABIL] Batu selesai setelah " + jogState_batu.pulseCount + " pulsa. Sisa: " + remainingDeficit.toFixed(1) + " Kg.",
-                            type: 'done'
-                          }, ...l]);
-                        } else {
-                          jogState_batu.phase = 'jog_on';
-                          jogState_batu.timer = 0;
-                          jogState_batu.pulseCount += 1;
+                        jogState_batu1.timer += 100;
+                        if (jogState_batu1.timer >= batu1Config.onTime * 1000) {
+                          setGateBatuSiloOpen(false);
+                          setGateBatu1SiloOpen(false);
+                          setGateBatu2SiloOpen(false);
+                          jogState_batu1.phase = 'jog_off';
+                          jogState_batu1.timer = 0;
+                        }
+                      }
+                      else if (jogState_batu1.phase === 'jog_off') {
+                        setGateBatuSiloOpen(false);
+                        setGateBatu1SiloOpen(false);
+                        setGateBatu2SiloOpen(false);
 
-                          setRelayLogs(l => [{
-                            id: Math.random().toString(36).substring(7).toUpperCase(),
-                            timestamp: new Date(),
-                            message: "[JOGGING] Batu kurang " + remainingDeficit.toFixed(1) + " Kg. Trigger pulse ke-" + jogState_batu.pulseCount + "...",
-                            type: 'info'
-                          }, ...l]);
+                        jogState_batu1.timer += 100;
+                        if (jogState_batu1.timer >= batu1Config.offTime * 1000) {
+                          const remainingDeficit = batu1Target - updated.batu.actual;
+                          if (remainingDeficit <= batu1Config.tolerance) {
+                            jogState_batu1.phase = 'done';
+
+                            setRelayLogs(l => [{
+                              id: Math.random().toString(36).substring(7).toUpperCase(),
+                              timestamp: new Date(),
+                              message: "BATU1 COMPLETE",
+                              type: 'done'
+                            }, {
+                              id: Math.random().toString(36).substring(7).toUpperCase(),
+                              timestamp: new Date(),
+                              message: "[STABIL] Batu 1 selesai setelah " + jogState_batu1.pulseCount + " pulsa. Sisa: " + remainingDeficit.toFixed(1) + " Kg.",
+                              type: 'done'
+                            }, ...l]);
+                          } else {
+                            jogState_batu1.phase = 'jog_on';
+                            jogState_batu1.timer = 0;
+                            jogState_batu1.pulseCount += 1;
+
+                            setRelayLogs(l => [{
+                              id: Math.random().toString(36).substring(7).toUpperCase(),
+                              timestamp: new Date(),
+                              message: "[JOGGING] Batu 1 kurang " + remainingDeficit.toFixed(1) + " Kg. Trigger pulse ke-" + jogState_batu1.pulseCount + "...",
+                              type: 'info'
+                            }, ...l]);
+                          }
                         }
                       }
                     }
+                    else if (jogState_batu2.phase !== 'done') {
+                      allComplete = false;
+                      updated.batu.isActive = true;
+
+                      if (jogState_batu2.phase === 'fast') {
+                        setGateBatuSiloOpen(true);
+                        setGateBatu1SiloOpen(false);
+                        setGateBatu2SiloOpen(true);
+
+                        const inc = operationModeRef.current === 'PRODUKSI' ? 0 : (15 + Math.random() * 8) * 0.1;
+                        updated.batu.actual = Math.min(batuTarget, updated.batu.actual + inc);
+
+                        const isBatuJogActive = isJoggingActive(batu2Config);
+                        if (!isBatuJogActive) {
+                          if (updated.batu.actual >= batuTarget) {
+                            setGateBatuSiloOpen(false);
+                            setGateBatu1SiloOpen(false);
+                            setGateBatu2SiloOpen(false);
+                            jogState_batu2.phase = 'done';
+                            updated.batu.isComplete = true;
+                            updated.batu.isActive = false;
+
+                            setRelayLogs(l => [{
+                              id: Math.random().toString(36).substring(7).toUpperCase(),
+                              timestamp: new Date(),
+                              message: "BATU2 COMPLETE",
+                              type: 'done'
+                            }, {
+                              id: Math.random().toString(36).substring(7).toUpperCase(),
+                              timestamp: new Date(),
+                              message: "[BATCH CONCRETE] Batu 2 selesai langsung (Single Feed Normal - JOGGING OFF). Berat: " + updated.batu.actual.toFixed(1) + " Kg.",
+                              type: 'done'
+                            }, ...l]);
+                          }
+                        } else {
+                          if (updated.batu.actual >= fastLimit_batu2) {
+                            setGateBatuSiloOpen(false);
+                            setGateBatu1SiloOpen(false);
+                            setGateBatu2SiloOpen(false);
+                            jogState_batu2.phase = 'jeda';
+                            jogState_batu2.timer = 0;
+                            
+                            setRelayLogs(l => [{
+                              id: Math.random().toString(36).substring(7).toUpperCase(),
+                              timestamp: new Date(),
+                              message: "[FAST FEED] Batu 2 mencapai " + batu2Config.targetPercent + "% (" + fastLimit_batu2.toFixed(0) + " Kg). Pintu silo ditutup. Jeda...",
+                              type: 'info'
+                            }, ...l]);
+                          }
+                        }
+                      }
+                      else if (jogState_batu2.phase === 'jeda') {
+                        setGateBatuSiloOpen(false);
+                        setGateBatu1SiloOpen(false);
+                        setGateBatu2SiloOpen(false);
+
+                        jogState_batu2.timer += 100;
+                        if (jogState_batu2.timer >= batu2Config.jeda * 1000) {
+                          const remainingDeficit = batuTarget - updated.batu.actual;
+                          if (remainingDeficit <= batu2Config.tolerance) {
+                            jogState_batu2.phase = 'done';
+                            updated.batu.isComplete = true;
+                            updated.batu.isActive = false;
+
+                            setRelayLogs(l => [{
+                              id: Math.random().toString(36).substring(7).toUpperCase(),
+                              timestamp: new Date(),
+                              message: "BATU2 COMPLETE",
+                              type: 'done'
+                            }, {
+                              id: Math.random().toString(36).substring(7).toUpperCase(),
+                              timestamp: new Date(),
+                              message: "[STABIL] Batu 2 stabil. Sisa: " + remainingDeficit.toFixed(1) + " Kg <= Toleransi (" + batu2Config.tolerance + " Kg). SELESAI Batu (1+2).",
+                              type: 'done'
+                            }, ...l]);
+                          } else {
+                            jogState_batu2.phase = 'jog_on';
+                            jogState_batu2.timer = 0;
+                            jogState_batu2.pulseCount += 1;
+
+                            setRelayLogs(l => [{
+                              id: Math.random().toString(36).substring(7).toUpperCase(),
+                              timestamp: new Date(),
+                              message: "[JOGGING] Batu 2 kurang " + remainingDeficit.toFixed(1) + " Kg. Memulai Gate Jog ke-" + jogState_batu2.pulseCount + ".",
+                              type: 'info'
+                            }, ...l]);
+                          }
+                        }
+                      }
+                      else if (jogState_batu2.phase === 'jog_on') {
+                        setGateBatuSiloOpen(true);
+                        setGateBatu1SiloOpen(false);
+                        setGateBatu2SiloOpen(true);
+
+                        const inc = operationModeRef.current === 'PRODUKSI' ? 0 : (5 + Math.random() * 3) * 0.1;
+                        updated.batu.actual = Math.min(batuTarget, updated.batu.actual + inc);
+
+                        jogState_batu2.timer += 100;
+                        if (jogState_batu2.timer >= batu2Config.onTime * 1000) {
+                          setGateBatuSiloOpen(false);
+                          setGateBatu1SiloOpen(false);
+                          setGateBatu2SiloOpen(false);
+                          jogState_batu2.phase = 'jog_off';
+                          jogState_batu2.timer = 0;
+                        }
+                      }
+                      else if (jogState_batu2.phase === 'jog_off') {
+                        setGateBatuSiloOpen(false);
+                        setGateBatu1SiloOpen(false);
+                        setGateBatu2SiloOpen(false);
+
+                        jogState_batu2.timer += 100;
+                        if (jogState_batu2.timer >= batu2Config.offTime * 1000) {
+                          const remainingDeficit = batuTarget - updated.batu.actual;
+                          if (remainingDeficit <= batu2Config.tolerance) {
+                            jogState_batu2.phase = 'done';
+                            updated.batu.isComplete = true;
+                            updated.batu.isActive = false;
+
+                            setRelayLogs(l => [{
+                              id: Math.random().toString(36).substring(7).toUpperCase(),
+                              timestamp: new Date(),
+                              message: "BATU2 COMPLETE",
+                              type: 'done'
+                            }, {
+                              id: Math.random().toString(36).substring(7).toUpperCase(),
+                              timestamp: new Date(),
+                              message: "[STABIL] Batu 2 selesai setelah " + jogState_batu2.pulseCount + " pulsa. Sisa: " + remainingDeficit.toFixed(1) + " Kg.",
+                              type: 'done'
+                            }, ...l]);
+                          } else {
+                            jogState_batu2.phase = 'jog_on';
+                            jogState_batu2.timer = 0;
+                            jogState_batu2.pulseCount += 1;
+
+                            setRelayLogs(l => [{
+                              id: Math.random().toString(36).substring(7).toUpperCase(),
+                              timestamp: new Date(),
+                              message: "[JOGGING] Batu 2 kurang " + remainingDeficit.toFixed(1) + " Kg. Trigger pulse ke-" + jogState_batu2.pulseCount + "...",
+                              type: 'info'
+                            }, ...l]);
+                          }
+                        }
+                      }
+                    } else {
+                      updated.batu.isActive = false;
+                      updated.batu.isComplete = true;
+                      setGateBatuSiloOpen(false);
+                      setGateBatu1SiloOpen(false);
+                      setGateBatu2SiloOpen(false);
+                    }
                   } else {
+                    // Sand is still weighing under System 2. Keep stone gates closed.
+                    allComplete = false;
                     updated.batu.isActive = false;
-                    updated.batu.isComplete = true;
                     setGateBatuSiloOpen(false);
                     setGateBatu1SiloOpen(false);
                     setGateBatu2SiloOpen(false);
@@ -2980,7 +5721,7 @@ export default function App() {
                   setScrewSemenActive(true);
                   
                   // Increment Cement weight smoothly
-                  const inc = (2.5 + Math.random() * 1.5) * 0.1; // 0.25 - 0.4 kg / tick
+                  const inc = operationModeRef.current === 'PRODUKSI' ? 0 : (2.5 + Math.random() * 1.5) * 0.1; // 0.25 - 0.4 kg / tick
                   updated.semen.actual = Math.min(semenTarget, updated.semen.actual + inc);
                   
                   if (updated.semen.actual >= semenTarget) {
@@ -3004,7 +5745,7 @@ export default function App() {
                     if (jogState_semen.phase === 'fast') {
                       setScrewSemenActive(true);
 
-                      const inc = (8 + Math.random() * 4) * 0.1; 
+                      const inc = operationModeRef.current === 'PRODUKSI' ? 0 : (8 + Math.random() * 4) * 0.1; 
                       updated.semen.actual = Math.min(semenTarget, updated.semen.actual + inc);
 
                       const isSemenJogActive = isJoggingActive(semenConfig);
@@ -3071,7 +5812,7 @@ export default function App() {
                     else if (jogState_semen.phase === 'jog_on') {
                       setScrewSemenActive(true);
 
-                      const inc = (2.5 + Math.random() * 1.5) * 0.1; 
+                      const inc = operationModeRef.current === 'PRODUKSI' ? 0 : (2.5 + Math.random() * 1.5) * 0.1; 
                       updated.semen.actual = Math.min(semenTarget, updated.semen.actual + inc);
 
                       jogState_semen.timer += 100;
@@ -3150,7 +5891,7 @@ export default function App() {
                   setValveWaterActive(true);
                   
                   // Increment Water weight smoothly
-                  const inc = (1.5 + Math.random() * 1.0) * 0.1; // 0.15 - 0.25 kg / tick
+                  const inc = operationModeRef.current === 'PRODUKSI' ? 0 : (1.5 + Math.random() * 1.0) * 0.1; // 0.15 - 0.25 kg / tick
                   updated.air.actual = Math.min(airTarget, updated.air.actual + inc);
                   
                   if (updated.air.actual >= airTarget) {
@@ -3174,7 +5915,7 @@ export default function App() {
                     if (jogState_air.phase === 'fast') {
                       setValveWaterActive(true);
 
-                      const inc = (5 + Math.random() * 2) * 0.1; 
+                      const inc = operationModeRef.current === 'PRODUKSI' ? 0 : (5 + Math.random() * 2) * 0.1; 
                       updated.air.actual = Math.min(airTarget, updated.air.actual + inc);
 
                       const isAirJogActive = isJoggingActive(airConfig);
@@ -3241,7 +5982,7 @@ export default function App() {
                     else if (jogState_air.phase === 'jog_on') {
                       setValveWaterActive(true);
 
-                      const inc = (1.5 + Math.random() * 1.0) * 0.1; 
+                      const inc = operationModeRef.current === 'PRODUKSI' ? 0 : (1.5 + Math.random() * 1.0) * 0.1; 
                       updated.air.actual = Math.min(airTarget, updated.air.actual + inc);
 
                       jogState_air.timer += 100;
@@ -3297,14 +6038,491 @@ export default function App() {
               }
             }
 
-            if (allComplete) {
+            if (allComplete || updated.pasir.isComplete) {
+              pasirWeighedRef.current = true;
+            }
+            if (allComplete || updated.batu.isComplete) {
+              batuWeighedRef.current = true;
+            }
+            if (allComplete || updated.semen.isComplete) {
+              semenWeighedRef.current = true;
+            }
+            if (allComplete || updated.air.isComplete) {
+              airWeighedRef.current = true;
+            }
+
+            const allWeighed = (pasirWeighedRef.current || updated.pasir.target === 0) &&
+                               (batuWeighedRef.current || updated.batu.target === 0) &&
+                               (semenWeighedRef.current || updated.semen.target === 0) &&
+                               (airWeighedRef.current || updated.air.target === 0);
+
+            const isAggWeighedNow = (pasirWeighedRef.current || updated.pasir.target === 0) &&
+                                     (batuWeighedRef.current || updated.batu.target === 0);
+
+            if (isAggWeighedNow && !aggregateReadyLoggedRef.current) {
+              aggregateReadyLoggedRef.current = true;
+              setProductionState('AGGREGATE_READY');
+              setRelayLogs(l => [{
+                id: 'AGG-RDY-' + Math.random().toString(36).substring(7).toUpperCase(),
+                timestamp: new Date(),
+                message: "AGGREGATE_READY",
+                type: 'done'
+              }, ...l]);
+            }
+
+            if (allWeighed) {
               weighingActiveRef.current = false;
               setIsWeighingActive(false);
-              setProductionState('READY TO DISCHARGE');
+              setProductionState('AGGREGATE_READY');
+            }
+
+            // --- Declarative tracking of individual material cycles' actual weights ---
+            const jStateP1 = weighingJogStatesRef.current.pasir1;
+            const jStateP2 = weighingJogStatesRef.current.pasir2;
+            const jStateB1 = weighingJogStatesRef.current.batu1;
+            const jStateB2 = weighingJogStatesRef.current.batu2;
+            const jStateSemen = weighingJogStatesRef.current.semen;
+            const jStateAir = weighingJogStatesRef.current.air;
+
+            if (updated.pasir.target === 0) {
+              actualPasir1Ref.current = 0;
+              actualPasir2Ref.current = 0;
+              jStateP1.phase = 'done';
+              jStateP2.phase = 'done';
+            } else {
+              if (jStateP1.phase !== 'done') {
+                actualPasir1Ref.current = updated.pasir.actual;
+              }
+              if (jStateP1.phase === 'done' && jStateP2.phase !== 'done') {
+                actualPasir2Ref.current = Math.max(0, updated.pasir.actual - actualPasir1Ref.current);
+              }
+            }
+
+            if (updated.batu.target === 0) {
+              actualBatu1Ref.current = 0;
+              actualBatu2Ref.current = 0;
+              jStateB1.phase = 'done';
+              jStateB2.phase = 'done';
+            } else {
+              if (jStateB1.phase !== 'done') {
+                actualBatu1Ref.current = updated.batu.actual;
+              }
+              if (jStateB1.phase === 'done' && jStateB2.phase !== 'done') {
+                actualBatu2Ref.current = Math.max(0, updated.batu.actual - actualBatu1Ref.current);
+              }
+            }
+
+            if (updated.semen.target === 0) {
+              actualSemenRef.current = 0;
+              jStateSemen.phase = 'done';
+            } else if (jStateSemen.phase !== 'done') {
+              actualSemenRef.current = updated.semen.actual;
+            }
+
+            if (updated.air.target === 0) {
+              actualAirRef.current = 0;
+              jStateAir.phase = 'done';
+            } else if (jStateAir.phase !== 'done') {
+              actualAirRef.current = updated.air.actual;
+            }
+
+            const actualIncSemen = updated.semen.actual - prev.semen.actual;
+            if (actualIncSemen > 0) {
+              const match = activeSiloSemenRef.current.match(/Silo\s*(\d+)/i);
+              const siloIdx = match ? parseInt(match[1], 10) - 1 : 2;
+              if (siloIdx >= 0 && siloIdx < 6) {
+                setTimeout(() => {
+                  setSiloWeights(prevSilos => {
+                    const nextSilos = [...prevSilos];
+                    nextSilos[siloIdx] = Math.max(0, nextSilos[siloIdx] - actualIncSemen);
+                    return nextSilos;
+                  });
+                }, 0);
+              }
             }
 
             return updated;
           });
+        }
+
+        // --- 1.8. INDUSTRIAL TRANSIT TICKER ---
+        // We always tick/decrement the transit queue timer while running, regardless of whether waiting hopper is enabled,
+        // so that we can track when aggregates are physically delivered into the mixer
+        let newlyArrivedWeight = 0;
+        aggregateTransitQueueRef.current = aggregateTransitQueueRef.current.map(chunk => {
+          const nextTicks = chunk.ticksNeeded - 1;
+          if (nextTicks <= 0) {
+            newlyArrivedWeight += chunk.amount;
+            return null;
+          }
+          return { ...chunk, ticksNeeded: nextTicks };
+        }).filter(Boolean) as any[];
+
+        if (newlyArrivedWeight > 0) {
+          const sandTarget = scalesRef.current.pasir.target;
+          const stoneTarget = scalesRef.current.batu.target;
+          const totalAggWeight = sandTarget + stoneTarget;
+
+          // Arrive directly inside the mixer if waiting hopper is disabled or if it's Batch 1
+          const isDirect = !waitingHopperEnabled || (currentBatchRef.current === 0);
+
+          if (isDirect) {
+            aggregateInMixerRef.current = Math.min(
+              totalAggWeight,
+              aggregateInMixerRef.current + newlyArrivedWeight
+            );
+          } else {
+            // Land in the waiting hopper
+            const nextWeight = Math.min(totalAggWeight, waitingHopperWeightRef.current + newlyArrivedWeight);
+            setWaitingHopperWeightSync(nextWeight);
+          }
+        }
+
+        // Now handle the industrial waiting hopper states if enabled
+        if (waitingHopperEnabled && (targetBatchRef.current > 1)) {
+          const whState = waitingHopperStateRef.current;
+
+          // A: WAITING_HOPPER_IDLE State
+          if (whState === 'WAITING_HOPPER_IDLE') {
+            // Wait for sand & stone scales to be complete for Batch 2 and subsequent batches
+            if (weighingCycleRef.current > 1) {
+              const isSandReady = scalesRef.current.pasir.target === 0 || 
+                                  scalesRef.current.pasir.isComplete || 
+                                  scalesRef.current.pasir.actual >= scalesRef.current.pasir.target;
+
+              const isStoneReady = scalesRef.current.batu.target === 0 || 
+                                   scalesRef.current.batu.isComplete || 
+                                   scalesRef.current.batu.actual >= scalesRef.current.batu.target;
+
+              const isAggWeighed = isSandReady && isStoneReady;
+
+              if (isAggWeighed && (scalesRef.current.pasir.actual > 0 || scalesRef.current.batu.actual > 0)) {
+                setWaitingHopperStateSync('WAITING_HOPPER_FILLING');
+                waitingHopperTimerRef.current = 0;
+                system1WaitingSeqRef.current = 'idle';
+                system1WaitingSeqTimerRef.current = 0;
+                setConveyorBottomPhaseSync('STANDBY'); // will be prestarted on next tick
+
+                setRelayLogs(l => [
+                  {
+                    id: Math.random().toString(36).substring(7).toUpperCase(),
+                    timestamp: new Date(),
+                    message: `[WAITING HOPPER] Aggregate Batch ${weighingCycleRef.current} selesai ditimbang. Mentransfer material ke Chute Waiting Hopper...`,
+                    type: 'info'
+                  },
+                  ...l
+                ]);
+              }
+            }
+          }
+
+          // B: WAITING_HOPPER_FILLING State
+          else if (whState === 'WAITING_HOPPER_FILLING') {
+            // Keep Gate Chute CLOSED holding material
+            setWaitingHopperGateOpenSync(false);
+
+            if (conveyorBottomPhaseRef.current === 'STANDBY') {
+              // Initiate PRESTART phase of bottom conveyor
+              setConveyorBottomPhaseSync('PRESTART');
+              conveyorBottomTimerRef.current = 0;
+              setConveyorBottomActiveSync(true);
+              setRelayLogs(l => [
+                {
+                  id: 'BCON-' + Math.random().toString(36).substring(7).toUpperCase(),
+                  timestamp: new Date(),
+                  message: "BOTTOM CONVEYOR ON",
+                  type: 'info'
+                },
+                {
+                  id: 'PRE-' + Math.random().toString(36).substring(7).toUpperCase(),
+                  timestamp: new Date(),
+                  message: "BOTTOM CONVEYOR PRESTART 2s",
+                  type: 'info'
+                },
+                ...l
+              ]);
+            }
+
+            if (conveyorBottomPhaseRef.current === 'PRESTART') {
+              // Doors remain closed
+              setGatePasirHopperOpenSync(false);
+              setGateBatuHopperOpenSync(false);
+
+              conveyorBottomTimerRef.current += 100;
+              if (conveyorBottomTimerRef.current >= 2000) { // 2.0s prestart delay
+                // Transition to TRANSFER phase
+                setConveyorBottomPhaseSync('TRANSFER');
+                conveyorBottomTimerRef.current = 0;
+                setProductionState('AGGREGATE_DISCHARGE');
+                setRelayLogs(l => [{
+                  id: 'DIS-' + Math.random().toString(36).substring(7).toUpperCase(),
+                  timestamp: new Date(),
+                  message: "AGGREGATE DISCHARGE START",
+                  type: 'info'
+                }, ...l]);
+              }
+            }
+
+            else if (conveyorBottomPhaseRef.current === 'TRANSFER') {
+              if (batchingPlantMode === 'SYSTEM_1') {
+                if (system1WaitingSeqRef.current === 'idle') {
+                  system1WaitingSeqRef.current = 'sand_discharging';
+                  system1WaitingSeqTimerRef.current = 0;
+                  setRelayLogs(l => [{
+                    id: 'SAND-DIS-' + Math.random().toString(36).substring(7).toUpperCase(),
+                    timestamp: new Date(),
+                    message: "SAND DISCHARGE START",
+                    type: 'info'
+                  }, ...l]);
+                }
+
+                if (system1WaitingSeqRef.current === 'sand_discharging') {
+                  // Only pasir door is open, stone remains closed
+                  setGatePasirHopperOpenSync(scalesRef.current.pasir.actual > 0);
+                  setGateBatuHopperOpenSync(false);
+
+                  // Drain only pasir actual volume
+                  setScalesSync(prev => {
+                    const next = { ...prev };
+                    const drainPasir = Math.min(prev.pasir.actual, (25 + Math.random() * 15) * 0.1); // 2.5 - 4.0 kg per tick
+                    if (operationModeRef.current !== 'PRODUKSI') {
+                      next.pasir.actual = Math.max(0, next.pasir.actual - drainPasir);
+                    }
+                    if (drainPasir > 0) {
+                      aggregateTransitQueueRef.current.push({ amount: drainPasir, ticksNeeded: 45 });
+                    }
+                    return next;
+                  });
+
+                  // When pasir becomes empty
+                  if (scalesRef.current.pasir.actual === 0) {
+                    system1WaitingSeqRef.current = 'sand_empty_delay';
+                    system1WaitingSeqTimerRef.current = 0;
+                    setRelayLogs(l => [
+                      {
+                        id: 'SAND-EMP-' + Math.random().toString(36).substring(7).toUpperCase(),
+                        timestamp: new Date(),
+                        message: "SAND SCALE EMPTY",
+                        type: 'done'
+                      },
+                      {
+                        id: 'SAND-WAIT-' + Math.random().toString(36).substring(7).toUpperCase(),
+                        timestamp: new Date(),
+                        message: "WAIT 2 SECONDS",
+                        type: 'info'
+                      },
+                      ...l
+                    ]);
+                  }
+                }
+                else if (system1WaitingSeqRef.current === 'sand_empty_delay') {
+                  // Keep both gates closed
+                  setGatePasirHopperOpenSync(false);
+                  setGateBatuHopperOpenSync(false);
+
+                  system1WaitingSeqTimerRef.current += 100;
+                  if (system1WaitingSeqTimerRef.current >= 2000) {
+                    system1WaitingSeqRef.current = 'stone_discharging';
+                    system1WaitingSeqTimerRef.current = 0;
+                    setRelayLogs(l => [{
+                      id: 'STONE-DIS-' + Math.random().toString(36).substring(7).toUpperCase(),
+                      timestamp: new Date(),
+                      message: "STONE DISCHARGE START",
+                      type: 'info'
+                    }, ...l]);
+                  }
+                }
+                else if (system1WaitingSeqRef.current === 'stone_discharging') {
+                  // Only stone door is open, pasir remains closed
+                  setGatePasirHopperOpenSync(false);
+                  setGateBatuHopperOpenSync(scalesRef.current.batu.actual > 0);
+
+                  // Drain only stone actual volume
+                  setScalesSync(prev => {
+                    const next = { ...prev };
+                    const drainBatu = Math.min(prev.batu.actual, (30 + Math.random() * 20) * 0.1);  // 3.0 - 5.0 kg per tick
+                    if (operationModeRef.current !== 'PRODUKSI') {
+                      next.batu.actual = Math.max(0, next.batu.actual - drainBatu);
+                    }
+                    if (drainBatu > 0) {
+                      aggregateTransitQueueRef.current.push({ amount: drainBatu, ticksNeeded: 32 });
+                    }
+                    return next;
+                  });
+
+                  // When stone becomes empty
+                  if (scalesRef.current.batu.actual === 0) {
+                    system1WaitingSeqRef.current = 'done';
+                    setRelayLogs(l => [{
+                      id: 'STONE-EMP-' + Math.random().toString(36).substring(7).toUpperCase(),
+                      timestamp: new Date(),
+                      message: "STONE SCALE EMPTY",
+                      type: 'done'
+                    }, ...l]);
+                  }
+                }
+              } else {
+                // System 2 & 3: Keep original concurrent discharge
+                setGatePasirHopperOpenSync(scalesRef.current.pasir.actual > 0);
+                setGateBatuHopperOpenSync(scalesRef.current.batu.actual > 0);
+
+                // Drain scales actual volumes
+                setScalesSync(prev => {
+                  const next = { ...prev };
+                  const drainPasir = Math.min(prev.pasir.actual, (25 + Math.random() * 15) * 0.1); // 2.5 - 4.0 kg per tick
+                  const drainBatu = Math.min(prev.batu.actual, (30 + Math.random() * 20) * 0.1);  // 3.0 - 5.0 kg per tick
+                  if (operationModeRef.current !== 'PRODUKSI') {
+                    next.pasir.actual = Math.max(0, next.pasir.actual - drainPasir);
+                    next.batu.actual = Math.max(0, next.batu.actual - drainBatu);
+                  }
+                  if (drainPasir > 0) {
+                    aggregateTransitQueueRef.current.push({ amount: drainPasir, ticksNeeded: 45 });
+                  }
+                  if (drainBatu > 0) {
+                    aggregateTransitQueueRef.current.push({ amount: drainBatu, ticksNeeded: 32 });
+                  }
+                  return next;
+                });
+              }
+
+              // Once scale hoppers are completely drained
+              if (scalesRef.current.pasir.actual === 0 && scalesRef.current.batu.actual === 0) {
+                // Close scale doors
+                setGatePasirHopperOpenSync(false);
+                setGateBatuHopperOpenSync(false);
+
+                // Transition to POSTRUN phase
+                setConveyorBottomPhaseSync('POSTRUN');
+                conveyorBottomTimerRef.current = 0;
+                setRelayLogs(l => [
+                  {
+                    id: 'SCALE-EMPTY-' + Math.random().toString(36).substring(7).toUpperCase(),
+                    timestamp: new Date(),
+                    message: "AGGREGATE SCALE EMPTY",
+                    type: 'done'
+                  },
+                  {
+                    id: 'POST-' + Math.random().toString(36).substring(7).toUpperCase(),
+                    timestamp: new Date(),
+                    message: `BOTTOM CONVEYOR POSTRUN ${batchingPlantMode === 'SYSTEM_2' ? '2' : '5'}s`,
+                    type: 'info'
+                  },
+                  ...l
+                ]);
+              }
+            }
+
+            else if (conveyorBottomPhaseRef.current === 'POSTRUN') {
+              // Scale doors remain closed
+              setGatePasirHopperOpenSync(false);
+              setGateBatuHopperOpenSync(false);
+
+              conveyorBottomTimerRef.current += 100;
+              const maxPostrunLimit = batchingPlantMode === 'SYSTEM_2' ? 2000 : 5000;
+              if (conveyorBottomTimerRef.current >= maxPostrunLimit) { // 2.0s or 5.0s postrun
+                // Turn off bottom conveyor
+                setConveyorBottomActiveSync(false);
+                setConveyorBottomPhaseSync('STANDBY');
+                conveyorBottomTimerRef.current = 0;
+
+                const sandTarget = scalesRef.current.pasir.target;
+                const stoneTarget = scalesRef.current.batu.target;
+                const totalAggWeight = sandTarget + stoneTarget;
+
+                // Lock/Ready the waiting hopper
+                setWaitingHopperGateOpenSync(false);
+                setWaitingHopperStateSync('WAITING_HOPPER_READY');
+                setWaitingHopperWeightSync(totalAggWeight);
+
+                const logsToAdd = [
+                  {
+                    id: 'CONV-OFF-' + Math.random().toString(36).substring(7).toUpperCase(),
+                    timestamp: new Date(),
+                    message: "BOTTOM CONVEYOR OFF",
+                    type: 'done'
+                  },
+                  {
+                    id: 'WH-RDY-' + Math.random().toString(36).substring(7).toUpperCase(),
+                    timestamp: new Date(),
+                    message: "WAITING HOPPER READY",
+                    type: 'done'
+                  }
+                ];
+
+                if (!conveyorTransferCompleteLoggedRef.current) {
+                  conveyorTransferCompleteLoggedRef.current = true;
+                  setProductionState('WAITING_HOPPER');
+                  logsToAdd.push({
+                    id: 'CONV-TRSF-CP-' + Math.random().toString(36).substring(7).toUpperCase(),
+                    timestamp: new Date(),
+                    message: "CONVEYOR_TRANSFER_COMPLETE",
+                    type: 'done'
+                  });
+                }
+
+                setRelayLogs(l => [
+                  ...logsToAdd,
+                  {
+                    id: Math.random().toString(36).substring(7).toUpperCase(),
+                    timestamp: new Date(),
+                    message: `[WAITING HOPPER] Transfer aggregate selesai. Sump/Chute terkunci (Gate CLOSED, Ready: ${Math.round(totalAggWeight)} Kg).`,
+                    type: 'info'
+                  },
+                  ...l
+                ]);
+              }
+            }
+          }
+
+          // C: WAITING_HOPPER_READY State
+          else if (whState === 'WAITING_HOPPER_READY') {
+            // Keep gate closed and conveyor off
+            setWaitingHopperGateOpenSync(false);
+          }
+
+          // D: WAITING_HOPPER_DISCHARGING State (PULSE FEEDING OPERATION)
+          else if (whState === 'WAITING_HOPPER_DISCHARGING') {
+            waitingHopperTimerRef.current += 100;
+
+            const pulseOnMs = waitingHopperPulseOn * 1000;
+            const pulseOffMs = waitingHopperPulseOff * 1000;
+            const cycleMs = pulseOnMs + pulseOffMs;
+            const timeInCycle = waitingHopperTimerRef.current % cycleMs;
+
+            if (timeInCycle < pulseOnMs) {
+              // Pulsing ON - pneumatic Gate is OPEN
+              setWaitingHopperGateOpenSync(true);
+
+              // Drain material into twin shaft mixer
+              const dischargeRate = (14 + Math.random() * 8); // 1.4 - 2.2 kg per tick
+              const currentHWeight = waitingHopperWeightRef.current;
+              const nextHWeight = Math.max(0, currentHWeight - dischargeRate);
+              setWaitingHopperWeightSync(nextHWeight);
+
+              const drainedAmount = currentHWeight - nextHWeight;
+              if (drainedAmount > 0) {
+                const sandTarget = scalesRef.current.pasir.target;
+                const stoneTarget = scalesRef.current.batu.target;
+                const totalAggWeight = sandTarget + stoneTarget;
+                aggregateInMixerRef.current = Math.min(
+                  totalAggWeight,
+                  aggregateInMixerRef.current + drainedAmount
+                );
+              }
+
+              if (nextHWeight === 0) {
+                // Done! Waiting hopper is empty
+                setWaitingHopperGateOpenSync(false);
+                setWaitingHopperStateSync('WAITING_HOPPER_EMPTY');
+                setProductionState('AGGREGATE_EMPTY');
+                waitingHopperTimerRef.current = 0;
+                waitingHopperPrechargeTimerRef.current = 0;
+              }
+            } else {
+              // Pulsing OFF - pneumatic Gate is CLOSED (To protect mixer overload)
+              setWaitingHopperGateOpenSync(false);
+            }
+          }
         }
 
         // --- 2. MIXER STATE MACHINE SEQUENCER (TICKING CONCURRENTLY) ---
@@ -3317,14 +6535,43 @@ export default function App() {
           
           if (!weighingActiveRef.current) {
             // Once Weighing is READY, transition to hopper discharge cascade
-            mixerStateRef.current = 'discharging_hoppers';
+            setMixerStateSync('discharging_hoppers');
             dischargeTimerMsRef.current = 0;
             sandDischargeStartedRef.current = false;
             sandCompletedElapsedSecRef.current = null;
-            setProductionState('DISCHARGING');
+            
+            const logsToAdd = [];
+            const isDirectAggTransfer = !waitingHopperEnabled || (currentBatchRef.current === 0);
+            if (isDirectAggTransfer) {
+              setConveyorBottomPhaseSync('PRESTART');
+              conveyorBottomTimerRef.current = 0;
+              setConveyorBottomActiveSync(true);
+              setProductionState('AGGREGATE_DISCHARGE');
+              logsToAdd.push(
+                {
+                  id: 'BCON-' + Math.random().toString(36).substring(7).toUpperCase(),
+                  timestamp: new Date(),
+                  message: "BOTTOM CONVEYOR ON",
+                  type: 'info'
+                },
+                {
+                  id: 'PRE-' + Math.random().toString(36).substring(7).toUpperCase(),
+                  timestamp: new Date(),
+                  message: "BOTTOM CONVEYOR PRESTART 2s",
+                  type: 'info'
+                }
+              );
+            } else {
+              setConveyorBottomPhaseSync('STANDBY');
+              setConveyorBottomActiveSync(false);
+            }
+
+            if (logsToAdd.length > 0) {
+              setRelayLogs(l => [...logsToAdd, ...l]);
+            }
+
             setMixerStatusText('DISCHARGING HOPPERS');
             setConveyorUpperActiveSync(true); // turn on main belt feeder
-            setConveyorBottomActiveSync(true); // turn on bottom conveyor belt
           }
         }
 
@@ -3333,26 +6580,158 @@ export default function App() {
           dischargeTimerMsRef.current += 100;
           const elapsedSec = dischargeTimerMsRef.current / 1000;
 
-          setScales(prev => {
+          // Tick bottom conveyor state machine timers in direct discharge mode
+          if (conveyorBottomPhaseRef.current === 'PRESTART') {
+            conveyorBottomTimerRef.current += 100;
+            if (conveyorBottomTimerRef.current >= 2000) { // 2.0s prestart delay
+              setConveyorBottomPhaseSync('TRANSFER');
+              conveyorBottomTimerRef.current = 0;
+              setRelayLogs(l => [{
+                id: 'DIS-' + Math.random().toString(36).substring(7).toUpperCase(),
+                timestamp: new Date(),
+                message: "AGGREGATE DISCHARGE START",
+                type: 'info'
+              }, ...l]);
+            }
+          } else if (conveyorBottomPhaseRef.current === 'POSTRUN') {
+            conveyorBottomTimerRef.current += 100;
+            setConveyorBottomActiveSync(true); // force it to stay on during POSTRUN
+            const maxPostrunLimit = batchingPlantMode === 'SYSTEM_2' ? 2000 : 5000;
+            if (conveyorBottomTimerRef.current >= maxPostrunLimit) { // 2.0s or 5.0s postrun
+              setConveyorBottomActiveSync(false);
+              setConveyorBottomPhaseSync('STANDBY');
+              conveyorBottomTimerRef.current = 0;
+              setRelayLogs(l => [{
+                id: 'CONV-OFF-' + Math.random().toString(36).substring(7).toUpperCase(),
+                timestamp: new Date(),
+                message: "BOTTOM CONVEYOR OFF",
+                type: 'done'
+              }, ...l]);
+            }
+          }
+
+          setScalesSync(prev => {
             const nextScales = { ...prev };
             
             // Fetch modern configuration from our reactive admin panel settings:
             const seq = mixingSequenceRef.current;
 
+            // Get state tracking refs
+            const pState = hopperDischargeStatesRef.current.pasir;
+            const aState = hopperDischargeStatesRef.current.air;
+            const cState = hopperDischargeStatesRef.current.semen;
+            const bState = hopperDischargeStatesRef.current.batu;
+
+            // Bypass done immediately if target is 0
+            if (pState.phase === 'waiting' && nextScales.pasir.target === 0) { pState.phase = 'done'; }
+            if (aState.phase === 'waiting' && nextScales.air.target === 0) { aState.phase = 'done'; }
+            if (cState.phase === 'waiting' && nextScales.semen.target === 0) { cState.phase = 'done'; }
+            if (bState.phase === 'waiting' && nextScales.batu.target === 0) { bState.phase = 'done'; }
+
+            // Dynamic aggregate bypass and water precharge handler for Waiting Hopper system
+            if (waitingHopperEnabled) {
+              if (currentBatchRef.current === 0) {
+                // Batch 1: aggregate goes directly to mixer. Keep waiting hopper gate open!
+                setWaitingHopperGateOpenSync(true);
+              } else if (targetBatchRef.current > 1) {
+                if (pState.phase === 'waiting' || pState.phase === 'opening' || pState.phase === 'draining' || pState.phase === 'clearing' || pState.phase === 'closing') {
+                  pState.phase = 'done';
+                  sandCompletedElapsedSecRef.current = 0;
+                  sandDischargeStartedRef.current = true;
+                }
+                if (bState.phase === 'waiting' || bState.phase === 'opening' || bState.phase === 'draining' || bState.phase === 'clearing' || bState.phase === 'closing') {
+                  bState.phase = 'done';
+                }
+
+                if (waitingHopperStateRef.current === 'WAITING_HOPPER_READY') {
+                  const waterTarget = nextScales.air.target;
+                  const waterActual = nextScales.air.actual;
+                  const waterDischarged = waterTarget - waterActual;
+                  const dischargedPercent = waterTarget > 0 ? (waterDischarged / waterTarget) * 100 : 100;
+
+                  if (dischargedPercent >= waitingHopperWaterPrecharge) {
+                    waitingHopperPrechargeTimerRef.current += 100;
+                    if (waitingHopperPrechargeTimerRef.current >= waitingHopperWaterDelay * 1000) {
+                      setWaitingHopperStateSync('WAITING_HOPPER_DISCHARGING');
+                      waitingHopperTimerRef.current = 0;
+                      waitingHopperPrechargeTimerRef.current = 0;
+
+                      setRelayLogs(l => [{
+                        id: Math.random().toString(36).substring(7).toUpperCase(),
+                        timestamp: new Date(),
+                        message: `[WAITING HOPPER] Air precharge tercapai (${waitingHopperWaterPrecharge}%). Memulai PULSE DISCHARGE Gate Chute...`,
+                        type: 'info'
+                      }, ...l]);
+                    }
+                  }
+                }
+              }
+            }
+
             // 1. PASIR DISCHARGE (M1) Logic is ALWAYS the baseline
-            if (nextScales.pasir.actual > 0) {
+            if (pState.phase === 'waiting' && conveyorBottomPhaseRef.current === 'TRANSFER') {
+              pState.phase = 'opening';
+              pState.timer = 0;
+            }
+             if (pState.phase === 'opening') {
               setGatePasirHopperOpenSync(true);
-              setConveyorBottomActiveSync(true);
               sandDischargeStartedRef.current = true; // Event: ON_SAND_DISCHARGE_START
+
+              pState.timer += 100;
+              if (pState.timer >= 1000) {
+                pState.phase = 'draining';
+                pState.timer = 0;
+              }
+            } else if (pState.phase === 'draining') {
+              setGatePasirHopperOpenSync(true);
 
               // Drastically reduced rate of Sand drainage for visual smoothness (slow-motion):
               const drain = (8 + Math.random() * 4) * 0.1; // 0.8 - 1.2 kg/tick
-              nextScales.pasir.actual = Math.max(0, nextScales.pasir.actual - drain);
-            } else {
-              setGatePasirHopperOpenSync(false);
-              // Handle first-time Sand Empty Event: ON_SAND_DISCHARGE_COMPLETE
-              if (sandCompletedElapsedSecRef.current === null && sandDischargeStartedRef.current) {
-                sandCompletedElapsedSecRef.current = elapsedSec;
+              let pDrained = 0;
+              if (operationModeRef.current !== 'PRODUKSI') {
+                pDrained = Math.min(prev.pasir.actual, drain);
+                nextScales.pasir.actual = Math.max(0, prev.pasir.actual - pDrained);
+              } else {
+                pDrained = Math.max(0, prev.pasir.actual - nextScales.pasir.actual);
+              }
+
+              if (pDrained > 0) {
+                aggregateTransitQueueRef.current.push({ amount: pDrained, ticksNeeded: 45 });
+              }
+
+              if (nextScales.pasir.actual === 0) {
+                if (batchingPlantMode === 'SYSTEM_2') {
+                  setGatePasirHopperOpenSync(false);
+                  pState.phase = 'done';
+                  pState.timer = 0;
+                  if (sandCompletedElapsedSecRef.current === null && sandDischargeStartedRef.current) {
+                    sandCompletedElapsedSecRef.current = elapsedSec;
+                  }
+                } else {
+                  pState.phase = 'clearing';
+                  pState.timer = 0;
+                }
+              }
+            } else if (pState.phase === 'clearing') {
+              setGatePasirHopperOpenSync(batchingPlantMode !== 'SYSTEM_2');
+
+              pState.timer += 100;
+              if (pState.timer >= 3000) {
+                pState.phase = 'closing';
+                pState.timer = 0;
+              }
+            } else if (pState.phase === 'closing') {
+              setGatePasirHopperOpenSync(batchingPlantMode !== 'SYSTEM_2');
+
+              pState.timer += 100;
+              if (pState.timer >= 1500) {
+                setGatePasirHopperOpenSync(false);
+                pState.phase = 'done';
+                pState.timer = 0;
+                // Handle first-time Sand Empty Event: ON_SAND_DISCHARGE_COMPLETE
+                if (sandCompletedElapsedSecRef.current === null && sandDischargeStartedRef.current) {
+                  sandCompletedElapsedSecRef.current = elapsedSec;
+                }
               }
             }
 
@@ -3372,55 +6751,217 @@ export default function App() {
             };
 
             // 2. AIR & ADITIF (M2) Logic
-            if (isTriggered('air')) {
-              if (nextScales.air.actual > 0) {
-                setGateWaterHopperOpenSync(true);
-                // Drastically reduced rate of Air drainage for visual smoothness (slow-motion):
-                const drain = (4 + Math.random() * 2) * 0.1; // 0.4 - 0.6 kg/tick
-                nextScales.air.actual = Math.max(0, nextScales.air.actual - drain);
-              } else {
-                setGateWaterHopperOpenSync(false);
+            if (aState.phase === 'waiting') {
+              if (isTriggered('air')) {
+                aState.phase = 'opening';
+                aState.timer = 0;
               }
-            } else {
-              setGateWaterHopperOpenSync(false);
+            }
+            if (aState.phase === 'opening') {
+              setGateWaterHopperOpenSync(true);
+              aState.timer += 100;
+              if (aState.timer >= 1000) {
+                aState.phase = 'draining';
+                aState.timer = 0;
+              }
+            } else if (aState.phase === 'draining') {
+              setGateWaterHopperOpenSync(true);
+              const drain = (4 + Math.random() * 2) * 0.1; // 0.4 - 0.6 kg/tick
+              if (operationModeRef.current !== 'PRODUKSI') {
+                nextScales.air.actual = Math.max(0, nextScales.air.actual - drain);
+              }
+
+              if (nextScales.air.actual === 0) {
+                if (batchingPlantMode === 'SYSTEM_2') {
+                  setGateWaterHopperOpenSync(false);
+                  aState.phase = 'done';
+                  aState.timer = 0;
+                } else {
+                  aState.phase = 'clearing';
+                  aState.timer = 0;
+                }
+              }
+            } else if (aState.phase === 'clearing') {
+              setGateWaterHopperOpenSync(batchingPlantMode !== 'SYSTEM_2');
+              aState.timer += 100;
+              if (aState.timer >= 3000) {
+                aState.phase = 'closing';
+                aState.timer = 0;
+              }
+            } else if (aState.phase === 'closing') {
+              setGateWaterHopperOpenSync(batchingPlantMode !== 'SYSTEM_2');
+              aState.timer += 100;
+              if (aState.timer >= 1500) {
+                setGateWaterHopperOpenSync(false);
+                aState.phase = 'done';
+                aState.timer = 0;
+              }
             }
 
             // 3. SEMEN (M3) Logic
-            if (isTriggered('semen')) {
-              if (nextScales.semen.actual > 0) {
-                setGateSemenHopperOpenSync(true);
-                // Drastically reduced rate of Semen drainage for visual smoothness (slow-motion):
-                const drain = (5 + Math.random() * 3) * 0.1; // 0.5 - 0.8 kg/tick
-                nextScales.semen.actual = Math.max(0, nextScales.semen.actual - drain);
-              } else {
-                setGateSemenHopperOpenSync(false);
+            if (cState.phase === 'waiting') {
+              if (isTriggered('semen')) {
+                cState.phase = 'opening';
+                cState.timer = 0;
               }
-            } else {
-              setGateSemenHopperOpenSync(false);
+            }
+            if (cState.phase === 'opening') {
+              setGateSemenHopperOpenSync(true);
+              cState.timer += 100;
+              if (cState.timer >= 1000) {
+                cState.phase = 'draining';
+                cState.timer = 0;
+              }
+            } else if (cState.phase === 'draining') {
+              setGateSemenHopperOpenSync(true);
+              const drain = (5 + Math.random() * 3) * 0.1; // 0.5 - 0.8 kg/tick
+              if (operationModeRef.current !== 'PRODUKSI') {
+                nextScales.semen.actual = Math.max(0, nextScales.semen.actual - drain);
+              }
+
+              if (nextScales.semen.actual === 0) {
+                if (batchingPlantMode === 'SYSTEM_2') {
+                  setGateSemenHopperOpenSync(false);
+                  cState.phase = 'done';
+                  cState.timer = 0;
+                } else {
+                  cState.phase = 'clearing';
+                  cState.timer = 0;
+                }
+              }
+            } else if (cState.phase === 'clearing') {
+              setGateSemenHopperOpenSync(batchingPlantMode !== 'SYSTEM_2');
+              cState.timer += 100;
+              if (cState.timer >= 3000) {
+                cState.phase = 'closing';
+                cState.timer = 0;
+              }
+            } else if (cState.phase === 'closing') {
+              setGateSemenHopperOpenSync(batchingPlantMode !== 'SYSTEM_2');
+              cState.timer += 100;
+              if (cState.timer >= 1500) {
+                setGateSemenHopperOpenSync(false);
+                cState.phase = 'done';
+                cState.timer = 0;
+              }
             }
 
             // 4. BATU / KRIS (M4) Logic
-            if (isTriggered('batu')) {
-              if (nextScales.batu.actual > 0) {
-                setGateBatuHopperOpenSync(true);
-                setConveyorBottomActiveSync(true);
-                // Drastically reduced rate of Stone drainage for visual smoothness (slow-motion):
-                const drain = (10 + Math.random() * 4) * 0.1; // 1.0 - 1.4 kg/tick
-                nextScales.batu.actual = Math.max(0, nextScales.batu.actual - drain);
-              } else {
-                setGateBatuHopperOpenSync(false);
+            if (bState.phase === 'waiting') {
+              if (isTriggered('batu') && conveyorBottomPhaseRef.current === 'TRANSFER') {
+                bState.phase = 'opening';
+                bState.timer = 0;
               }
-            } else {
-              setGateBatuHopperOpenSync(false);
+            }
+            if (bState.phase === 'opening') {
+              setGateBatuHopperOpenSync(true);
+              bState.timer += 100;
+              if (bState.timer >= 1000) {
+                bState.phase = 'draining';
+                bState.timer = 0;
+              }
+            } else if (bState.phase === 'draining') {
+              setGateBatuHopperOpenSync(true);
+              const drain = (10 + Math.random() * 4) * 0.1; // 1.0 - 1.4 kg/tick
+              let bDrained = 0;
+              if (operationModeRef.current !== 'PRODUKSI') {
+                bDrained = Math.min(prev.batu.actual, drain);
+                nextScales.batu.actual = Math.max(0, prev.batu.actual - bDrained);
+              } else {
+                bDrained = Math.max(0, prev.batu.actual - nextScales.batu.actual);
+              }
+
+              if (bDrained > 0) {
+                aggregateTransitQueueRef.current.push({ amount: bDrained, ticksNeeded: 32 });
+              }
+
+              if (nextScales.batu.actual === 0) {
+                if (batchingPlantMode === 'SYSTEM_2') {
+                  setGateBatuHopperOpenSync(false);
+                  bState.phase = 'done';
+                  bState.timer = 0;
+                } else {
+                  bState.phase = 'clearing';
+                  bState.timer = 0;
+                }
+              }
+            } else if (bState.phase === 'clearing') {
+              setGateBatuHopperOpenSync(batchingPlantMode !== 'SYSTEM_2');
+              bState.timer += 100;
+              if (bState.timer >= 3000) {
+                bState.phase = 'closing';
+                bState.timer = 0;
+              }
+            } else if (bState.phase === 'closing') {
+              setGateBatuHopperOpenSync(batchingPlantMode !== 'SYSTEM_2');
+              bState.timer += 100;
+              if (bState.timer >= 1500) {
+                setGateBatuHopperOpenSync(false);
+                bState.phase = 'done';
+                bState.timer = 0;
+              }
             }
 
-            // Once everything is fully drained to 0 in scales scales hoppers
-            const allEmpty = nextScales.pasir.actual === 0 && 
-                             nextScales.batu.actual === 0 && 
-                             nextScales.semen.actual === 0 && 
-                             nextScales.air.actual === 0;
+            if (conveyorBottomPhaseRef.current === 'TRANSFER') {
+              const isPasirDone = nextScales.pasir.target === 0 || nextScales.pasir.actual === 0;
+              const isBatuDone = nextScales.batu.target === 0 || nextScales.batu.actual === 0;
+              
+              if (isPasirDone && isBatuDone) {
+                setConveyorBottomPhaseSync('POSTRUN');
+                conveyorBottomTimerRef.current = 0;
+                setRelayLogs(l => [
+                  {
+                    id: 'SCALE-EMPTY-' + Math.random().toString(36).substring(7).toUpperCase(),
+                    timestamp: new Date(),
+                    message: "AGGREGATE SCALE EMPTY",
+                    type: 'done'
+                  },
+                  {
+                    id: 'POST-' + Math.random().toString(36).substring(7).toUpperCase(),
+                    timestamp: new Date(),
+                    message: `BOTTOM CONVEYOR POSTRUN ${batchingPlantMode === 'SYSTEM_2' ? '2' : '5'}s`,
+                    type: 'info'
+                  },
+                  ...l
+                ]);
+              }
+            }
+
+            // Once everything is fully drained and close complete
+            const isWaitingHopperComplete = !waitingHopperEnabled ||
+                                            (targetBatchRef.current <= 1) ||
+                                            (currentBatchRef.current === 0) ||
+                                            waitingHopperStateRef.current === 'WAITING_HOPPER_EMPTY';
+
+            const isConveyorReadyForNextWeigh = batchingPlantMode !== 'SYSTEM_2' || conveyorBottomPhaseRef.current === 'STANDBY';
+
+            const allEmpty = pState.phase === 'done' && 
+                             bState.phase === 'done' && 
+                             cState.phase === 'done' && 
+                             aState.phase === 'done' &&
+                             isWaitingHopperComplete &&
+                             isConveyorReadyForNextWeigh;
 
             if (allEmpty) {
+              // Reset waiting hopper states for the MIXING cycle to allow next batch transfer
+              if (waitingHopperEnabled && (targetBatchRef.current > 1) && (currentBatchRef.current > 0)) {
+                setWaitingHopperStateSync('WAITING_HOPPER_IDLE');
+                setWaitingHopperWeightSync(0);
+                waitingHopperTimerRef.current = 0;
+                waitingHopperPrechargeTimerRef.current = 0;
+              }
+              if (waitingHopperEnabled && currentBatchRef.current === 0) {
+                // Done dropping aggregate directly for Batch 1.
+                // Close the Waiting Hopper gate so that the upcoming Batch 2 aggregate will be retained!
+                setWaitingHopperGateOpenSync(false);
+              }
+
+              // Also clear our four weighing completion protection refs
+              pasirWeighedRef.current = false;
+              batuWeighedRef.current = false;
+              semenWeighedRef.current = false;
+              airWeighedRef.current = false;
+
               // Conveyors are left running for 5 seconds of the mixing cycle to completely clear remaining materials
               
               // Close all gates
@@ -3430,38 +6971,63 @@ export default function App() {
               setGateWaterHopperOpenSync(false);
 
               if (weighingCycleRef.current < targetBatchRef.current) {
+                // Accumulate the weighed values of this cycle before we tare the scale sensors
+                accumPasir1Ref.current += actualPasir1Ref.current;
+                accumPasir2Ref.current += actualPasir2Ref.current;
+                accumBatu1Ref.current += actualBatu1Ref.current;
+                accumBatu2Ref.current += actualBatu2Ref.current;
+                accumSemenRef.current += actualSemenRef.current;
+                accumAirRef.current += actualAirRef.current;
+
+                // Reset cycle actual tracker refs for the upcoming cycle C+1 weighing
+                actualPasir1Ref.current = 0;
+                actualPasir2Ref.current = 0;
+                actualBatu1Ref.current = 0;
+                actualBatu2Ref.current = 0;
+                actualSemenRef.current = 0;
+                actualAirRef.current = 0;
+
                 weighingCycleRef.current += 1;
                 const nextW = weighingCycleRef.current;
                 setWeighingCycle(nextW);
 
                 // Start weighing the next batch in parallel!
                 weighingActiveRef.current = true;
+                aggregateReadyLoggedRef.current = false;
+                aggregateDischargeLoggedRef.current = false;
+                conveyorTransferStartLoggedRef.current = false;
+                conveyorTransferCompleteLoggedRef.current = false;
                 setIsWeighingActive(true);
                 
-                weighingJogStatesRef.current = {
-                  pasir: { phase: 'fast', timer: 0, pulseCount: 0 },
-                  batu: { phase: 'fast', timer: 0, pulseCount: 0 },
-                  semen: { phase: 'fast', timer: 0, pulseCount: 0 },
-                  air: { phase: 'fast', timer: 0, pulseCount: 0 }
-                };
+                 weighingJogStatesRef.current = {
+                   pasir1: { phase: 'fast', timer: 0, pulseCount: 0 },
+                   pasir2: { phase: 'fast', timer: 0, pulseCount: 0 },
+                   batu1: { phase: 'fast', timer: 0, pulseCount: 0 },
+                   batu2: { phase: 'fast', timer: 0, pulseCount: 0 },
+                   semen: { phase: 'fast', timer: 0, pulseCount: 0 },
+                   air: { phase: 'fast', timer: 0, pulseCount: 0 }
+                 };
+
+                 hopperDischargeStatesRef.current = {
+                   pasir: { phase: 'waiting', timer: 0 },
+                   batu: { phase: 'waiting', timer: 0 },
+                   semen: { phase: 'waiting', timer: 0 },
+                   air: { phase: 'waiting', timer: 0 }
+                 };
 
                 // Tare/Reset scales actual levels to 0 for cycle C+1 weighing
                 const tFactor = parseFloat((activeVolume / totalCyclesRef.current).toFixed(2));
-                setScales(sc => {
-                  const res = { ...sc };
-                  (Object.keys(res) as MaterialType[]).forEach(k => {
-                    const targetWeight = Math.round(selectedRecipe.targets[k] * tFactor);
-                    res[k] = { 
-                      id: k, 
-                      label: INITIAL_SCALES[k].label, 
-                      actual: 0, 
-                      target: targetWeight, 
-                      unit: INITIAL_SCALES[k].unit, 
-                      isActive: true, 
-                      isComplete: false 
-                    };
-                  });
-                  return res;
+                (Object.keys(nextScales) as MaterialType[]).forEach(k => {
+                  const targetWeight = Math.round(selectedRecipe.targets[k] * tFactor);
+                  nextScales[k] = { 
+                    id: k, 
+                    label: INITIAL_SCALES[k].label, 
+                    actual: 0, 
+                    target: targetWeight, 
+                    unit: INITIAL_SCALES[k].unit, 
+                    isActive: true, 
+                    isComplete: false 
+                  };
                 });
 
                 setRelayLogs(l => [{
@@ -3473,7 +7039,7 @@ export default function App() {
               }
 
               // Slide into mixing countdown timer
-              mixerStateRef.current = 'mixing';
+              setMixerStateSync('mixing');
               mixingTimerMsRef.current = 0;
               setProductionState('MIXING');
               setMixerStatusText('MIXING INTENSELY');
@@ -3488,10 +7054,18 @@ export default function App() {
           mixingTimerMsRef.current += 100;
           const mixSec = mixingTimerMsRef.current / 1000;
           
-          // Let conveyors keep running for exactly 5.0 seconds of mixing to clear all residual aggregate/particles completely
+          // Delay 5.0 seconds of mixing to transition production state word to AGGREGATE_EMPTY
           if (mixSec >= 5.0) {
-            setConveyorBottomActiveSync(false);
-            setConveyorUpperActiveSync(false);
+            if (!conveyorTransferCompleteLoggedRef.current) {
+              conveyorTransferCompleteLoggedRef.current = true;
+              setProductionState('AGGREGATE_EMPTY');
+              setRelayLogs(l => [{
+                id: 'CONV-TRSF-CP-' + Math.random().toString(36).substring(7).toUpperCase(),
+                timestamp: new Date(),
+                message: "CONVEYOR_TRANSFER_COMPLETE",
+                type: 'done'
+              }, ...l]);
+            }
           }
 
           setMixingCountdown(Math.max(0, Math.ceil(activeMixingTime - mixSec)));
@@ -3505,7 +7079,7 @@ export default function App() {
           setBatchProgress(Math.min(99, Math.round(baseProgress + stepPercent)));
 
           if (mixSec >= activeMixingTime) {
-            mixerStateRef.current = 'discharging_concrete';
+            setMixerStateSync('discharging_concrete');
             doorStepRef.current = 1;
             doorTimerMsRef.current = 0;
             setProductionState('DISCHARGING CONCRETE');
@@ -3516,18 +7090,9 @@ export default function App() {
         // Mixer gradual door open sequence (Relay #14 / #15 triggers)
         else if (currentState === 'discharging_concrete') {
           doorTimerMsRef.current += 100;
-          const dTime = doorTimerMsRef.current;
-          const step = doorStepRef.current;
-
-          // Calculate elapsed discharge duration in seconds
-          const dSecondsTotal = 2 + 6 + 3 + 5 + 3 + 10 + 5; // 34 seconds discharge sequencer
-          const dSecElapsed = Math.min(dSecondsTotal, (step === 1 ? dTime :
-                                       step === 2 ? 2000 + dTime :
-                                       step === 3 ? 8000 + dTime :
-                                       step === 4 ? 11000 + dTime :
-                                       step === 5 ? 16000 + dTime :
-                                       step === 6 ? 19000 + dTime :
-                                       29000 + dTime) / 1000);
+          const dTimeTotal = doorTimerMsRef.current;
+          const dSecElapsed = Math.min(35.0, dTimeTotal / 1000);
+          
           setDischargeTimeSec(dSecElapsed);
 
           // Compute overall batch progress
@@ -3535,26 +7100,27 @@ export default function App() {
           const totD = targetBatchRef.current || 1;
           const baseProgressD = ((curD - 1) / totD) * 100;
           const mixWeightD = 45; // mixing portion completed
-          const stepPercentD = (dSecElapsed / dSecondsTotal) * 100 * (1 / totD) * 0.55;
+          const stepPercentD = (dSecElapsed / 35.0) * 100 * (1 / totD) * 0.55;
           setBatchProgress(Math.min(100, Math.round(baseProgressD + mixWeightD * (1/totD) + stepPercentD)));
 
+          // Determine step and apply states based on continuous time:
+
           // Phase 1 (Buka 2 detik, Target 20%)
-          if (step === 1) {
+          if (dTimeTotal <= 2000) {
+            doorStepRef.current = 1;
             setMixerStatusText('DOOR SOLENOID ACTIVE (RELAY #14)');
             setMixerDoorStateText('PHASE 1: BUKA (7cm)');
-            setMixerDoorPercent(prev => Math.min(20, prev + 1)); // gradual open
+            const pct = Math.min(20, (dTimeTotal / 2000) * 20); // gradual open
+            setMixerDoorPercent(pct);
             setMixerDoor1OpenActive(true);
             setMixerDoor2OpenActive(false);
             setMixerDoor3OpenActive(false);
             setMixerDoorClosingActive(false);
-            if (dTime >= 2000) {
-              doorStepRef.current = 2;
-              doorTimerMsRef.current = 0;
-            }
           }
 
           // Phase 2 (Diam 6 detik, Stay 20%)
-          else if (step === 2) {
+          else if (dTimeTotal <= 8000) {
+            doorStepRef.current = 2;
             setMixerStatusText('DOOR STATIONARY (7cm)');
             setMixerDoorStateText('PHASE 2: DIAM (7cm)');
             setMixerDoorPercent(20);
@@ -3562,29 +7128,25 @@ export default function App() {
             setMixerDoor2OpenActive(false);
             setMixerDoor3OpenActive(false);
             setMixerDoorClosingActive(false);
-            if (dTime >= 6000) {
-              doorStepRef.current = 3;
-              doorTimerMsRef.current = 0;
-            }
           }
 
           // Phase 3 (Buka 3 detik, Target 65%)
-          else if (step === 3) {
+          else if (dTimeTotal <= 11000) {
+            doorStepRef.current = 3;
             setMixerStatusText('DOOR SOLENOID ACTIVE (RELAY #14)');
             setMixerDoorStateText('PHASE 3: BUKA (24cm)');
-            setMixerDoorPercent(prev => Math.min(65, prev + 1.5));
+            const elapsedInStep = dTimeTotal - 8000;
+            const pct = Math.min(65, 20 + (elapsedInStep / 3000) * 45);
+            setMixerDoorPercent(pct);
             setMixerDoor1OpenActive(false);
             setMixerDoor2OpenActive(true);
             setMixerDoor3OpenActive(false);
             setMixerDoorClosingActive(false);
-            if (dTime >= 3000) {
-              doorStepRef.current = 4;
-              doorTimerMsRef.current = 0;
-            }
           }
 
           // Phase 4 (Diam 5 dtk, Stay 65%)
-          else if (step === 4) {
+          else if (dTimeTotal <= 16000) {
+            doorStepRef.current = 4;
             setMixerStatusText('DOOR STATIONARY (24cm)');
             setMixerDoorStateText('PHASE 4: DIAM (24cm)');
             setMixerDoorPercent(65);
@@ -3592,29 +7154,25 @@ export default function App() {
             setMixerDoor2OpenActive(false);
             setMixerDoor3OpenActive(false);
             setMixerDoorClosingActive(false);
-            if (dTime >= 5000) {
-              doorStepRef.current = 5;
-              doorTimerMsRef.current = 0;
-            }
           }
 
           // Phase 5 (Buka 3 detik, Target 100%)
-          else if (step === 5) {
+          else if (dTimeTotal <= 19000) {
+            doorStepRef.current = 5;
             setMixerStatusText('DOOR SOLENOID ACTIVE (RELAY #14)');
             setMixerDoorStateText('PHASE 5: BUKA LENGKAP (30cm)');
-            setMixerDoorPercent(prev => Math.min(100, prev + 1.2));
+            const elapsedInStep = dTimeTotal - 16000;
+            const pct = Math.min(100, 65 + (elapsedInStep / 3000) * 35);
+            setMixerDoorPercent(pct);
             setMixerDoor1OpenActive(false);
             setMixerDoor2OpenActive(false);
             setMixerDoor3OpenActive(true);
             setMixerDoorClosingActive(false);
-            if (dTime >= 3000) {
-              doorStepRef.current = 6;
-              doorTimerMsRef.current = 0;
-            }
           }
 
-          // Phase 6 (Diam 10 dtk, Stay 100%)
-          else if (step === 6) {
+          // Phase 6 (Diam 11 dtk, Stay 100%)
+          else if (dTimeTotal <= 30000) {
+            doorStepRef.current = 6;
             setMixerStatusText('MIXER EMPTY CHUTE FULL FLOOD');
             setMixerDoorStateText('PHASE 6: PENGOSONGAN');
             setMixerDoorPercent(100);
@@ -3622,79 +7180,135 @@ export default function App() {
             setMixerDoor2OpenActive(false);
             setMixerDoor3OpenActive(false);
             setMixerDoorClosingActive(false);
-            if (dTime >= 10000) {
-              doorStepRef.current = 7;
-              doorTimerMsRef.current = 0;
-            }
           }
 
           // Phase 7 (Tutup Pintu 5 detik, Target 0%)
-          else if (step === 7) {
+          else if (dTimeTotal <= 35000) {
+            doorStepRef.current = 7;
             setMixerStatusText('CLOSE SOLENOID ACTIVE (RELAY #15)');
             setMixerDoorStateText('PHASE 7: MENUTUP PINTU');
-            setMixerDoorPercent(prev => Math.max(0, prev - 2)); // gradual close
+            const elapsedInStep = dTimeTotal - 30000;
+            const pct = Math.max(0, 100 - (elapsedInStep / 5000) * 100); // gradual close
+            setMixerDoorPercent(pct);
             setMixerDoor1OpenActive(false);
             setMixerDoor2OpenActive(false);
             setMixerDoor3OpenActive(false);
             setMixerDoorClosingActive(true);
-            
-            if (dTime >= 5000) {
-              // Solenoid closing concludes!
-              setMixerDoorPercent(0);
+          }
+
+          // Complete State
+          else {
+            // Solenoid closing concludes!
+            setMixerDoorPercent(0);
+            setMixerDoorStateText("CLOSED");
+            setConcreteDischargeActive(false);
+            setMixerDoorClosingActive(false);
+
+            // 4. SETELAH SATU MIXING SELESAI: Lakukan currentBatch++
+            currentBatchRef.current += 1;
+            const nextB = currentBatchRef.current;
+            setCurrentBatch(nextB);
+
+            // 5. STOP PRODUKSI SAAT TARGET TERCAPAI: Jika currentBatch >= targetBatch
+            if (nextB >= targetBatchRef.current) {
+              // Entire production is complete!
+              setProductionState('COMPLETE');
+              setMixerStatusText('PRODUCTION COMPLETED');
+              setBatchProgress(100);
+              
+              // Stop simulation
+              setIsRunning(false);
+              setIsDone(true);
+              
+              // Hentikan auto weighing, next batch, refill, auto discharge
+              setIsWeighingActive(false);
+              weighingActiveRef.current = false;
+              
+              if (simIntervalRef.current) {
+                clearInterval(simIntervalRef.current);
+                simIntervalRef.current = null;
+              }
+
+              // Turn off top conveyor
+              setConveyorUpperActiveSync(false);
+
+              // Write final logs in exact required verification order
+              setRelayLogs(l => [
+                {
+                  id: 'BC-' + Math.random().toString(36).substring(7).toUpperCase(),
+                  timestamp: new Date(),
+                  message: "FINAL BATCH COMPLETE",
+                  type: 'done'
+                },
+                {
+                  id: 'MDC-' + Math.random().toString(36).substring(7).toUpperCase(),
+                  timestamp: new Date(),
+                  message: "MIXER DOOR CLOSED",
+                  type: 'done'
+                },
+                {
+                  id: 'HN-' + Math.random().toString(36).substring(7).toUpperCase(),
+                  timestamp: new Date(),
+                  message: "HORN ON",
+                  type: 'done'
+                },
+                {
+                  id: 'TOF-' + Math.random().toString(36).substring(7).toUpperCase(),
+                  timestamp: new Date(),
+                  message: "TOP CONVEYOR OFF",
+                  type: 'done'
+                },
+                {
+                  id: 'PC-' + Math.random().toString(36).substring(7).toUpperCase(),
+                  timestamp: new Date(),
+                  message: "PRODUCTION COMPLETE",
+                  type: 'done'
+                },
+                ...l
+              ]);
+
+              // Log final stats
+              saveLog();
+
+              // Sound a massive 1.5 seconds completion industrial buzzer horn
+              playKlakson(1500);
+            } else {
+              // Loop back to waiting state for next cycle's materials (which are already weighed overlappingly)
+              setMixerStateSync('waiting');
+              aggregateInMixerRef.current = 0;
+              dischargeTimerMsRef.current = 0;
+              mixingTimerMsRef.current = 0;
+              doorStepRef.current = 1;
+              doorTimerMsRef.current = 0;
               setMixerDoorStateText("CLOSED");
               setConcreteDischargeActive(false);
-              setMixerDoorClosingActive(false);
-
-              // 4. SETELAH SATU MIXING SELESAI: Lakukan currentBatch++
-              currentBatchRef.current += 1;
-              const nextB = currentBatchRef.current;
-              setCurrentBatch(nextB);
-
-              // 5. STOP PRODUKSI SAAT TARGET TERCAPAI: Jika currentBatch >= targetBatch
-              if (nextB >= targetBatchRef.current) {
-                // Entire production is complete!
-                setProductionState('COMPLETE');
-                setMixerStatusText('PRODUCTION COMPLETED');
-                setBatchProgress(100);
-                
-                // Stop simulation
-                setIsRunning(false);
-                setIsDone(true);
-                
-                // Hentikan auto weighing, next batch, refill, auto discharge
-                setIsWeighingActive(false);
-                weighingActiveRef.current = false;
-                
-                if (simIntervalRef.current) {
-                  clearInterval(simIntervalRef.current);
-                  simIntervalRef.current = null;
-                }
-
-                // Log final stats
-                saveLog();
-
-                // Sound a massive 1.5 seconds completion industrial buzzer horn
-                playKlakson(1500);
-              } else {
-                // Loop back to waiting state for next cycle's materials (which are already weighed overlappingly)
-                mixerStateRef.current = 'waiting';
-                dischargeTimerMsRef.current = 0;
-                mixingTimerMsRef.current = 0;
-                doorStepRef.current = 1;
-                doorTimerMsRef.current = 0;
-                setMixerDoorStateText("CLOSED");
-                setConcreteDischargeActive(false);
-                setDischargeTimeSec(0);
-                
-                // Sync legacy currentCycle state
-                setCurrentCycle(nextB + 1);
-              }
+              setDischargeTimeSec(0);
+              
+              // Sync legacy currentCycle state
+              setCurrentCycle(nextB + 1);
             }
           }
         }
-      }, 100);
+      };
+
+      const handleWorkerMessage = (e: MessageEvent) => {
+        if (e.data === 'TICK') {
+          tickHandler();
+        }
+      };
+
+      if (bgWorker) {
+        bgWorker.addEventListener('message', handleWorkerMessage);
+        bgWorker.postMessage('START');
+      } else {
+        simIntervalRef.current = setInterval(tickHandler, 100);
+      }
 
       return () => {
+        if (bgWorker) {
+          bgWorker.removeEventListener('message', handleWorkerMessage);
+          bgWorker.postMessage('STOP');
+        }
         if (simIntervalRef.current) {
           clearInterval(simIntervalRef.current);
           simIntervalRef.current = null;
@@ -3708,17 +7322,168 @@ export default function App() {
     }
   }, [isRunning, activeMixingTime, selectedRecipe, activeVolume, activeMixingCount]);
 
+  const saveManualLog = () => {
+    // Date and times
+    const startStr = manualStartTime || new Date().toLocaleTimeString('id-ID');
+    const endStr = new Date().toLocaleTimeString('id-ID');
+
+    const actP1 = Math.round(manualPasir1Ref.current);
+    const actP2 = Math.round(manualPasir2Ref.current);
+    const actB1 = Math.round(manualBatu1Ref.current);
+    const actB2 = Math.round(manualBatu2Ref.current);
+    const actSemen = Math.round(manualSemenRef.current);
+    const actAir = Math.round(manualAirRef.current);
+
+    const totalWeighed = actP1 + actP2 + actB1 + actB2 + actSemen + actAir;
+
+    if (totalWeighed === 0) {
+      setRelayLogs(prev => [
+        {
+          id: 'STOP-MANUAL-VOID-' + Math.random().toString(36).substring(7).toUpperCase(),
+          timestamp: new Date(),
+          message: `[SISTEM MANUAL] SESI PRODUKSI BERAKHIR. Tidak ada material yang ditimbang. Sesi dibatalkan.`,
+          type: 'off'
+        },
+        ...prev
+      ]);
+      return;
+    }
+
+    const completedBatch = Math.max(1, currentBatchRef.current);
+    const volPerMix = volumePerBatch || 1;
+    const totalVolumeProduksi = parseFloat((completedBatch * volPerMix).toFixed(2));
+
+    const targetPasir = (selectedRecipe?.targets.pasir ?? 450) * totalVolumeProduksi;
+    const targetBatu = (selectedRecipe?.targets.batu ?? 450) * totalVolumeProduksi;
+    const targetSemen = (selectedRecipe?.targets.semen ?? 400) * totalVolumeProduksi;
+    const targetAir = (selectedRecipe?.targets.air ?? 180) * totalVolumeProduksi;
+
+    const recP1 = (selectedRecipe as any).pasir1 !== undefined ? (selectedRecipe as any).pasir1 : Math.round((selectedRecipe?.targets.pasir ?? 400) * 0.7);
+    const recB1 = (selectedRecipe as any).batu1 !== undefined ? (selectedRecipe as any).batu1 : Math.round((selectedRecipe?.targets.batu ?? 400) * 0.7);
+
+    let targetPasir1 = Math.round(recP1 * totalVolumeProduksi);
+    if (targetPasir1 > targetPasir) targetPasir1 = targetPasir;
+    const targetPasir2 = Math.max(0, targetPasir - targetPasir1);
+
+    let targetBatu1 = Math.round(recB1 * totalVolumeProduksi);
+    if (targetBatu1 > targetBatu) targetBatu1 = targetBatu;
+    const targetBatu2 = Math.max(0, targetBatu - targetBatu1);
+
+    const manualLog: BatchLog = {
+      id: Math.random().toString(36).substring(7).toUpperCase(),
+      timestamp: new Date(),
+      recipeName: selectedRecipe?.name || "K300 Standard",
+      data: {
+        pasir: targetPasir,
+        batu: targetBatu,
+        semen: targetSemen,
+        air: targetAir
+      },
+      targets: {
+        pasir1: targetPasir1,
+        pasir2: targetPasir2,
+        batu1: targetBatu1,
+        batu2: targetBatu2,
+        semen: targetSemen,
+        air: targetAir
+      },
+      actuals: {
+        pasir1: actP1,
+        pasir2: actP2,
+        batu1: actB1,
+        batu2: actB2,
+        semen: actSemen,
+        air: actAir
+      },
+      status: 'sukses',
+      volume: totalVolumeProduksi, // completedBatch * volumePerMix
+      mixingCycles: completedBatch, // jumlah batch
+      slump: activeSlump,
+      siloSemen: activeSiloSemen,
+      mixingTime: activeMixingTime,
+      pelanggan: activePelanggan,
+      lokasi: activeLokasi,
+      noKendaraan: activeNoKendaraan,
+      sopir: activeSopir,
+      productionMode: 'MANUAL',
+      startTime: startStr,
+      endTime: endStr
+    };
+
+    setLogs(prev => [manualLog, ...prev].slice(0, 50));
+    setActivePrintLog(manualLog);
+
+    setRelayLogs(prev => [
+      {
+        id: 'STOP-MANUAL-REC-' + Math.random().toString(36).substring(7).toUpperCase(),
+        timestamp: new Date(),
+        message: `[SISTEM MANUAL] SESI MANUAL SELESAI & LOG DISIMPAN. Pasir: ${actP1 + actP2} kg, Batu: ${actB1 + actB2} kg, Semen: ${actSemen} kg, Air: ${actAir} kg.`,
+        type: 'done'
+      },
+      ...prev
+    ]);
+  };
+
   const saveLog = () => {
+    // Accumulate the final active cycle's actuals before saving
+    accumPasir1Ref.current += actualPasir1Ref.current;
+    accumPasir2Ref.current += actualPasir2Ref.current;
+    accumBatu1Ref.current += actualBatu1Ref.current;
+    accumBatu2Ref.current += actualBatu2Ref.current;
+    accumSemenRef.current += actualSemenRef.current;
+    accumAirRef.current += actualAirRef.current;
+
+    // Reset cycle triggers so they are not doubled
+    actualPasir1Ref.current = 0;
+    actualPasir2Ref.current = 0;
+    actualBatu1Ref.current = 0;
+    actualBatu2Ref.current = 0;
+    actualSemenRef.current = 0;
+    actualAirRef.current = 0;
+
+    const v = activeVolume;
+    const recP1 = (selectedRecipe as any).pasir1 !== undefined ? (selectedRecipe as any).pasir1 : Math.round((selectedRecipe?.targets.pasir ?? 400) * 0.7);
+    const recB1 = (selectedRecipe as any).batu1 !== undefined ? (selectedRecipe as any).batu1 : Math.round((selectedRecipe?.targets.batu ?? 400) * 0.7);
+
+    // Calculate overall batch targets proportional to activeVolume
+    const targetPasir = (selectedRecipe?.targets.pasir ?? 450) * v;
+    let targetPasir1 = Math.round(recP1 * v);
+    if (targetPasir1 > targetPasir) targetPasir1 = targetPasir;
+    const targetPasir2 = Math.max(0, targetPasir - targetPasir1);
+
+    const targetBatu = (selectedRecipe?.targets.batu ?? 450) * v;
+    let targetBatu1 = Math.round(recB1 * v);
+    if (targetBatu1 > targetBatu) targetBatu1 = targetBatu;
+    const targetBatu2 = Math.max(0, targetBatu - targetBatu1);
+
+    const targetSemen = (selectedRecipe?.targets.semen ?? 400) * v;
+    const targetAir = (selectedRecipe?.targets.air ?? 180) * v;
+
     const newLog: BatchLog = {
       id: Math.random().toString(36).substring(7).toUpperCase(),
       timestamp: new Date(),
       recipeName: selectedRecipe?.name || "K300 Standard",
       data: {
-        // Multi-cycle logs captures correct target values
-        pasir: selectedRecipe?.targets.pasir * activeVolume || 450,
-        batu: selectedRecipe?.targets.batu * activeVolume || 450,
-        semen: selectedRecipe?.targets.semen * activeVolume || 400,
-        air: selectedRecipe?.targets.air * activeVolume || 180
+        pasir: targetPasir,
+        batu: targetBatu,
+        semen: targetSemen,
+        air: targetAir
+      },
+      targets: {
+        pasir1: targetPasir1,
+        pasir2: targetPasir2,
+        batu1: targetBatu1,
+        batu2: targetBatu2,
+        semen: targetSemen,
+        air: targetAir
+      },
+      actuals: {
+        pasir1: Math.round(accumPasir1Ref.current),
+        pasir2: Math.round(accumPasir2Ref.current),
+        batu1: Math.round(accumBatu1Ref.current),
+        batu2: Math.round(accumBatu2Ref.current),
+        semen: Math.round(accumSemenRef.current),
+        air: Math.round(accumAirRef.current)
       },
       status: 'sukses',
       volume: activeVolume,
@@ -3729,9 +7494,295 @@ export default function App() {
       pelanggan: activePelanggan,
       lokasi: activeLokasi,
       noKendaraan: activeNoKendaraan,
-      sopir: activeSopir
+      sopir: activeSopir,
+      productionMode: 'AUTO',
+      startTime: autoStartTime || new Date(Date.now() - (activeMixingTime * 1000)).toLocaleTimeString('id-ID'),
+      endTime: new Date().toLocaleTimeString('id-ID')
     };
-    setLogs(prev => [newLog, ...prev].slice(0, 10));
+
+    setLogs(prev => [newLog, ...prev].slice(0, 50));
+    setActivePrintLog(newLog);
+  };
+
+  const PrintTicketModal = ({ log, onClose }: { log: any; onClose: () => void }) => {
+    if (!log) return null;
+
+    const defaultTargets = { pasir1: 0, pasir2: 0, batu1: 0, batu2: 0, semen: 0, air: 0 };
+    const defaultActuals = { pasir1: 0, pasir2: 0, batu1: 0, batu2: 0, semen: 0, air: 0 };
+
+    const targets = log.targets || defaultTargets;
+    const actuals = log.actuals || defaultActuals;
+
+    const computeDev = (act: number, tgt: number) => {
+      if (tgt === 0 && act === 0) return 0;
+      return act - tgt;
+    };
+
+    const devPasir1 = computeDev(actuals.pasir1, targets.pasir1);
+    const devPasir2 = computeDev(actuals.pasir2, targets.pasir2);
+    const devBatu1 = computeDev(actuals.batu1, targets.batu1);
+    const devBatu2 = computeDev(actuals.batu2, targets.batu2);
+    const devSemen = computeDev(actuals.semen, targets.semen);
+    const devAir = computeDev(actuals.air, targets.air);
+
+    const formatDev = (val: number) => {
+      if (val === 0) return "0";
+      return val > 0 ? `+${val}` : `${val}`;
+    };
+
+    const isAutoMode = (log.productionMode || "AUTO").toUpperCase() === "AUTO";
+
+    const printTime = new Date().toLocaleString('id-ID', {
+      year: 'numeric', month: 'numeric', day: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit'
+    }).replace(/\./g, ':');
+
+    let dateStr = "";
+    if (log.timestamp) {
+      const dt = typeof log.timestamp === 'string' ? new Date(log.timestamp) : log.timestamp;
+      if (dt instanceof Date && !isNaN(dt.getTime())) {
+        dateStr = `${dt.getDate()}/${dt.getMonth() + 1}/${dt.getFullYear()}`;
+      } else {
+        dateStr = String(log.timestamp).split(',')[0];
+      }
+    } else {
+      const d = new Date();
+      dateStr = `${d.getDate()}/${d.getMonth()+1}/${d.getFullYear()}`;
+    }
+
+    return (
+      <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto select-none print:p-0 print:bg-white print:backdrop-blur-none">
+        <style dangerouslySetInnerHTML={{__html: `
+          @media print {
+            body * {
+              visibility: hidden !important;
+            }
+            #print-ticket-sheet, #print-ticket-sheet * {
+              visibility: visible !important;
+            }
+            #print-ticket-sheet {
+              position: absolute !important;
+              left: 0 !important;
+              top: 0 !important;
+              width: 100% !important;
+              max-width: 100% !important;
+              border: none !important;
+              box-shadow: none !important;
+              margin: 0 !important;
+              padding: 10px !important;
+            }
+            #print-controls {
+              display: none !important;
+            }
+          }
+        `}} />
+
+        <div className="flex flex-col gap-3 w-full max-w-[700px] h-fit max-h-[95vh] print:max-h-none print:w-full">
+          <div id="print-controls" className="flex items-center justify-between bg-slate-900 border border-slate-800 p-3 rounded-[6px] shadow-lg shrink-0">
+            <span className="text-[11px] font-sans font-black tracking-wider text-cyan-400 uppercase flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+              BUKTI TIMBANG READY UNTUK DICETAK
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => window.print()}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-mono font-black uppercase px-4 py-1.5 rounded transition-all cursor-pointer shadow-[0_0_8px_rgba(16,185,129,0.3)] flex items-center gap-1"
+              >
+                Cetak Tiket
+              </button>
+              <button
+                onClick={onClose}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-mono font-black uppercase px-3 py-1.5 rounded transition-all cursor-pointer"
+              >
+                Tutup
+              </button>
+            </div>
+          </div>
+
+          <div 
+            id="print-ticket-sheet" 
+            className="w-full bg-white text-slate-900 p-6 md:p-8 border border-slate-300 shadow-2xl rounded-[4px] font-sans overflow-y-auto flex flex-col justify-between"
+            style={{ color: '#1e293b' }}
+          >
+            <div className="flex items-start justify-between border-b-2 border-slate-800 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="shrink-0 scale-[1.1] origin-left">
+                  <div className="w-[50px] h-[50px] rounded-full border-4 border-blue-800 flex items-center justify-center p-0.5 select-none font-bold text-center">
+                    <span className="text-blue-800 text-[8px] font-semibold tracking-tighter leading-none">
+                      PT FARIKA<br/><span className="text-red-500 font-black text-[9px] block">RIAU</span>PERKASA
+                    </span>
+                  </div>
+                </div>
+                <div className="flex flex-col text-left">
+                  <h2 className="text-[16px] font-sans font-black tracking-tight text-blue-900 leading-none">
+                    PT FARIKA RIAU PERKASA
+                  </h2>
+                  <span className="text-[10px] font-sans font-extrabold tracking-wide text-slate-700 uppercase mt-1 leading-none">
+                    READYMIX & PRECAST CONCRETE
+                  </span>
+                  <span className="text-[8px] font-mono font-medium text-slate-500 uppercase mt-0.5 leading-none">
+                    Jl Soekarno - Hatta Komplek SKA Blok E 62 Telp. 0761-571655
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex flex-col items-end text-right font-mono text-[9px] text-slate-500">
+                <span>No. Seri:</span>
+                <span className="text-[10.5px] font-mono font-black text-slate-900 uppercase">
+                  BP-PKU-BP#1-{log.id || '000000'}
+                </span>
+              </div>
+            </div>
+
+            <div className="my-4 bg-slate-100 border border-slate-200 py-1.5 text-center flex items-center justify-center gap-3.5 rounded-[3px]">
+              <span className="text-slate-800 font-sans font-black tracking-widest text-[12.5px] uppercase">
+                BUKTI TIMBANG (BP#1)
+              </span>
+              <span className="text-[9px] font-mono font-black text-white bg-slate-900 border border-slate-800 px-2 py-0.5 rounded leading-none">
+                {isAutoMode ? 'AUTO' : 'MANUAL'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-[10px] font-sans border-b border-dashed border-slate-350 pb-4 mb-4">
+              <div className="space-y-1 text-left">
+                <div className="flex">
+                  <span className="w-24 text-slate-500 font-medium">Tanggal</span>
+                  <span className="mr-2">:</span>
+                  <span className="font-bold text-slate-900">{dateStr}</span>
+                </div>
+                <div className="flex">
+                  <span className="w-24 text-slate-500 font-medium">Nama</span>
+                  <span className="mr-2">:</span>
+                  <span className="font-bold text-slate-900">-</span>
+                </div>
+                <div className="flex">
+                  <span className="w-24 text-slate-500 font-medium">Pelanggan</span>
+                  <span className="mr-2">:</span>
+                  <span className="font-semibold text-slate-800 uppercase">{log.pelanggan || '-'}</span>
+                </div>
+                <div className="flex">
+                  <span className="w-24 text-slate-500 font-medium">Lokasi Proyek</span>
+                  <span className="mr-2">:</span>
+                  <span className="font-semibold text-slate-800 uppercase">{log.lokasi || '-'}</span>
+                </div>
+                <div className="flex">
+                  <span className="w-24 text-slate-500 font-medium">Mutu Beton</span>
+                  <span className="mr-2">:</span>
+                  <span className="font-black text-blue-900 uppercase">{log.recipeName || '-'}</span>
+                </div>
+                <div className="flex">
+                  <span className="w-24 text-slate-500 font-medium">Slump</span>
+                  <span className="mr-2">:</span>
+                  <span className="font-bold text-slate-800">{log.slump || '12 cm'}</span>
+                </div>
+                <div className="flex">
+                  <span className="w-24 text-slate-500 font-medium">Volume</span>
+                  <span className="mr-2">:</span>
+                  <span className="font-black text-slate-900">{log.volume || '1'} M³</span>
+                </div>
+              </div>
+
+              <div className="space-y-1 text-left pl-4 border-l border-slate-200">
+                <div className="flex">
+                  <span className="w-24 text-slate-500 font-medium">Jam Mulai</span>
+                  <span className="mr-2">:</span>
+                  <span className="font-mono text-slate-800">{log.startTime || '-'}</span>
+                </div>
+                <div className="flex">
+                  <span className="w-24 text-slate-500 font-medium">Jam Selesai</span>
+                  <span className="mr-2">:</span>
+                  <span className="font-mono text-slate-800">{log.endTime || '-'}</span>
+                </div>
+                <div className="flex">
+                  <span className="w-24 text-slate-500 font-medium">Nama Sopir</span>
+                  <span className="mr-2">:</span>
+                  <span className="font-semibold text-slate-800 uppercase">{log.sopir || '-'}</span>
+                </div>
+                <div className="flex">
+                  <span className="w-24 text-slate-500 font-medium">Nomor Mobil</span>
+                  <span className="mr-2">:</span>
+                  <span className="font-mono font-bold text-slate-800 uppercase">{log.noKendaraan || '-'}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="mb-4">
+              <span className="block text-[8.5px] font-mono font-black text-slate-400 uppercase tracking-wide text-center mb-1">
+                Aktual penimbangan (Kg)
+              </span>
+              <table className="w-full text-[10.5px] border-collapse border border-slate-400 text-slate-800">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-400">
+                    <th className="border-r border-slate-400 p-1.5 py-2 text-left font-black tracking-wider w-1/4">Material</th>
+                    <th className="border-r border-slate-400 p-1.5 py-2 text-center font-black tracking-wider w-1/4">Target</th>
+                    <th className="border-r border-slate-400 p-1.5 py-2 text-center font-black tracking-wider w-1/4">Realisasi</th>
+                    <th className="p-1.5 py-2 text-center font-black tracking-wider w-1/4">Deviasi</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="border-b border-slate-400">
+                    <td className="border-r border-slate-400 p-1.5 font-bold text-left">Pasir 1</td>
+                    <td className="border-r border-slate-400 p-1.5 font-mono text-center">{targets.pasir1}</td>
+                    <td className="border-r border-slate-400 p-1.5 font-mono text-center">{actuals.pasir1}</td>
+                    <td className={`p-1.5 font-mono font-bold text-center ${devPasir1 !== 0 ? 'text-red-500' : ''}`}>{formatDev(devPasir1)}</td>
+                  </tr>
+                  <tr className="border-b border-slate-400">
+                    <td className="border-r border-slate-400 p-1.5 font-bold text-left">Pasir 2</td>
+                    <td className="border-r border-slate-400 p-1.5 font-mono text-center">{targets.pasir2}</td>
+                    <td className="border-r border-slate-400 p-1.5 font-mono text-center">{actuals.pasir2}</td>
+                    <td className={`p-1.5 font-mono font-bold text-center ${devPasir2 !== 0 ? 'text-red-500' : ''}`}>{formatDev(devPasir2)}</td>
+                  </tr>
+                  <tr className="border-b border-slate-400">
+                    <td className="border-r border-slate-400 p-1.5 font-bold text-left">Batu 1</td>
+                    <td className="border-r border-slate-400 p-1.5 font-mono text-center">{targets.batu1}</td>
+                    <td className="border-r border-slate-400 p-1.5 font-mono text-center">{actuals.batu1}</td>
+                    <td className={`p-1.5 font-mono font-bold text-center ${devBatu1 !== 0 ? 'text-red-500' : ''}`}>{formatDev(devBatu1)}</td>
+                  </tr>
+                  <tr className="border-b border-slate-400">
+                    <td className="border-r border-slate-400 p-1.5 font-bold text-left">Batu 2</td>
+                    <td className="border-r border-slate-400 p-1.5 font-mono text-center">{targets.batu2}</td>
+                    <td className="border-r border-slate-400 p-1.5 font-mono text-center">{actuals.batu2}</td>
+                    <td className={`p-1.5 font-mono font-bold text-center ${devBatu2 !== 0 ? 'text-red-500' : ''}`}>{formatDev(devBatu2)}</td>
+                  </tr>
+                  <tr className="border-b border-slate-400">
+                    <td className="border-r border-slate-400 p-1.5 font-bold text-left">Semen</td>
+                    <td className="border-r border-slate-400 p-1.5 font-mono text-center">{targets.semen}</td>
+                    <td className="border-r border-slate-400 p-1.5 font-mono text-center">{actuals.semen}</td>
+                    <td className={`p-1.5 font-mono font-bold text-center ${devSemen !== 0 ? 'text-red-500' : ''}`}>{formatDev(devSemen)}</td>
+                  </tr>
+                  <tr>
+                    <td className="border-r border-slate-400 p-1.5 font-bold text-left">Air</td>
+                    <td className="border-r border-slate-400 p-1.5 font-mono text-center">{targets.air}</td>
+                    <td className="border-r border-slate-400 p-1.5 font-mono text-center">{actuals.air}</td>
+                    <td className={`p-1.5 font-mono font-bold text-center ${devAir !== 0 ? 'text-red-500' : ''}`}>{formatDev(devAir)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div className="grid grid-cols-3 gap-4 text-center text-[9.5px] mt-6 pt-2 select-none md:mt-10">
+              <div className="flex flex-col justify-between h-20">
+                <span className="font-bold text-slate-700">Penerima,</span>
+                <div className="w-[85%] mx-auto border-b border-slate-400 h-0.5"></div>
+              </div>
+              <div className="flex flex-col justify-between h-20">
+                <span className="font-bold text-slate-700">Operator,</span>
+                <div className="w-[85%] mx-auto border-b border-slate-400 h-0.5"></div>
+              </div>
+              <div className="flex flex-col justify-between h-20">
+                <span className="font-bold text-slate-700">Quality Control,</span>
+                <div className="w-[85%] mx-auto border-b border-slate-400 h-0.5"></div>
+              </div>
+            </div>
+
+            <div className="mt-6 border-t border-slate-200 pt-3 text-center text-[7.5px] font-medium text-slate-500 space-y-0.5 col-span-full">
+              <p>Dokumen ini dibuat secara otomatis oleh sistem.</p>
+              <p className="font-mono">Waktu Cetak: {printTime}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
   };
 
   // Compact Company Header
@@ -3760,6 +7811,16 @@ export default function App() {
             <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_6px_#22d3ee]" />
             <span>SCADA SYSTEM</span>
           </div>
+
+          {/* Operation Mode Tag Status (Status Mode) */}
+          <div className={`flex items-center gap-1.5 font-mono text-[9px] font-bold px-3 py-1 rounded-full border uppercase select-none leading-none h-7 flex-nowrap ${
+            operationMode === 'PRODUKSI'
+              ? 'bg-emerald-950/85 text-emerald-400 border-emerald-500/20 shadow-[0_0_8px_rgba(16,185,129,0.1)]'
+              : 'bg-amber-950/85 text-amber-400 border-amber-500/20 font-black animate-pulse'
+          }`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${operationMode === 'PRODUKSI' ? 'bg-emerald-400' : 'bg-amber-500 animate-ping'}`} />
+            <span>MODE: {operationMode === 'PRODUKSI' ? 'PRODUKSI NYATA' : 'SIMULASI'}</span>
+          </div>
           
           {/* Login Operator */}
           <button 
@@ -3772,8 +7833,8 @@ export default function App() {
           
           {/* Isi Silo */}
           <button 
-            onClick={() => alert("Menu Pengisian Silo Silakan Hubungi Admin")} 
-            className="bg-[#172554]/70 hover:bg-[#1e3a8a] border border-blue-900/30 rounded-full px-2.5 h-7 flex items-center gap-1.5 text-[10px] text-slate-200 transition-colors uppercase font-bold whitespace-nowrap"
+            onClick={() => setIsFillSiloOpen(true)} 
+            className="bg-[#172554]/70 hover:bg-[#1e3a8a] border border-blue-900/30 rounded-full px-2.5 h-7 flex items-center gap-1.5 text-[10px] text-slate-200 cursor-pointer transition-colors uppercase font-bold whitespace-nowrap"
           >
             <Package size={10} className="text-[#38bdf8]" />
             <span>Isi Silo</span>
@@ -3829,6 +7890,25 @@ export default function App() {
         mixingSequence={mixingSequence}
         setMixingSequence={setMixingSequence}
         activePins={activePins}
+        batchingPlantMode={batchingPlantMode}
+        setBatchingPlantMode={setBatchingPlantMode}
+        flowControlGates={flowControlGates}
+        setFlowControlGates={setFlowControlGates}
+        waitingHopperEnabled={waitingHopperEnabled}
+        setWaitingHopperEnabled={setWaitingHopperEnabled}
+        waitingHopperPulseOn={waitingHopperPulseOn}
+        setWaitingHopperPulseOn={setWaitingHopperPulseOn}
+        waitingHopperPulseOff={waitingHopperPulseOff}
+        setWaitingHopperPulseOff={setWaitingHopperPulseOff}
+        waitingHopperWaterDelay={waitingHopperWaterDelay}
+        setWaitingHopperWaterDelay={setWaitingHopperWaterDelay}
+        waitingHopperWaterPrecharge={waitingHopperWaterPrecharge}
+        setWaitingHopperWaterPrecharge={setWaitingHopperWaterPrecharge}
+        operationMode={operationMode}
+        setOperationMode={setOperationMode}
+        scaleCapacities={scaleCapacities}
+        setScaleCapacities={setScaleCapacities}
+        setActivePrintLog={setActivePrintLog}
         onLogout={() => {
           localStorage.removeItem('admin_session');
           setCurrentView('admin-login');
@@ -3918,6 +7998,7 @@ export default function App() {
           {isBatchConfigOpen && (
             <BatchConfigModal
               recipes={recipesList}
+              siloWeights={siloWeights}
               onClose={() => setIsBatchConfigOpen(false)}
               onConfirm={(config) => {
                 setIsBatchConfigOpen(false);
@@ -3999,6 +8080,180 @@ export default function App() {
           )}
         </AnimatePresence>
 
+        {/* Fill Silo Form Overlay */}
+        <AnimatePresence>
+          {isFillSiloOpen && (
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="absolute inset-0 z-[250] flex items-center justify-center p-6 bg-black/85 backdrop-blur-xs select-none"
+              onClick={() => setIsFillSiloOpen(false)}
+            >
+              <div 
+                className="bg-[#0c111e] border-2 border-[#38bdf8] p-6 rounded-[8px] shadow-2xl flex flex-col gap-4 max-w-sm w-full text-left"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <h3 className="text-sm font-black uppercase tracking-wider text-slate-200 flex items-center gap-2">
+                    <Package size={16} className="text-[#38bdf8]" />
+                    Isi Volume Silo
+                  </h3>
+                  <button 
+                    onClick={() => setIsFillSiloOpen(false)}
+                    className="text-rose-500 hover:text-rose-400 transition-colors cursor-pointer text-xs uppercase font-black"
+                  >
+                    Batal
+                  </button>
+                </div>
+
+                <div className="space-y-3.5 my-1">
+                  {/* Select Silo */}
+                  <div className="space-y-1.5">
+                    <label className="block text-slate-350 text-[11px] font-bold uppercase tracking-wider">Pilih Silo Semen</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {[...Array(6)].map((_, idx) => {
+                        const isSel = selectedFillSiloIdx === idx;
+                        return (
+                          <button
+                            key={idx}
+                            type="button"
+                            onClick={() => setSelectedFillSiloIdx(idx)}
+                            className={`py-2 px-1 text-center rounded-[4px] border text-[11px] font-mono font-bold transition-all cursor-pointer ${
+                              isSel 
+                                ? 'bg-blue-950/85 border-[#38bdf8] text-[#38bdf8] shadow-[0_0_8px_rgba(56,189,248,0.25)]' 
+                                : 'bg-[#070b13] border-slate-850 text-slate-400 hover:border-slate-800'
+                            }`}
+                          >
+                            SILO {idx + 1}
+                            <span className="block text-[8px] font-sans font-medium text-slate-500 mt-0.5">
+                              {((siloWeights[idx] ?? 0) / 1000).toFixed(1)}t
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Volume Input */}
+                  <div className="space-y-1.5">
+                    <label className="block text-slate-350 text-[11px] font-bold uppercase tracking-wider">Volume Pengisian (Kg)</label>
+                    <div className="relative">
+                      <input 
+                        type="text" 
+                        value={fillSiloAmountText}
+                        onChange={(e) => {
+                          const cleaned = e.target.value.replace(/[^0-9]/g, "");
+                          setFillSiloAmountText(cleaned);
+                        }}
+                        className="w-full h-10 bg-[#070b13] border border-slate-800 hover:border-slate-700 focus:border-cyan-400 focus:shadow-[0_0_8px_rgba(34,211,238,0.25)] text-white text-[13px] font-mono rounded-[4px] px-3 outline-hidden transition-all text-left" 
+                        placeholder="Contoh: 20000"
+                      />
+                      <span className="absolute right-3 top-2.5 font-mono text-[11px] text-slate-500 font-bold uppercase select-none">KG</span>
+                    </div>
+                    <p className="text-[9.5px] font-sans text-slate-500 leading-normal italic select-none">
+                      • Kapasitas Maksimal: 120.000 Kg
+                      <span className="block">• Ruang Tersisa: {Math.max(0, 120000 - (siloWeights[selectedFillSiloIdx] ?? 0)).toLocaleString('id-ID')} Kg</span>
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex gap-2.5 pt-2">
+                  <button 
+                    onClick={() => {
+                      const amt = parseInt(fillSiloAmountText, 10);
+                      if (isNaN(amt) || amt <= 0) {
+                        setCustomAlertMessage("Volume pengisian harus bernilai positif");
+                        return;
+                      }
+                      startFillSilo(selectedFillSiloIdx, amt);
+                    }}
+                    className="flex-1 h-10 bg-[#38bdf8] hover:bg-[#0ea5e9] text-slate-950 font-black text-xs uppercase tracking-wider rounded-[4px] transition-colors shadow-lg active:scale-97 cursor-pointer text-center"
+                  >
+                    Mulai Pengisian
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Silo Filling Progress Animation Overlay */}
+        <AnimatePresence>
+          {activeFillingSiloIdx !== null && (
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 z-[280] flex items-center justify-center p-6 bg-black/85 backdrop-blur-xs select-none"
+            >
+              <div className="bg-[#070c16] border-2 border-[#10b981] p-6 rounded-[8px] shadow-2xl flex flex-col items-center gap-4 max-w-sm w-full text-center">
+                <div className="relative w-14 h-14 flex items-center justify-center">
+                  <div className="absolute inset-0 rounded-full border-4 border-slate-900 border-t-[#10b981] animate-spin" />
+                  <Package size={22} className="text-[#10b981]" />
+                </div>
+                
+                <div className="space-y-1">
+                  <h3 className="text-xs font-black uppercase tracking-widest text-[#10b981]">PROSES TRANSFER CEMENT</h3>
+                  <p className="text-[12px] font-sans font-bold text-slate-200">
+                    Sedang mengisi Silo {activeFillingSiloIdx + 1} ({Math.round(siloWeights[activeFillingSiloIdx]).toLocaleString('id-ID')} Kg)
+                  </p>
+                </div>
+
+                {/* Progress Bar */}
+                <div className="w-full">
+                  <div className="w-full bg-slate-950 h-2 border border-slate-900 rounded-full overflow-hidden">
+                    <div 
+                      className="bg-gradient-to-r from-[#10b981] to-[#34d399] h-full rounded-full transition-all duration-75"
+                      style={{ width: `${fillingProgress}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between items-center text-[10px] font-mono text-slate-500 font-bold mt-1.5 uppercase leading-none">
+                    <span>PROGRESS</span>
+                    <span>{fillingProgress}%</span>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Custom Custom Alert Modal for cross-origin iframe sandboxing reliability */}
+        <AnimatePresence>
+          {customAlertMessage && (
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 z-[350] flex items-center justify-center p-6 bg-black/90 backdrop-blur-xs select-none"
+              onClick={() => setCustomAlertMessage(null)}
+            >
+              <div 
+                className="bg-[#0f1322] border-2 border-rose-500 p-6 rounded-[8px] shadow-2xl flex flex-col items-center gap-4 max-w-sm w-full text-center"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="w-12 h-12 rounded-full bg-rose-500/10 border border-rose-500 flex items-center justify-center text-rose-500">
+                  <AlertOctagon size={24} className="animate-pulse" />
+                </div>
+                
+                <div className="space-y-1.5 font-sans">
+                  <h3 className="text-xs font-black uppercase tracking-wider text-rose-500">PERINGATAN / WARNING</h3>
+                  <p className="text-[12px] font-bold text-slate-200 leading-normal">
+                    {customAlertMessage}
+                  </p>
+                </div>
+
+                <button 
+                  onClick={() => setCustomAlertMessage(null)}
+                  className="w-full mt-2 h-9 bg-rose-500 hover:bg-rose-600 text-white font-black text-xs uppercase tracking-wider rounded-[4px] transition-all cursor-pointer text-center"
+                >
+                  OK
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+ 
         {/* Inner layout 3-Column Grid representing the pristine Lovable HMI design */}
         <div className="flex-1 grid grid-cols-[230px_1fr_240px] gap-3 min-h-0 relative select-none">
                     {/* LEFT PANEL: AMPERE, SLUMP, AND ACTIVITY LOGS */}
@@ -4010,15 +8265,31 @@ export default function App() {
                   <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
                   TIMBANGAN MATERIAL
                 </span>
-              </div>
-              <div className="grid grid-cols-1 gap-2 flex-1 min-h-0">
-                {[
+              </div>              <div className="grid grid-cols-1 gap-2 flex-1 min-h-0">
+                {(batchingPlantMode === 'SYSTEM_2' ? [
+                  { key: 'aggregate_combined', label: 'AGGREGATE (AKUMULATIF)', isCombined: true },
+                  { key: 'semen', label: 'SEMEN (CEMENT)' },
+                  { key: 'air', label: 'AIR & ADITIF' }
+                ] : [
                   { key: 'pasir', label: 'PASIR (SAND)' },
                   { key: 'batu', label: 'BATU (STONE)' },
                   { key: 'semen', label: 'SEMEN (CEMENT)' },
                   { key: 'air', label: 'AIR & ADITIF' }
-                ].map(({ key, label }) => {
-                  const item = scales[key as MaterialType];
+                ]).map((itemConf) => {
+                  const { key, label } = itemConf;
+                  let item: any;
+                  if (itemConf.isCombined) {
+                    item = {
+                      target: scales.pasir.target + scales.batu.target,
+                      actual: scales.pasir.actual + scales.batu.actual,
+                      isActive: scales.pasir.isActive || scales.batu.isActive,
+                      isComplete: scales.pasir.isComplete && scales.batu.isComplete,
+                      unit: 'kg'
+                    };
+                  } else {
+                    item = scales[key as MaterialType];
+                  }
+                  
                   return (
                     <div key={key} className="bg-[#121c32]/50 border border-slate-800 rounded-[5px] p-2.5 flex flex-col justify-between overflow-hidden relative shadow-sm flex-1 min-h-[60px] transition-all duration-250">
                       {/* Card Header (Target) */}
@@ -4058,54 +8329,189 @@ export default function App() {
                       </div>
 
                       {/* Manual JOG Touchscreen Button */}
-                      <button
-                        onMouseDown={() => {
-                          if (isRunning && !item.isComplete) {
-                            if (key === 'pasir') setJoggingPasir(true);
-                            if (key === 'batu') setJoggingBatu(true);
-                            if (key === 'semen') setJoggingSemen(true);
-                            if (key === 'air') setJoggingAir(true);
-                          }
-                        }}
-                        onMouseUp={() => {
-                          if (key === 'pasir') setJoggingPasir(false);
-                          if (key === 'batu') setJoggingBatu(false);
-                          if (key === 'semen') setJoggingSemen(false);
-                          if (key === 'air') setJoggingAir(false);
-                        }}
-                        onMouseLeave={() => {
-                          if (key === 'pasir') setJoggingPasir(false);
-                          if (key === 'batu') setJoggingBatu(false);
-                          if (key === 'semen') setJoggingSemen(false);
-                          if (key === 'air') setJoggingAir(false);
-                        }}
-                        onTouchStart={() => {
-                          if (isRunning && !item.isComplete) {
-                            if (key === 'pasir') setJoggingPasir(true);
-                            if (key === 'batu') setJoggingBatu(true);
-                            if (key === 'semen') setJoggingSemen(true);
-                            if (key === 'air') setJoggingAir(true);
-                          }
-                        }}
-                        onTouchEnd={() => {
-                          if (key === 'pasir') setJoggingPasir(false);
-                          if (key === 'batu') setJoggingBatu(false);
-                          if (key === 'semen') setJoggingSemen(false);
-                          if (key === 'air') setJoggingAir(false);
-                        }}
-                        disabled={!isRunning || item.isComplete}
-                        className={`mt-2 py-1 px-3 text-[10px] font-sans font-black tracking-widest rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center
-                          ${(key === 'pasir' ? joggingPasir : key === 'batu' ? joggingBatu : key === 'semen' ? joggingSemen : joggingAir)
-                            ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
-                            : item.isComplete
-                              ? 'bg-slate-900 border-slate-950 text-slate-600 cursor-not-allowed font-medium'
-                              : !isRunning
+                      {itemConf.isCombined ? (
+                        <div className="grid grid-cols-4 gap-1 mt-2 shrink-0">
+                          <button
+                            onMouseDown={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir1(true); }}
+                            onMouseUp={() => setJoggingPasir1(false)}
+                            onMouseLeave={() => setJoggingPasir1(false)}
+                            onTouchStart={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir1(true); }}
+                            onTouchEnd={() => setJoggingPasir1(false)}
+                            disabled={!isRunning || scales.pasir.isComplete}
+                            className={`py-1 px-0.5 flex items-center justify-center text-[8px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center
+                              ${joggingPasir1
+                                ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
+                                : scales.pasir.isComplete || !isRunning
+                                  ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
+                                  : 'bg-[#121c32] text-amber-500 border-amber-500/25 cursor-pointer hover:bg-amber-500/10'
+                              }`}
+                          >
+                            PS1
+                          </button>
+                          <button
+                            onMouseDown={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir2(true); }}
+                            onMouseUp={() => setJoggingPasir2(false)}
+                            onMouseLeave={() => setJoggingPasir2(false)}
+                            onTouchStart={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir2(true); }}
+                            onTouchEnd={() => setJoggingPasir2(false)}
+                            disabled={!isRunning || scales.pasir.isComplete}
+                            className={`py-1 px-0.5 flex items-center justify-center text-[8px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center
+                              ${joggingPasir2
+                                ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
+                                : scales.pasir.isComplete || !isRunning
+                                  ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
+                                  : 'bg-[#121c32] text-amber-500 border-amber-500/25 cursor-pointer hover:bg-amber-500/10'
+                              }`}
+                          >
+                            PS2
+                          </button>
+                          <button
+                            onMouseDown={() => { if (isRunning && !scales.batu.isComplete) setJoggingBatu1(true); }}
+                            onMouseUp={() => setJoggingBatu1(false)}
+                            onMouseLeave={() => setJoggingBatu1(false)}
+                            onTouchStart={() => { if (isRunning && !scales.batu.isComplete) setJoggingBatu1(true); }}
+                            onTouchEnd={() => setJoggingBatu1(false)}
+                            disabled={!isRunning || scales.batu.isComplete}
+                            className={`py-1 px-0.5 flex items-center justify-center text-[8px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center
+                              ${joggingBatu1
+                                ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
+                                : scales.batu.isComplete || !isRunning
+                                  ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
+                                  : 'bg-[#121c32] text-amber-500 border-amber-500/25 cursor-pointer hover:bg-amber-500/10'
+                              }`}
+                          >
+                            BT1
+                          </button>
+                          <button
+                            onMouseDown={() => { if (isRunning && !scales.batu.isComplete) setJoggingBatu2(true); }}
+                            onMouseUp={() => setJoggingBatu2(false)}
+                            onMouseLeave={() => setJoggingBatu2(false)}
+                            onTouchStart={() => { if (isRunning && !scales.batu.isComplete) setJoggingBatu2(true); }}
+                            onTouchEnd={() => setJoggingBatu2(false)}
+                            disabled={!isRunning || scales.batu.isComplete}
+                            className={`py-1 px-0.5 flex items-center justify-center text-[8px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center
+                              ${joggingBatu2
+                                ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
+                                : scales.batu.isComplete || !isRunning
+                                  ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
+                                  : 'bg-[#121c32] text-amber-500 border-amber-500/25 cursor-pointer hover:bg-amber-500/10'
+                              }`}
+                          >
+                            BT2
+                          </button>
+                        </div>
+                      ) : key === 'pasir' ? (
+                        <div className="grid grid-cols-2 gap-1.5 mt-2 shrink-0">
+                          <button
+                            onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingPasir1(true); }}
+                            onMouseUp={() => setJoggingPasir1(false)}
+                            onMouseLeave={() => setJoggingPasir1(false)}
+                            onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingPasir1(true); }}
+                            onTouchEnd={() => setJoggingPasir1(false)}
+                            disabled={!isRunning || item.isComplete}
+                            className={`py-1 px-1 flex items-center justify-center text-[8.5px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center
+                              ${joggingPasir1
+                                ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
+                                : item.isComplete || !isRunning
+                                  ? 'bg-slate-900 border-slate-950 text-slate-600 cursor-not-allowed font-medium'
+                                  : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
+                              }`}
+                          >
+                            {joggingPasir1 ? 'JOG 1...' : 'JOG PASIR 1'}
+                          </button>
+                          <button
+                            onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingPasir2(true); }}
+                            onMouseUp={() => setJoggingPasir2(false)}
+                            onMouseLeave={() => setJoggingPasir2(false)}
+                            onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingPasir2(true); }}
+                            onTouchEnd={() => setJoggingPasir2(false)}
+                            disabled={!isRunning || item.isComplete}
+                            className={`py-1 px-1 flex items-center justify-center text-[8.5px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center
+                              ${joggingPasir2
+                                ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
+                                : item.isComplete || !isRunning
+                                  ? 'bg-slate-900 border-slate-950 text-slate-600 cursor-not-allowed font-medium'
+                                  : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
+                              }`}
+                          >
+                            {joggingPasir2 ? 'JOG 2...' : 'JOG PASIR 2'}
+                          </button>
+                        </div>
+                      ) : key === 'batu' ? (
+                        <div className="grid grid-cols-2 gap-1.5 mt-2 shrink-0">
+                          <button
+                            onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingBatu1(true); }}
+                            onMouseUp={() => setJoggingBatu1(false)}
+                            onMouseLeave={() => setJoggingBatu1(false)}
+                            onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingBatu1(true); }}
+                            onTouchEnd={() => setJoggingBatu1(false)}
+                            disabled={!isRunning || item.isComplete}
+                            className={`py-1 px-1 flex items-center justify-center text-[8.5px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center
+                              ${joggingBatu1
+                                ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
+                                : item.isComplete || !isRunning
+                                  ? 'bg-slate-900 border-slate-950 text-slate-600 cursor-not-allowed font-medium'
+                                  : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
+                              }`}
+                          >
+                            {joggingBatu1 ? 'JOG 1...' : 'JOG BATU 1'}
+                          </button>
+                          <button
+                            onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingBatu2(true); }}
+                            onMouseUp={() => setJoggingBatu2(false)}
+                            onMouseLeave={() => setJoggingBatu2(false)}
+                            onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingBatu2(true); }}
+                            onTouchEnd={() => setJoggingBatu2(false)}
+                            disabled={!isRunning || item.isComplete}
+                            className={`py-1 px-1 flex items-center justify-center text-[8.5px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center
+                              ${joggingBatu2
+                                ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
+                                : item.isComplete || !isRunning
+                                  ? 'bg-slate-900 border-slate-950 text-slate-600 cursor-not-allowed font-medium'
+                                  : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
+                              }`}
+                          >
+                            {joggingBatu2 ? 'JOG 2...' : 'JOG BATU 2'}
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onMouseDown={() => {
+                            if (isRunning && !item.isComplete) {
+                              if (key === 'semen') setJoggingSemen(true);
+                              if (key === 'air') setJoggingAir(true);
+                            }
+                          }}
+                          onMouseUp={() => {
+                            if (key === 'semen') setJoggingSemen(false);
+                            if (key === 'air') setJoggingAir(false);
+                          }}
+                          onMouseLeave={() => {
+                            if (key === 'semen') setJoggingSemen(false);
+                            if (key === 'air') setJoggingAir(false);
+                          }}
+                          onTouchStart={() => {
+                            if (isRunning && !item.isComplete) {
+                              if (key === 'semen') setJoggingSemen(true);
+                              if (key === 'air') setJoggingAir(true);
+                            }
+                          }}
+                          onTouchEnd={() => {
+                            if (key === 'semen') setJoggingSemen(false);
+                            if (key === 'air') setJoggingAir(false);
+                          }}
+                          disabled={!isRunning || item.isComplete}
+                          className={`mt-2 py-1 px-3 text-[10px] font-sans font-black tracking-widest rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center
+                            ${(key === 'semen' ? joggingSemen : joggingAir)
+                              ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
+                              : item.isComplete || !isRunning
                                 ? 'bg-slate-900 border-slate-950 text-slate-600 cursor-not-allowed font-medium'
                                 : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
-                          }`}
-                      >
-                        {(key === 'pasir' ? joggingPasir : key === 'batu' ? joggingBatu : key === 'semen' ? joggingSemen : joggingAir) ? 'JOGGING...' : 'MANUAL JOG'}
-                      </button>
+                            }`}
+                        >
+                          {(key === 'semen' ? joggingSemen : joggingAir) ? 'JOGGING...' : 'MANUAL JOG'}
+                        </button>
+                      )}
                     </div>
                   );
                 })}
@@ -4140,6 +8546,8 @@ export default function App() {
                 totalCycles={totalCycles}
                 currentBatch={currentBatch}
                 targetBatch={targetBatch}
+                activeVolume={activeVolume}
+                siloWeights={siloWeights}
                 gatePasirSiloOpen={gatePasirSiloOpen}
                 gatePasir1SiloOpen={gatePasir1SiloOpen}
                 gatePasir2SiloOpen={gatePasir2SiloOpen}
@@ -4166,12 +8574,25 @@ export default function App() {
                 isPaused={isPaused}
                 activeSiloSemen={activeSiloSemen}
                 activePins={activePins}
+                batchingPlantMode={batchingPlantMode}
+                waitingHopperEnabled={waitingHopperEnabled}
+                waitingHopperState={waitingHopperState}
+                waitingHopperGateOpen={waitingHopperGateOpen}
+                waitingHopperWeight={waitingHopperWeight}
+                selectedRecipe={selectedRecipe}
+                volumePerBatch={volumePerBatch}
+                scaleCapacities={scaleCapacities}
+                mixerState={mixerState}
+                aggregateInMixer={aggregateInMixerRef.current}
+                compressorActive={compressorActive}
+                vibratorActive={vibratorActive}
+                onManualDeviceToggle={handleManualDeviceToggle}
               />
             </div>
           </div>
 
           {/* RIGHT PANEL: MIXING GAUGES AND PLC CONTROL PANEL BUTTON BOARD */}
-          <div className="flex flex-col gap-3 min-h-0 justify-between">
+          <div className="flex flex-col gap-3 min-h-0 overflow-y-auto scrollbar-thin pr-1 pb-4">
             {/* ESTIMASI SLUMP CARD */}
             <div className="bg-[#0b1329] border border-slate-800 rounded-[5px] p-2.5 flex flex-col justify-between overflow-hidden relative shadow-md shrink-0 h-[105px]">
               <div className="flex justify-between items-center border-b border-slate-850 pb-1.5">
@@ -4194,6 +8615,195 @@ export default function App() {
               </div>
             </div>
 
+            {/* CARD WAITING HOPPER SYSTEM SETTINGS */}
+            <div className="bg-[#0b1329] border border-slate-800 rounded-[5px] p-2.5 flex flex-col gap-1.5 overflow-hidden relative shadow-md shrink-0">
+              <div className="flex justify-between items-center border-b border-slate-800 pb-1 shrink-0 select-none">
+                <span className="text-[8px] font-sans font-black tracking-widest text-[#00ffd0] uppercase flex items-center gap-1">
+                  <span className={`w-1.5 h-1.5 rounded-full ${waitingHopperEnabled ? 'bg-[#00ffd0] animate-pulse' : 'bg-slate-600'}`} />
+                  SETTING WAITING HOPPER
+                </span>
+                <span className={`text-[6.5px] font-sans font-black px-1 py-0.5 rounded leading-none ${waitingHopperEnabled ? 'bg-[#00ffd0]/10 text-[#00ffd0] border border-[#00ffd0]/20' : 'bg-slate-900 text-slate-500'}`}>
+                  {waitingHopperEnabled ? 'ACTIVE' : 'BYPASS'}
+                </span>
+              </div>
+              
+              <div className="flex flex-col gap-1.5">
+                {/* Switch Toggle */}
+                <div className="flex items-center justify-between">
+                  <span className="text-[8.5px] font-black text-slate-300 uppercase font-mono">SISTEM WAITING HOPPER</span>
+                  <button
+                    onClick={() => setWaitingHopperEnabled(!waitingHopperEnabled)}
+                    disabled={isRunning}
+                    className={`text-[8px] font-black px-2 py-0.5 rounded transition-all cursor-pointer select-none ${
+                      isRunning ? 'opacity-40 cursor-not-allowed bg-slate-900 text-slate-600 border border-slate-950' :
+                      waitingHopperEnabled 
+                        ? 'bg-[#00ffd0] hover:bg-[#00e5ff] text-black font-black font-mono' 
+                        : 'bg-slate-800 hover:bg-slate-700 text-slate-400 font-bold font-mono'
+                    }`}
+                  >
+                    {waitingHopperEnabled ? 'AKTIF' : 'NORMAL'}
+                  </button>
+                </div>
+
+                {waitingHopperEnabled && (
+                  <div className="space-y-1.5 border-t border-slate-800 pt-1 text-[8px] font-sans font-medium">
+                    {/* Gate Pulse ON Time */}
+                    <div className="flex flex-col gap-0.5">
+                      <div className="flex justify-between text-slate-400">
+                        <span>PULSA VALVE ON</span>
+                        <span className="text-[#00ffd0] font-black font-mono">{waitingHopperPulseOn}s</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button 
+                          onClick={() => setWaitingHopperPulseOn(p => Math.max(0.5, parseFloat((p - 0.5).toFixed(1))))}
+                          disabled={isRunning}
+                          className="w-4 h-4 bg-slate-800 rounded flex items-center justify-center text-[9px] font-extrabold hover:bg-slate-700 disabled:opacity-45 text-white"
+                        >-</button>
+                        <input 
+                          type="range" min="0.5" max="5" step="0.5"
+                          value={waitingHopperPulseOn} 
+                          onChange={(e) => setWaitingHopperPulseOn(parseFloat(e.target.value))}
+                          disabled={isRunning}
+                          className="flex-1 accent-[#00ffd0] h-0.5 bg-slate-900 rounded-lg appearance-none cursor-pointer disabled:opacity-45"
+                        />
+                        <button 
+                          onClick={() => setWaitingHopperPulseOn(p => Math.min(5, parseFloat((p + 0.5).toFixed(1))))}
+                          disabled={isRunning}
+                          className="w-4 h-4 bg-slate-800 rounded flex items-center justify-center text-[9px] font-extrabold hover:bg-slate-700 disabled:opacity-45 text-white"
+                        >+</button>
+                      </div>
+                    </div>
+
+                    {/* Gate Pulse OFF Time */}
+                    <div className="flex flex-col gap-0.5">
+                      <div className="flex justify-between text-slate-400">
+                        <span>PULSA VALVE OFF</span>
+                        <span className="text-[#00ffd0] font-black font-mono">{waitingHopperPulseOff}s</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button 
+                          onClick={() => setWaitingHopperPulseOff(p => Math.max(0.5, parseFloat((p - 0.5).toFixed(1))))}
+                          disabled={isRunning}
+                          className="w-4 h-4 bg-slate-800 rounded flex items-center justify-center text-[9px] font-extrabold hover:bg-slate-700 disabled:opacity-45 text-white"
+                        >-</button>
+                        <input 
+                          type="range" min="0.5" max="5" step="0.5"
+                          value={waitingHopperPulseOff} 
+                          onChange={(e) => setWaitingHopperPulseOff(parseFloat(e.target.value))}
+                          disabled={isRunning}
+                          className="flex-1 accent-[#00ffd0] h-0.5 bg-slate-900 rounded-lg appearance-none cursor-pointer disabled:opacity-45"
+                        />
+                        <button 
+                          onClick={() => setWaitingHopperPulseOff(p => Math.min(5, parseFloat((p + 0.5).toFixed(1))))}
+                          disabled={isRunning}
+                          className="w-4 h-4 bg-slate-800 rounded flex items-center justify-center text-[9px] font-extrabold hover:bg-slate-700 disabled:opacity-45 text-white"
+                        >+</button>
+                      </div>
+                    </div>
+
+                    {/* Delay After Water Discharge */}
+                    <div className="flex flex-col gap-0.5">
+                      <div className="flex justify-between text-slate-400">
+                        <span>JEDA SETELAH AIR TUANG Selesai</span>
+                        <span className="text-[#00ffd0] font-black font-mono">{waitingHopperWaterDelay}s</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button 
+                          onClick={() => setWaitingHopperWaterDelay(p => Math.max(1, p - 1))}
+                          disabled={isRunning}
+                          className="w-4 h-4 bg-slate-800 rounded flex items-center justify-center text-[9px] font-extrabold hover:bg-slate-700 disabled:opacity-45 text-white"
+                        >-</button>
+                        <input 
+                          type="range" min="1" max="15" step="1"
+                          value={waitingHopperWaterDelay} 
+                          onChange={(e) => setWaitingHopperWaterDelay(parseInt(e.target.value))}
+                          disabled={isRunning}
+                          className="flex-1 accent-[#00ffd0] h-0.5 bg-slate-900 rounded-lg appearance-none cursor-pointer disabled:opacity-45"
+                        />
+                        <button 
+                          onClick={() => setWaitingHopperWaterDelay(p => Math.min(15, p + 1))}
+                          disabled={isRunning}
+                          className="w-4 h-4 bg-slate-800 rounded flex items-center justify-center text-[9px] font-extrabold hover:bg-slate-700 disabled:opacity-45 text-white"
+                        >+</button>
+                      </div>
+                    </div>
+
+                    {/* Water Precharge Percentage */}
+                    <div className="flex flex-col gap-0.5">
+                      <div className="flex justify-between text-slate-400">
+                        <span>VOLUME AIR PRECHARGE</span>
+                        <span className="text-[#00ffd0] font-black font-mono">{waitingHopperWaterPrecharge}%</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button 
+                          onClick={() => setWaitingHopperWaterPrecharge(p => Math.max(10, p - 5))}
+                          disabled={isRunning}
+                          className="w-4 h-4 bg-slate-800 rounded flex items-center justify-center text-[9px] font-extrabold hover:bg-slate-700 disabled:opacity-45 text-white"
+                        >-</button>
+                        <input 
+                          type="range" min="10" max="100" step="5"
+                          value={waitingHopperWaterPrecharge} 
+                          onChange={(e) => setWaitingHopperWaterPrecharge(parseInt(e.target.value))}
+                          disabled={isRunning}
+                          className="flex-1 accent-[#00ffd0] h-0.5 bg-slate-900 rounded-lg appearance-none cursor-pointer disabled:opacity-45"
+                        />
+                        <button 
+                          onClick={() => setWaitingHopperWaterPrecharge(p => Math.min(100, p + 5))}
+                          disabled={isRunning}
+                          className="w-4 h-4 bg-slate-800 rounded flex items-center justify-center text-[9px] font-extrabold hover:bg-slate-700 disabled:opacity-45 text-white"
+                        >+</button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* CARD MANUAL PRODUCTION DETECTION SETTINGS */}
+            <div className="bg-[#0b1329] border border-slate-800 rounded-[5px] p-2.5 flex flex-col gap-1.5 overflow-hidden relative shadow-md shrink-0">
+              <div className="flex justify-between items-center border-b border-slate-800 pb-1 shrink-0 select-none">
+                <span className="text-[8px] font-sans font-black tracking-widest text-[#fbbf24] uppercase flex items-center gap-1">
+                  <span className={`w-1.5 h-1.5 rounded-full ${!isAuto ? 'bg-amber-400 animate-pulse' : 'bg-slate-600'}`} />
+                  MANUAL PRODUCTION DETECTION
+                </span>
+                <span className={`text-[6.5px] font-sans font-black px-1 py-0.5 rounded leading-none ${!isAuto ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-slate-900 text-slate-500'}`}>
+                  {!isAuto ? 'MANUAL LOG ACTIVE' : 'AUTO MODE'}
+                </span>
+              </div>
+              
+              <div className="flex flex-col gap-1.5 space-y-1.5 pt-0.5 text-[8px] font-sans font-medium">
+                {/* Minimum Mixer Gate Open Time */}
+                <div className="flex flex-col gap-0.5">
+                  <div className="flex justify-between text-slate-400">
+                    <span>MIN MIXER GATE OPEN TIME</span>
+                    <span className="text-amber-400 font-black font-mono">{minMixerGateOpenTime} DETIK</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button 
+                      onClick={() => setMinMixerGateOpenTime(p => Math.max(5, p - 1))}
+                      disabled={isRunning}
+                      className="w-4 h-4 bg-slate-800 rounded flex items-center justify-center text-[9px] font-extrabold hover:bg-slate-700 disabled:opacity-45 text-white cursor-pointer"
+                    >-</button>
+                    <input 
+                      type="range" min="5" max="30" step="1"
+                      value={minMixerGateOpenTime} 
+                      onChange={(e) => setMinMixerGateOpenTime(parseInt(e.target.value, 10))}
+                      disabled={isRunning}
+                      className="flex-1 accent-amber-400 h-0.5 bg-slate-900 rounded-lg appearance-none cursor-pointer disabled:opacity-45"
+                    />
+                    <button 
+                      onClick={() => setMinMixerGateOpenTime(p => Math.min(30, p + 1))}
+                      disabled={isRunning}
+                      className="w-4 h-4 bg-slate-800 rounded flex items-center justify-center text-[9px] font-extrabold hover:bg-slate-700 disabled:opacity-45 text-white cursor-pointer"
+                    >+</button>
+                  </div>
+                  <p className="text-[7.5px] text-slate-500 font-sans italic pt-0.5 leading-normal">
+                    * Untuk mendaftarkan siklus completedBatch secara otomatis dalam Mode Manual.
+                  </p>
+                </div>
+              </div>
+            </div>
+
             {/* INDUSTRIAL PLC PANEL COHESIVE BUTTON GRID */}
             <div className="bg-[#0b1329] border border-slate-800 rounded-[5px] p-2.5 flex flex-col gap-2.5 shadow-xl flex-1 relative overflow-hidden min-h-[300px]">
               {/* ACTIVITY LOGS (Moved to the right panel, placed above START and STOP buttons as requested) */}
@@ -4212,12 +8822,15 @@ export default function App() {
                     <div className="text-slate-600 italic text-center pt-4 font-bold tracking-widest text-[7.5px]">HMI MONITOR STANDBY</div>
                   ) : (
                     <div className="flex flex-col gap-0.5">
-                      {[...relayLogs].slice(0, 30).map((log) => {
-                        const isOff = log.type === 'off' || log.message.endsWith('off');
-                        const isDone = log.type === 'done' || log.message === 'produksi selesai';
-                        const isColors = !isOff && !isDone && (log.type === 'on' || log.message.endsWith('on') || log.message.startsWith('dump') || log.message.includes(' on'));
-                        
-                        let itemStyle = "border-b border-slate-900/40 pb-0.5 flex justify-between items-center px-1 hover:bg-slate-950/40 transition-colors gap-1";
+                      {[...relayLogs]
+                        .filter((log) => log && typeof log === 'object' && typeof log.message === 'string')
+                        .slice(0, 30)
+                        .map((log) => {
+                          const isOff = log.type === 'off' || log.message.endsWith('off') || log.message.toLowerCase().endsWith('off)');
+                          const isDone = log.type === 'done' || log.message === 'produksi selesai';
+                          const isColors = !isOff && !isDone && (log.type === 'on' || log.message.endsWith('on') || log.message.toLowerCase().endsWith('on)') || log.message.startsWith('dump') || log.message.includes(' on') || log.message.toLowerCase().includes('on)'));
+                          
+                          let itemStyle = "border-b border-slate-900/40 pb-0.5 flex justify-between items-center px-1 hover:bg-slate-950/40 transition-colors gap-1";
                         let textStyle = "text-slate-350 font-bold truncate max-w-[130px] leading-tight";
                         
                         if (isDone) {

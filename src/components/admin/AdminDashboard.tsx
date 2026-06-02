@@ -10,6 +10,7 @@ import { JogingMaterial } from "./JogingMaterial";
 import { SlumpCalibration } from "./SlumpCalibration";
 import { JobMixFormula } from "./JobMixFormula";
 import { UserManagement } from "./UserManagement";
+import { DatabaseProduksi } from "./DatabaseProduksi";
 import {
   BookOpen,
   Layout,
@@ -31,7 +32,37 @@ interface BatchLog {
   recipeName: string;
   volume: number;
   timestamp: string;
+  targets?: {
+    pasir1: number;
+    pasir2: number;
+    batu1: number;
+    batu2: number;
+    semen: number;
+    air: number;
+  };
+  actuals?: {
+    pasir1: number;
+    pasir2: number;
+    batu1: number;
+    batu2: number;
+    semen: number;
+    air: number;
+  };
+  mixingCycles?: number;
+  slump?: string;
+  siloSemen?: string;
+  pelanggan?: string;
+  lokasi?: string;
+  noKendaraan?: string;
+  sopir?: string;
 }
+
+interface FlowControlSetting {
+  gateOnTime: number;
+  gateOffTime: number;
+}
+
+type FlowControlGatesConfig = Record<'pasir1' | 'pasir2' | 'batu1' | 'batu2', FlowControlSetting>;
 
 interface AdminDashboardProps {
   onLogout: () => void;
@@ -39,6 +70,24 @@ interface AdminDashboardProps {
   mixingSequence: MixingSequence;
   setMixingSequence: React.Dispatch<React.SetStateAction<MixingSequence>>;
   activePins?: Record<string, boolean>;
+  batchingPlantMode?: 'SYSTEM_1' | 'SYSTEM_2' | 'SYSTEM_3';
+  setBatchingPlantMode?: (mode: 'SYSTEM_1' | 'SYSTEM_2' | 'SYSTEM_3') => void;
+  flowControlGates?: FlowControlGatesConfig;
+  setFlowControlGates?: (config: FlowControlGatesConfig) => void;
+  waitingHopperEnabled?: boolean;
+  setWaitingHopperEnabled?: (enabled: boolean) => void;
+  waitingHopperPulseOn?: number;
+  setWaitingHopperPulseOn?: React.Dispatch<React.SetStateAction<number>>;
+  waitingHopperPulseOff?: number;
+  setWaitingHopperPulseOff?: React.Dispatch<React.SetStateAction<number>>;
+  waitingHopperWaterDelay?: number;
+  setWaitingHopperWaterDelay?: React.Dispatch<React.SetStateAction<number>>;
+  waitingHopperWaterPrecharge?: number;
+  setWaitingHopperWaterPrecharge?: React.Dispatch<React.SetStateAction<number>>;
+  operationMode?: 'SIMULASI' | 'PRODUKSI';
+  setOperationMode?: (mode: 'SIMULASI' | 'PRODUKSI') => void;
+  scaleCapacities?: { pasir: number; batu: number; semen: number; air: number; mixerGeometris?: number; mixerMaxMixing?: number };
+  setScaleCapacities?: React.Dispatch<React.SetStateAction<any>>;
 }
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
@@ -46,9 +95,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   logs,
   mixingSequence,
   setMixingSequence,
-  activePins
+  activePins,
+  batchingPlantMode = 'SYSTEM_1',
+  setBatchingPlantMode,
+  flowControlGates,
+  setFlowControlGates,
+  waitingHopperEnabled = false,
+  setWaitingHopperEnabled,
+  waitingHopperPulseOn = 1.5,
+  setWaitingHopperPulseOn,
+  waitingHopperPulseOff = 1.5,
+  setWaitingHopperPulseOff,
+  waitingHopperWaterDelay = 3,
+  setWaitingHopperWaterDelay,
+  waitingHopperWaterPrecharge = 40,
+  setWaitingHopperWaterPrecharge,
+  operationMode = 'SIMULASI',
+  setOperationMode,
+  scaleCapacities,
+  setScaleCapacities
 }) => {
   const [activeMenu, setActiveMenu] = useState("Dashboard");
+  const [settingTab, setSettingTab] = useState<'system' | 'capacity'>('system');
 
   const [currentUser, setCurrentUser] = useState<any>(() => {
     const saved = localStorage.getItem("batching_plant_active_user");
@@ -238,6 +306,560 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       case "Joging Material":
         return (
           <JogingMaterial />
+        );
+
+      case "Setting":
+        return (
+          <div className="flex-1 bg-[#0b1329]/85 border border-[#1e293b]/80 rounded-[6px] p-6 flex flex-col justify-between overflow-y-auto scrollbar-thin">
+            <div className="space-y-6">
+              {/* Header Title with Tab Switcher */}
+              <div className="flex items-center justify-between gap-4 border-b border-slate-800 pb-3 flex-wrap">
+                <div className="flex items-center gap-2.5 text-[#00ffd0]">
+                  <Settings size={20} className="animate-pulse" />
+                  <h4 className="text-sm font-sans font-black tracking-widest uppercase">
+                    {settingTab === 'system' ? "PENGATURAN TIPE SISTEM BATCHING PLANT" : "PENGATURAN KAPASITAS TIMBANGAN"}
+                  </h4>
+                </div>
+                
+                {/* Visual Tab Switcher */}
+                <div className="flex bg-[#05080e] p-1 border border-slate-800 rounded">
+                  <button
+                    onClick={() => setSettingTab('system')}
+                    className={`text-[9.5px] font-mono font-black uppercase px-2.5 py-1 rounded transition-all cursor-pointer ${
+                      settingTab === 'system'
+                        ? 'bg-[#00ffd0]/10 border border-[#00ffd0]/30 text-[#00ffd0] font-extrabold shadow-[0_0_8px_rgba(0,255,208,0.1)]'
+                        : 'bg-transparent text-slate-500 hover:text-slate-300 font-bold'
+                    }`}
+                  >
+                    Tipe Sistem & Hopper
+                  </button>
+                  <button
+                    onClick={() => setSettingTab('capacity')}
+                    className={`text-[9.5px] font-mono font-black uppercase px-2.5 py-1 rounded transition-all cursor-pointer flex items-center gap-1 ${
+                      settingTab === 'capacity'
+                        ? 'bg-[#00ffd0]/10 border border-[#00ffd0]/30 text-[#00ffd0] font-extrabold shadow-[0_0_8px_rgba(0,255,208,0.1)]'
+                        : 'bg-transparent text-slate-500 hover:text-slate-300 font-bold'
+                    }`}
+                  >
+                    Kapasitas Timbangan
+                  </button>
+                </div>
+              </div>
+
+              {settingTab === 'system' ? (
+                <>
+                  <p className="text-[10px] font-mono text-slate-400 uppercase leading-relaxed max-w-2xl">
+                    Konfigurasi ini menentukan diagram SCADA, jalur pipa timbangan, rute konveyor, sensor loadcell sisa berat material, serta logika penimbangan aggregate paralel/serial dan kendali pulse flow gate.
+                  </p>
+
+              {/* System Selector Card */}
+              <div className="bg-[#060a12]/80 border border-slate-800/80 rounded-[5px] p-4 space-y-4">
+                <div className="flex flex-col gap-1.5 max-w-md">
+                  <label className="text-[9.5px] font-sans font-black text-cyan-400 uppercase">
+                    PILIH TIPE ARSITEKTUR WEIGHING:
+                  </label>
+                  <select
+                    value={batchingPlantMode}
+                    onChange={(e) => {
+                      const modeVal = e.target.value as 'SYSTEM_1' | 'SYSTEM_2' | 'SYSTEM_3';
+                      setBatchingPlantMode?.(modeVal);
+                    }}
+                    className="bg-[#0a0f18] border border-cyan-800/60 hover:border-cyan-400 text-slate-200 p-2 rounded-[4px] text-xs font-mono font-bold uppercase transition-colors outline-none cursor-pointer"
+                  >
+                    <option value="SYSTEM_1">SYSTEM 1: DUAL AGGREGATE SCALE (Terpisah / Paralel)</option>
+                    <option value="SYSTEM_2">SYSTEM 2: ACCUMULATIVE AGGREGATE SCALE (1 Timbangan Tunggal / Akumulatif Serial)</option>
+                    <option value="SYSTEM_3">SYSTEM 3: BIN LOADCELL LOSS-IN-WEIGHT (Sisa Berat / Pulse Flow Gate Serial)</option>
+                  </select>
+                </div>
+
+                {/* Explanation block of chosen system */}
+                <div className="p-3 bg-slate-900/30 border border-slate-850/55 rounded text-[10px] font-mono uppercase space-y-1.5 leading-relaxed">
+                  <span className="text-[#00ffd0] font-bold">DESKRIPSI INTEGRASI SISTEM:</span>
+                  {batchingPlantMode === 'SYSTEM_1' && (
+                    <p className="text-slate-400">
+                      Sistem Multi-Hopper konvensional. Pasir dan Batu ditimbang secara bersamaan (paralel) menggunakan 2 hopper timbangan terpisah dengan indikator pembacaan mandiri dari sensor loadcell.
+                    </p>
+                  )}
+                  {batchingPlantMode === 'SYSTEM_2' && (
+                    <p className="text-slate-400">
+                      Sistem Akumulatif Tunggal. Seluruh aggregate (Pasir 1, Pasir 2, Batu 1, Batu 2) dikerjakan satu per satu secara berurutan masuk ke satu timbangan aggregate memanjang di bawah bin, berat dihitung secara kumulatif bertambah.
+                    </p>
+                  )}
+                  {batchingPlantMode === 'SYSTEM_3' && (
+                    <p className="text-slate-400">
+                      Sistem Loss-In-Weight. Aggregate didefinisikan per grup (Grup Pasir & Batu). Berat material di dalam bin dibaca langsung oleh loadcell penyangga. Berat awal berkurang saat pintu gate dibuka secara berdenyut (Pulse Flow Gate ON/OFF) langsung menuju sabuk conveyor.
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Config fields for System 3 if selected */}
+              {batchingPlantMode === 'SYSTEM_3' && flowControlGates && setFlowControlGates && (
+                <div className="bg-[#060a12]/80 border border-cyan-900/40 rounded-[5px] p-4 space-y-4">
+                  <div className="border-b border-cyan-950/70 pb-2">
+                    <span className="text-[10px] font-sans font-black text-rose-400 uppercase tracking-wider block">
+                      PENGATURAN PULSE FLOW GATE CONTROL (SYSTEM 3)
+                    </span>
+                    <span className="text-[8.5px] font-mono text-slate-500 uppercase block mt-1">
+                      Durasi katup solenoid ON (membuka) dan OFF (menutup sementara) untuk mencegah overload conveyor.
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {(['pasir1', 'pasir2', 'batu1', 'batu2'] as const).map((key) => {
+                      const gateLabel = key === 'pasir1' ? 'GATE PASIR 1' :
+                                        key === 'pasir2' ? 'GATE PASIR 2' :
+                                        key === 'batu1' ? 'GATE BATU 1' : 'GATE BATU 2';
+                      return (
+                        <div key={key} className="p-3 bg-slate-950 rounded border border-slate-900 flex flex-col gap-2.5">
+                          <span className="text-[9px] font-sans font-black text-slate-400 block border-b border-slate-900 pb-1">{gateLabel}</span>
+                          
+                          <div className="flex flex-col gap-1">
+                            <span className="text-[8px] font-mono text-slate-500 font-bold uppercase">Gate ON (ms)</span>
+                            <input
+                              type="number"
+                              min="100"
+                              max="15000"
+                              step="50"
+                              value={flowControlGates[key].gateOnTime}
+                              onChange={(e) => {
+                                const val = Math.max(100, parseInt(e.target.value) || 0);
+                                setFlowControlGates({
+                                  ...flowControlGates,
+                                  [key]: {
+                                    ...flowControlGates[key],
+                                    gateOnTime: val
+                                  }
+                                });
+                              }}
+                              className="bg-[#05080e] border border-slate-800 hover:border-cyan-800 text-emerald-400 text-xs font-mono font-bold p-1 px-1.5 rounded outline-none"
+                            />
+                          </div>
+
+                          <div className="flex flex-col gap-1">
+                            <span className="text-[8px] font-mono text-slate-500 font-bold uppercase">Gate OFF (ms)</span>
+                            <input
+                              type="number"
+                              min="100"
+                              max="15000"
+                              step="50"
+                              value={flowControlGates[key].gateOffTime}
+                              onChange={(e) => {
+                                const val = Math.max(100, parseInt(e.target.value) || 0);
+                                setFlowControlGates({
+                                  ...flowControlGates,
+                                  [key]: {
+                                    ...flowControlGates[key],
+                                    gateOffTime: val
+                                  }
+                                });
+                              }}
+                              className="bg-[#05080e] border border-slate-800 hover:border-cyan-800 text-rose-400 text-xs font-mono font-bold p-1 px-1.5 rounded outline-none"
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* System Waiting Hopper Settings */}
+              <div className="bg-[#060a12]/80 border border-slate-800/80 rounded-[5px] p-4 space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-2 flex-wrap gap-2">
+                  <div className="flex flex-col">
+                    <span className="text-[10px] font-sans font-black text-[#00ffd0] uppercase tracking-wider">
+                      SISTEM WAITING HOPPER CONFIGURATION
+                    </span>
+                    <span className="text-[8.5px] font-mono text-slate-500 uppercase">
+                      Konfigurasi penyangga aggregate sementara di atas twin-shaft mixer (Chute/Waiting Hopper).
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => setWaitingHopperEnabled?.(!waitingHopperEnabled)}
+                    className={`text-[9px] font-black px-3 py-1 rounded transition-all cursor-pointer select-none leading-none ${
+                      waitingHopperEnabled 
+                        ? 'bg-[#00ffd0] hover:bg-[#00e5ff] text-black font-mono font-black' 
+                        : 'bg-slate-800 hover:bg-slate-700 text-slate-400 font-mono font-bold'
+                    }`}
+                  >
+                    {waitingHopperEnabled ? 'AKTIF (ENABLED)' : 'BYPASS (NORMAL)'}
+                  </button>
+                </div>
+
+                {waitingHopperEnabled && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-[9px] font-sans font-medium">
+                    {/* Gate Pulse ON Time */}
+                    <div className="p-3 bg-slate-950 rounded border border-slate-900 flex flex-col gap-2">
+                      <div className="flex justify-between text-slate-400 border-b border-slate-900/50 pb-1 items-center select-none">
+                        <span className="font-bold">PULSA VALVE ON</span>
+                        <span className="text-[#00ffd0] font-black font-mono text-xs">{waitingHopperPulseOn}s</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button 
+                          onClick={() => setWaitingHopperPulseOn?.(p => Math.max(0.5, parseFloat((p - 0.5).toFixed(1))))}
+                          className="w-5 h-5 bg-slate-800 hover:bg-slate-700 rounded flex items-center justify-center font-extrabold text-white text-xs select-none"
+                        >-</button>
+                        <input 
+                          type="range" min="0.5" max="5" step="0.5"
+                          value={waitingHopperPulseOn} 
+                          onChange={(e) => setWaitingHopperPulseOn?.(parseFloat(e.target.value))}
+                          className="flex-1 accent-[#00ffd0] h-1 bg-slate-900 rounded appearance-none cursor-pointer"
+                        />
+                        <button 
+                          onClick={() => setWaitingHopperPulseOn?.(p => Math.min(5, parseFloat((p + 0.5).toFixed(1))))}
+                          className="w-5 h-5 bg-slate-800 hover:bg-slate-700 rounded flex items-center justify-center font-extrabold text-white text-xs select-none"
+                        >+</button>
+                      </div>
+                    </div>
+
+                    {/* Gate Pulse OFF Time */}
+                    <div className="p-3 bg-slate-950 rounded border border-slate-900 flex flex-col gap-2">
+                      <div className="flex justify-between text-slate-400 border-b border-slate-900/50 pb-1 items-center select-none">
+                        <span className="font-bold">PULSA VALVE OFF</span>
+                        <span className="text-[#00ffd0] font-black font-mono text-xs">{waitingHopperPulseOff}s</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button 
+                          onClick={() => setWaitingHopperPulseOff?.(p => Math.max(0.5, parseFloat((p - 0.5).toFixed(1))))}
+                          className="w-5 h-5 bg-slate-800 hover:bg-slate-700 rounded flex items-center justify-center font-extrabold text-white text-xs select-none"
+                        >-</button>
+                        <input 
+                          type="range" min="0.5" max="5" step="0.5"
+                          value={waitingHopperPulseOff} 
+                          onChange={(e) => setWaitingHopperPulseOff?.(parseFloat(e.target.value))}
+                          className="flex-1 accent-[#00ffd0] h-1 bg-slate-900 rounded appearance-none cursor-pointer"
+                        />
+                        <button 
+                          onClick={() => setWaitingHopperPulseOff?.(p => Math.min(5, parseFloat((p + 0.5).toFixed(1))))}
+                          className="w-5 h-5 bg-slate-800 hover:bg-slate-700 rounded flex items-center justify-center font-extrabold text-white text-xs select-none"
+                        >+</button>
+                      </div>
+                    </div>
+
+                    {/* Delay After Water Discharge */}
+                    <div className="p-3 bg-slate-950 rounded border border-slate-900 flex flex-col gap-2">
+                      <div className="flex justify-between text-slate-400 border-b border-slate-900/50 pb-1 items-center select-none">
+                        <span className="font-bold">JEDA SETELAH AIR TUANG (SELESAI)</span>
+                        <span className="text-[#00ffd0] font-black font-mono text-xs">{waitingHopperWaterDelay}s</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button 
+                          onClick={() => setWaitingHopperWaterDelay?.(p => Math.max(1, p - 1))}
+                          className="w-5 h-5 bg-slate-800 hover:bg-slate-700 rounded flex items-center justify-center font-extrabold text-white text-xs select-none"
+                        >-</button>
+                        <input 
+                          type="range" min="1" max="15" step="1"
+                          value={waitingHopperWaterDelay} 
+                          onChange={(e) => setWaitingHopperWaterDelay?.(parseInt(e.target.value))}
+                          className="flex-1 accent-[#00ffd0] h-1 bg-slate-900 rounded appearance-none cursor-pointer"
+                        />
+                        <button 
+                          onClick={() => setWaitingHopperWaterDelay?.(p => Math.min(15, p + 1))}
+                          className="w-5 h-5 bg-slate-800 hover:bg-slate-700 rounded flex items-center justify-center font-extrabold text-white text-xs select-none"
+                        >+</button>
+                      </div>
+                    </div>
+
+                    {/* Water Precharge Percentage */}
+                    <div className="p-3 bg-slate-950 rounded border border-slate-900 flex flex-col gap-2">
+                      <div className="flex justify-between text-slate-400 border-b border-slate-900/50 pb-1 items-center select-none">
+                        <span className="font-bold">VOLUME AIR PRECHARGE</span>
+                        <span className="text-[#00ffd0] font-black font-mono text-xs">{waitingHopperWaterPrecharge}%</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button 
+                          onClick={() => setWaitingHopperWaterPrecharge?.(p => Math.max(10, p - 5))}
+                          className="w-5 h-5 bg-slate-800 hover:bg-slate-700 rounded flex items-center justify-center font-extrabold text-white text-xs select-none"
+                        >-</button>
+                        <input 
+                          type="range" min="10" max="100" step="5"
+                          value={waitingHopperWaterPrecharge} 
+                          onChange={(e) => setWaitingHopperWaterPrecharge?.(parseInt(e.target.value))}
+                          className="flex-1 accent-[#00ffd0] h-1 bg-slate-900 rounded appearance-none cursor-pointer"
+                        />
+                        <button 
+                          onClick={() => setWaitingHopperWaterPrecharge?.(p => Math.min(100, p + 5))}
+                          className="w-5 h-5 bg-slate-800 hover:bg-slate-700 rounded flex items-center justify-center font-extrabold text-white text-xs select-none"
+                        >+</button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* SENSOR LOADCELL / OPERATIONAL MODE */}
+              <div className="bg-[#060a12]/80 border border-slate-800/80 rounded-[5px] p-4 space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-2 flex-wrap gap-2">
+                  <div className="flex flex-col">
+                    <span className="text-[10px] font-sans font-black text-rose-400 uppercase tracking-wider">
+                      MODE OPERASI SISTEM HMI
+                    </span>
+                    <span className="text-[8.5px] font-mono text-slate-500 uppercase">
+                      PILIH SUMBER DATA VISUALISASI FILLING/LEVEL TIMBAGAN (LOADCELL SIMULATOR / HARDWARE NYATA).
+                    </span>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setOperationMode?.('SIMULASI')}
+                      className={`text-[9.5px] font-black px-3 py-1 rounded transition-all cursor-pointer select-none font-mono ${
+                        operationMode === 'SIMULASI'
+                          ? 'bg-amber-500 hover:bg-amber-400 text-black font-black'
+                          : 'bg-[#121c32] hover:bg-slate-800 text-slate-400 border border-slate-800 font-bold'
+                      }`}
+                    >
+                      SIMULASI (SIMULATOR)
+                    </button>
+                    <button
+                      onClick={() => setOperationMode?.('PRODUKSI')}
+                      className={`text-[9.5px] font-black px-3 py-1 rounded transition-all cursor-pointer select-none font-mono ${
+                        operationMode === 'PRODUKSI'
+                          ? 'bg-emerald-500 hover:bg-emerald-400 text-black font-black'
+                          : 'bg-[#121c32] hover:bg-slate-800 text-slate-400 border border-slate-800 font-bold'
+                      }`}
+                    >
+                      PRODUKSI NYATA (LOADCELL)
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-3 bg-slate-900/30 border border-slate-850/55 rounded text-[10px] font-mono uppercase space-y-1.5 leading-relaxed">
+                  <span className="text-cyan-400 font-bold col-span-full">DESKRIPSI SUMBER DATA OPERASIONAL:</span>
+                  {operationMode === 'SIMULASI' ? (
+                    <p className="text-slate-400 normal-case leading-normal mt-1">
+                      Sistem berjalan menggunakan simulator berat virtual. Nilai timbangan aggregate, semen, air, dan waiting hopper dihitung secara bertahap oleh timer software. Cocok untuk demo, test, training operator, dan troubleshooting tanpa hardware.
+                    </p>
+                  ) : (
+                    <p className="text-slate-400 normal-case leading-normal mt-1">
+                      Sistem membaca berat aktual dan status level langsung dari Sensor Loadcell yang dikomunikasikan oleh modul Arduino Mega via port serial secara realtime. Animasi timbangan mengikuti pergerakan angka sensor nyata secara presisi.
+                    </p>
+                  )}
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="space-y-6">
+              <p className="text-[10px] font-mono text-slate-400 uppercase leading-relaxed max-w-2xl">
+                Nilai kapasitas timbangan adalah rasio absolut pembagi level visualisasi SCADA (Maximum Scale Capacity) guna memastikan penunjukan grafis sesuai spesifikasi fisik loadcell di lapangan.
+              </p>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                {/* Pasir */}
+                <div className="p-4 bg-[#060a12]/80 border border-slate-800/80 rounded-[5px] flex flex-col justify-between gap-3 shadow-lg">
+                  <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                    <span className="text-[10px] font-sans font-black text-[#00ffd0] uppercase flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#00ffd0] animate-pulse"></span>
+                      1. KAPASITAS TIMBANGAN PASIR
+                    </span>
+                    <span className="text-[7.5px] font-mono text-slate-500 font-bold uppercase">SAND SCALE</span>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[8.5px] font-mono text-slate-400 uppercase font-black block">Spesifikasi Kapasitas (kg)</label>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        min="1"
+                        step="100"
+                        value={scaleCapacities?.pasir || 1000}
+                        onChange={(e) => {
+                          const val = Math.max(1, parseInt(e.target.value) || 0);
+                          setScaleCapacities?.(prev => ({ ...prev, pasir: val }));
+                        }}
+                        className="bg-[#05080e] border border-cyan-900/40 hover:border-[#00ffd0]/45 focus:border-[#00ffd0] text-cyan-405 text-xs font-mono font-extrabold p-2 px-3 pr-10 rounded outline-none w-full transition-all"
+                      />
+                      <span className="absolute right-3 top-2.5 text-[8.5px] font-mono text-slate-500 font-extrabold">KG</span>
+                    </div>
+                  </div>
+                  <p className="text-[8px] font-mono text-slate-500 normal-case leading-relaxed">
+                    Kapasitas ini digunakan sebagai pembagi maksimum untuk menghitung tinggi level tumpukan pasir pada diagram utama.
+                  </p>
+                </div>
+
+                {/* Batu */}
+                <div className="p-4 bg-[#060a12]/80 border border-slate-800/80 rounded-[5px] flex flex-col justify-between gap-3 shadow-lg">
+                  <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                    <span className="text-[10px] font-sans font-black text-amber-450 uppercase flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+                      2. KAPASITAS TIMBANGAN BATU
+                    </span>
+                    <span className="text-[7.5px] font-mono text-slate-500 font-bold uppercase">STONE SCALE</span>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[8.5px] font-mono text-slate-404 uppercase font-black block">Spesifikasi Kapasitas (kg)</label>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        min="1"
+                        step="100"
+                        value={scaleCapacities?.batu || 1000}
+                        onChange={(e) => {
+                          const val = Math.max(1, parseInt(e.target.value) || 0);
+                          setScaleCapacities?.(prev => ({ ...prev, batu: val }));
+                        }}
+                        className="bg-[#05080e] border border-cyan-900/40 hover:border-[#00ffd0]/45 focus:border-[#00ffd0] text-cyan-405 text-xs font-mono font-extrabold p-2 px-3 pr-10 rounded outline-none w-full transition-all"
+                      />
+                      <span className="absolute right-3 top-2.5 text-[8.5px] font-mono text-slate-500 font-extrabold">KG</span>
+                    </div>
+                  </div>
+                  <p className="text-[8px] font-mono text-slate-500 normal-case leading-relaxed">
+                    Kapasitas ini digunakan sebagai pembagi maksimum untuk menghitung tinggi level tumpukan batu pada diagram utama.
+                  </p>
+                </div>
+
+                {/* Semen */}
+                <div className="p-4 bg-[#060a12]/80 border border-slate-800/80 rounded-[5px] flex flex-col justify-between gap-3 shadow-lg">
+                  <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                    <span className="text-[10px] font-sans font-black text-slate-300 uppercase flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-pulse"></span>
+                      3. KAPASITAS TIMBANGAN SEMEN
+                    </span>
+                    <span className="text-[7.5px] font-mono text-slate-500 font-bold uppercase">CEMENT SCALE</span>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[8.5px] font-mono text-slate-404 uppercase font-black block">Spesifikasi Kapasitas (kg)</label>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        min="1"
+                        step="100"
+                        value={scaleCapacities?.semen || 800}
+                        onChange={(e) => {
+                          const val = Math.max(1, parseInt(e.target.value) || 0);
+                          setScaleCapacities?.(prev => ({ ...prev, semen: val }));
+                        }}
+                        className="bg-[#05080e] border border-cyan-900/40 hover:border-[#00ffd0]/45 focus:border-[#00ffd0] text-cyan-405 text-xs font-mono font-extrabold p-2 px-3 pr-10 rounded outline-none w-full transition-all"
+                      />
+                      <span className="absolute right-3 top-2.5 text-[8.5px] font-mono text-slate-500 font-extrabold">KG</span>
+                    </div>
+                  </div>
+                  <p className="text-[8px] font-mono text-slate-500 normal-case leading-relaxed">
+                    Kapasitas ini digunakan sebagai pembagi maksimum untuk menghitung tinggi level pengisian tabung timbangan semen.
+                  </p>
+                </div>
+
+                {/* Air */}
+                <div className="p-4 bg-[#060a12]/80 border border-slate-800/80 rounded-[5px] flex flex-col justify-between gap-3 shadow-lg">
+                  <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                    <span className="text-[10px] font-sans font-black text-emerald-450 uppercase flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                      4. KAPASITAS TIMBANGAN AIR & ADDITIVE
+                    </span>
+                    <span className="text-[7.5px] font-mono text-slate-500 font-bold uppercase">WATER SCALE</span>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[8.5px] font-mono text-slate-404 uppercase font-black block">Spesifikasi Kapasitas (kg)</label>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        min="1"
+                        step="10"
+                        value={scaleCapacities?.air || 400}
+                        onChange={(e) => {
+                          const val = Math.max(1, parseInt(e.target.value) || 0);
+                          setScaleCapacities?.(prev => ({ ...prev, air: val }));
+                        }}
+                        className="bg-[#05080e] border border-cyan-900/40 hover:border-[#00ffd0]/45 focus:border-[#00ffd0] text-cyan-405 text-xs font-mono font-extrabold p-2 px-3 pr-10 rounded outline-none w-full transition-all"
+                      />
+                      <span className="absolute right-3 top-2.5 text-[8.5px] font-mono text-slate-500 font-extrabold">KG</span>
+                    </div>
+                  </div>
+                  <p className="text-[8px] font-mono text-slate-500 normal-case leading-relaxed">
+                    Kapasitas ini digunakan sebagai pembagi maksimum untuk menghitung tinggi level air/additive dalam tabung timbangan air.
+                  </p>
+                </div>
+
+                {/* Kapasitas Geometris Mixer */}
+                <div className="p-4 bg-[#060a12]/80 border border-slate-800/80 rounded-[5px] flex flex-col justify-between gap-3 shadow-lg">
+                  <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                    <span className="text-[10px] font-sans font-black text-cyan-400 uppercase flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
+                      5. KAPASITAS GEOMETRIS MIXER
+                    </span>
+                    <span className="text-[7.5px] font-mono text-slate-500 font-bold uppercase">GEOMETRIC MIXER CAPACITY</span>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[8.5px] font-mono text-slate-404 uppercase font-black block">Spesifikasi Kapasitas (m³)</label>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        min="0.1"
+                        max="10.0"
+                        step="0.1"
+                        value={scaleCapacities?.mixerGeometris || 4.0}
+                        onChange={(e) => {
+                          const val = Math.max(0.1, parseFloat(e.target.value) || 0);
+                          setScaleCapacities?.(prev => ({ ...prev, mixerGeometris: val }));
+                        }}
+                        className="bg-[#05080e] border border-cyan-900/40 hover:border-[#00ffd0]/45 focus:border-[#00ffd0] text-[#00ffd0] text-xs font-mono font-extrabold p-2 px-3 pr-10 rounded outline-none w-full transition-all"
+                      />
+                      <span className="absolute right-3 top-2.5 text-[8.5px] font-mono text-slate-500 font-extrabold">M³</span>
+                    </div>
+                  </div>
+                  <p className="text-[8px] font-mono text-slate-500 normal-case leading-relaxed">
+                    Volume kontainer fisik/geometric keseluruhan untuk ruang internal Twin Shaft Mixer (Default: 4.0 m³).
+                  </p>
+                </div>
+
+                {/* Kapasitas Maksimum Mixing */}
+                <div className="p-4 bg-[#060a12]/80 border border-slate-800/80 rounded-[5px] flex flex-col justify-between gap-3 shadow-lg">
+                  <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                    <span className="text-[10px] font-sans font-black text-indigo-400 uppercase flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse"></span>
+                      6. KAPASITAS MAKSIMUM MIXING
+                    </span>
+                    <span className="text-[7.5px] font-mono text-slate-500 font-bold uppercase">MAX MIXING CAPACITY</span>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[8.5px] font-mono text-slate-404 uppercase font-black block">Spesifikasi Kapasitas (m³)</label>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        min="0.1"
+                        max="10.0"
+                        step="0.1"
+                        value={scaleCapacities?.mixerMaxMixing || 3.5}
+                        onChange={(e) => {
+                          const val = Math.max(0.1, parseFloat(e.target.value) || 0);
+                          setScaleCapacities?.(prev => ({ ...prev, mixerMaxMixing: val }));
+                        }}
+                        className="bg-[#05080e] border border-cyan-900/40 hover:border-[#00ffd0]/45 focus:border-[#00ffd0] text-[#00ffd0] text-xs font-mono font-extrabold p-2 px-3 pr-10 rounded outline-none w-full transition-all"
+                      />
+                      <span className="absolute right-3 top-2.5 text-[8.5px] font-mono text-slate-500 font-extrabold">M³</span>
+                    </div>
+                  </div>
+                  <p className="text-[8px] font-mono text-slate-500 normal-case leading-relaxed">
+                    Kapasitas maksimum pengadukan beton basah aman (Default: 3.5 m³) agar material tidak meluber melampaui batas geometric mixer.
+                  </p>
+                </div>
+              </div>
+
+              {/* Informational Guidelines Banner */}
+              <div className="bg-[#050912]/80 border border-slate-900 rounded-[5px] p-4 text-[10px] font-mono uppercase space-y-2 leading-relaxed shadow-md">
+                <span className="text-[#00ffd0] font-bold block">INFO REKAYASA SISTEM SCADA:</span>
+                <p className="text-slate-400 normal-case leading-relaxed">
+                  Semua visualisasi level filling dan level material timbangan dihitung secara matematis proporsional berdasarkan kapasitas maksimum yang diset di atas. Formula SCADA:
+                </p>
+                <div className="p-2.5 bg-slate-950 rounded text-center text-[#00ffd0] text-xs font-bold border border-slate-800 font-mono tracking-wider">
+                  TINGGI FILLING LEVEL ANIMASI (%) = (BERAT AKTUAL / KAPASITAS TIMBANGAN) x 100%
+                </div>
+                <p className="text-slate-500 text-[9px] lowercase leading-normal text-left">
+                  * perubahan kapasitas ini akan tersimpan permanen dan langsung disinkronkan ke seluruh visualisasi timbangan (System 1, System 2, dan System 3) secara real time tanpa perlu restart.
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-6 bg-[#0c1220] border-t border-slate-850/50 pt-4 flex justify-between text-[8px] font-mono text-slate-500 uppercase select-none">
+              <span>Mencakup 3 Modul Model Dinamis PLC</span>
+              <span>SINKRONISASI AKTIF LUAR JARINGAN</span>
+            </div>
+          </div>
+        );
+
+      case "Database Produksi":
+        return (
+          <DatabaseProduksi logs={logs} />
         );
 
       case "Kalibrasi Slump":
