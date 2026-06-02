@@ -88,6 +88,12 @@ interface AdminDashboardProps {
   setOperationMode?: (mode: 'SIMULASI' | 'PRODUKSI') => void;
   scaleCapacities?: { pasir: number; batu: number; semen: number; air: number; mixerGeometris?: number; mixerMaxMixing?: number };
   setScaleCapacities?: React.Dispatch<React.SetStateAction<any>>;
+  companyName: string;
+  setCompanyName: (name: string) => void;
+  companyTagline: string;
+  setCompanyTagline: (tagline: string) => void;
+  companyLogo: string;
+  setCompanyLogo: (logo: string) => void;
 }
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
@@ -113,7 +119,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   operationMode = 'SIMULASI',
   setOperationMode,
   scaleCapacities,
-  setScaleCapacities
+  setScaleCapacities,
+  companyName,
+  setCompanyName,
+  companyTagline,
+  setCompanyTagline,
+  companyLogo,
+  setCompanyLogo
 }) => {
   const [activeMenu, setActiveMenu] = useState("Dashboard");
   const [settingTab, setSettingTab] = useState<'system' | 'capacity'>('system');
@@ -865,6 +877,162 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       case "Kalibrasi Slump":
         return (
           <SlumpCalibration />
+        );
+
+      case "Pengaturan Perusahaan":
+        return (
+          <div className="flex-1 bg-[#0b1329]/80 border border-[#1e293b]/70 rounded-[6px] p-6 flex flex-col justify-between overflow-y-auto scrollbar-thin">
+            <div className="space-y-6">
+              <div className="flex items-center gap-2.5 text-[#00e5ff]">
+                <Settings size={20} className="animate-spin" />
+                <h4 className="text-sm font-sans font-black tracking-widest uppercase">
+                  PENGATURAN LOGO DAN PROFIL PERUSAHAAN (BUKTI TIMBANG)
+                </h4>
+              </div>
+              <p className="text-[10px] font-mono text-slate-400 uppercase leading-relaxed">
+                Konfigurasikan informasi identitas perusahaan yang dicetak pada Bukti Timbang (Tiket Cetak) otomatis SCADA.
+              </p>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
+                
+                {/* Bagian Kiri: Input Form Nama & Penegasan */}
+                <div className="space-y-4">
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[9px] font-sans font-black text-slate-400 uppercase">Nama Perusahaan</label>
+                    <input
+                      type="text"
+                      value={companyName}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setCompanyName(val);
+                        localStorage.setItem('company_name', val);
+                      }}
+                      className="bg-[#05080e] border border-slate-800 focus:border-[#00ffd0] hover:border-slate-700 text-slate-200 p-2.5 rounded-[4px] text-xs font-mono font-bold uppercase transition-all outline-none"
+                      placeholder="CONTOH: PT FARIKA RIAU PERKASA"
+                    />
+                  </div>
+
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[9px] font-sans font-black text-slate-400 uppercase">Penegasan / Slogan Perusahaan</label>
+                    <input
+                      type="text"
+                      value={companyTagline}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setCompanyTagline(val);
+                        localStorage.setItem('company_tagline', val);
+                      }}
+                      className="bg-[#05080e] border border-slate-800 focus:border-[#00ffd0] hover:border-slate-700 text-slate-200 p-2.5 rounded-[4px] text-xs font-mono font-bold uppercase transition-all outline-none"
+                      placeholder="CONTOH: ONE STOP CONCRETE SOLUTION"
+                    />
+                  </div>
+
+                  <div className="bg-[#1e1e10]/30 border-2 border-cyan-500/30 rounded-[4px] p-3 flex items-start gap-2.5">
+                    <AlertOctagon size={16} className="text-cyan-500 shrink-0 mt-0.5" />
+                    <div className="flex flex-col text-left">
+                      <span className="text-[9.5px] font-sans font-black text-cyan-400 uppercase">SINKRONISASI AKTIF</span>
+                      <span className="text-[8.5px] font-mono text-slate-400 uppercase mt-1 leading-relaxed">
+                        Perubahan profil ini disimpan secara lokal di mesin SCADA HMI dan akan langsung memperbarui header utama serta format cetak Bukti Timbang (Tiket Print).
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Bagian Kanan: Upload Logo */}
+                <div className="bg-[#070b13] border border-slate-800 p-4 rounded-[4px] flex flex-col gap-4">
+                  <span className="text-[9px] font-sans font-black text-slate-400 uppercase block border-b border-slate-900 pb-1">
+                    LOGO PERUSAHAAN (BUKTI TIMBANG)
+                  </span>
+
+                  <div className="flex items-center gap-4">
+                    {/* Preview Logo */}
+                    <div className="w-20 h-20 bg-white rounded-full border-2 border-slate-800 flex items-center justify-center p-1 shadow-md relative group shrink-0 overflow-hidden">
+                      {companyLogo ? (
+                        <img 
+                          src={companyLogo} 
+                          alt="Company Logo Preview" 
+                          className="w-full h-full rounded-full object-cover bg-white"
+                          referrerPolicy="no-referrer"
+                        />
+                      ) : (
+                        <div className="text-center flex flex-col items-center justify-center select-none">
+                          <span className="text-blue-800 text-[6px] font-black leading-none uppercase tracking-tighter">
+                            DEFAULT<br/>FARIKA
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex-1 flex flex-col gap-2">
+                      <span className="text-[8.5px] font-mono text-slate-505 normal-case leading-relaxed">
+                        Unggah logo baru untuk mengganti logo default pada tiket bukti timbang. Format JPEG/PNG direkomendasikan dengan rasio 1:1 (circular).
+                      </span>
+                      
+                      <div className="flex items-center gap-2">
+                        <label className="bg-cyan-600 hover:bg-cyan-500 text-black text-[9px] font-sans font-black uppercase px-3 py-2 rounded transition-all cursor-pointer inline-block shadow-md">
+                          Pilih File Logo
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) {
+                                const reader = new FileReader();
+                                reader.onload = (event) => {
+                                  const result = event.target?.result as string;
+                                  setCompanyLogo(result);
+                                  localStorage.setItem('company_logo', result);
+                                };
+                                reader.readAsDataURL(file);
+                              }
+                            }}
+                          />
+                        </label>
+
+                        {companyLogo && (
+                          <button
+                            onClick={() => {
+                              setCompanyLogo("");
+                              localStorage.removeItem('company_logo');
+                            }}
+                            className="bg-red-950/40 hover:bg-red-900 border border-red-900/60 text-red-400 hover:text-white text-[9px] font-sans font-black uppercase px-3 py-2 rounded transition-all cursor-pointer"
+                          >
+                            Hapus Logo
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Logo Display Example in Print Layout */}
+                  <div className="p-3 bg-slate-950 rounded border border-slate-900">
+                    <span className="text-[8px] font-mono text-slate-500 uppercase tracking-widest block mb-1.5">Simulasi Print-Out Header:</span>
+                    <div className="flex items-center gap-3 bg-white p-3 rounded text-slate-900 border border-slate-300">
+                      <div className="w-10 h-10 rounded-full border-2 border-blue-800 flex items-center justify-center p-0.5 overflow-hidden">
+                        {companyLogo ? (
+                          <img src={companyLogo} alt="Logo" className="w-full h-full rounded-full object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          <span className="text-blue-800 text-[6px] font-bold leading-none tracking-tighter">FARIKA</span>
+                        )}
+                      </div>
+                      <div className="text-left">
+                        <div className="text-[10px] font-black text-blue-900 uppercase leading-none">{companyName || 'PT FARIKA RIAU PERKASA'}</div>
+                        <div className="text-[7.5px] font-bold text-slate-700 uppercase mt-1 leading-none">{companyTagline || 'ONE STOP CONCRETE SOLUTION'}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+
+              </div>
+            </div>
+
+            <div className="mt-6 bg-[#0c1220] border-t border-slate-850/50 pt-4 flex justify-between text-[8px] font-mono text-slate-500 uppercase select-none shrink-0">
+              <span>Mencakup Pengaturan Profil & Visual Logo</span>
+              <span>SINKRONISASI AMAN SECARA LOKAL</span>
+            </div>
+          </div>
         );
 
       default:

@@ -1,15 +1,16 @@
-const { app, BrowserWindow, Menu } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain } = require('electron');
 const path = require('path');
 
 let mainWindow;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    minWidth: 1024,
-    minHeight: 768,
+    width: 1920,
+    height: 1080,
+    fullscreen: true,
+    frame: false,
     title: "PT. Farika Riau Perkasa - Batching Plant",
+    icon: path.join(__dirname, 'build/icon.png'),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -40,7 +41,48 @@ function createWindow() {
   });
 }
 
-app.on('ready', createWindow);
+// IPC Handlers for industrial administrator tools
+ipcMain.on('exit-fullscreen', () => {
+  if (mainWindow) {
+    mainWindow.setFullScreen(false);
+  }
+});
+
+ipcMain.on('enter-fullscreen', () => {
+  if (mainWindow) {
+    mainWindow.setFullScreen(true);
+  }
+});
+
+ipcMain.on('open-devtools', () => {
+  if (mainWindow) {
+    mainWindow.webContents.openDevTools();
+  }
+});
+
+ipcMain.on('restart-app', () => {
+  app.relaunch();
+  app.exit(0);
+});
+
+ipcMain.on('shutdown-app', () => {
+  app.quit();
+});
+
+app.on('ready', () => {
+  // --- ARCHITECTURE PREPARED FOR WINDOWS AUTO-START ---
+  // To enable automatic startup of this HMI application when Windows powers on,
+  // simply uncomment the code block below:
+  /*
+  app.setLoginItemSettings({
+    openAtLogin: true,
+    path: app.getPath('exe'),
+    args: ['--autostart']
+  });
+  */
+
+  createWindow();
+});
 
 app.on('window-all-closed', function () {
   if (process.platform !== 'darwin') {

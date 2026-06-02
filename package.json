@@ -6,12 +6,12 @@
   "main": "electron.cjs",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
-    "build": "vite build",
+    "build": "node download-icons.js && vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "electron:start": "electron .",
-    "electron:pack": "vite build && electron-builder"
+    "electron:pack": "node download-icons.js && vite build && electron-builder && node move-installer.js"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
@@ -38,9 +38,9 @@
   },
   "build": {
     "appId": "com.farika.batchingplant",
-    "productName": "PT. Farika Riau Perkasa - Batching Plant",
+    "productName": "Lisa Batch Plant HMI",
     "directories": {
-      "output": "dist-electron"
+      "output": "dist-package"
     },
     "files": [
       "dist/**/*",
@@ -49,7 +49,22 @@
       "package.json"
     ],
     "win": {
-      "target": "nsis"
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.ico",
+      "publisherName": "Wamin Suwito"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "Lisa Batch Plant HMI",
+      "artifactName": "Lisa BatchPlantHMI_Setup.exe",
+      "uninstallDisplayName": "Lisa Batch Plant HMI",
+      "publisherName": "Wamin Suwito",
+      "runAfterFinish": true
     },
     "mac": {
       "target": "dmg"

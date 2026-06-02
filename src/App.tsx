@@ -19,13 +19,16 @@ import {
   AlertCircle,
   Menu,
   ChevronRight,
+  ChevronDown,
   RefreshCcw,
   BarChart3,
   Power,
   Bell,
   User,
   Package,
-  HelpCircle
+  HelpCircle,
+  Check,
+  X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { LoginModal } from "./components/admin/LoginModal";
@@ -200,7 +203,19 @@ const TargetAndScaleBlock = ({
   );
 };
 
-const FarikaLogo = () => {
+const FarikaLogo = ({ logoSrc }: { logoSrc?: string }) => {
+  if (logoSrc) {
+    return (
+      <div className="w-14 h-14 bg-white rounded-full border border-slate-700 flex items-center justify-center p-0.5 shadow-md relative shrink-0">
+        <img 
+          src={logoSrc} 
+          alt="Company Logo" 
+          className="w-full h-full rounded-full object-cover bg-white"
+          referrerPolicy="no-referrer"
+        />
+      </div>
+    );
+  }
   return (
     <div className="w-14 h-14 bg-white rounded-full border border-slate-700 flex items-center justify-center p-0.5 shadow-md relative shrink-0">
       <div className="w-full h-full rounded-full border-2 border-blue-600 flex flex-col items-center justify-center relative overflow-hidden bg-white">
@@ -284,6 +299,7 @@ const ScadaDiagram = ({
   setIsAuto,
   moistureControl,
   setMoistureControl,
+  onMoistureClick,
   quarryAggregate,
   setQuarryAggregate,
   isPrint,
@@ -348,6 +364,7 @@ const ScadaDiagram = ({
   setIsAuto: (v: boolean) => void;
   moistureControl: boolean;
   setMoistureControl: (v: boolean) => void;
+  onMoistureClick?: () => void;
   quarryAggregate: boolean;
   setQuarryAggregate: (v: boolean) => void;
   isPrint: boolean;
@@ -2884,6 +2901,54 @@ const ScadaDiagram = ({
           </button>
         </div>
       )}
+
+      {/* Print toggle and Help buttons exactly centered at the very bottom center of the SCADA panel */}
+      <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-3.5 z-10 select-none">
+        {/* Toggle Moisture Control Button */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            if (onMoistureClick) {
+              onMoistureClick();
+            } else {
+              setMoistureControl(!moistureControl);
+            }
+          }}
+          className={`h-[38px] px-3.5 border-2 rounded-[10px] flex flex-col justify-center items-center gap-0 leading-tight transition-all duration-150 active:scale-95 cursor-pointer font-sans select-none shrink-0 text-center ${
+            moistureControl 
+              ? 'bg-[#0d9488] border-[#09544d] text-white shadow-[0_4px_12px_rgba(13,148,136,0.35)]' 
+              : 'bg-[#122825]/90 border-[#1c3f3b] text-slate-400 hover:text-slate-200 hover:bg-[#152e2b]'
+          }`}
+        >
+          <span className="text-[8px] tracking-wide uppercase font-black">MOISTURE</span>
+          <span className="text-[8px] tracking-wide uppercase font-black">CONTROL</span>
+        </button>
+
+        {/* Toggle Print Button */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsPrint(!isPrint);
+          }}
+          className="h-[38px] px-3.5 bg-[#0b1329] border-2 border-[#2563eb] rounded-[10px] flex items-center gap-2.5 transition-all duration-150 active:scale-95 shadow-[0_4px_12px_rgba(37,99,235,0.15)] cursor-pointer text-white group shrink-0"
+        >
+          <div className={`w-[18px] h-[18px] rounded-[5px] flex items-center justify-center border-2 transition-all duration-150 ${isPrint ? 'bg-[#2563eb] border-[#2563eb]' : 'border-slate-600 bg-transparent group-hover:border-slate-500'}`}>
+            {isPrint && <Check size={12} className="text-white stroke-[3.5px]" />}
+          </div>
+          <span className="text-[12.5px] font-sans font-black tracking-wide text-white leading-none">Print</span>
+        </button>
+
+        {/* Circular Help Button */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            if (onHelpClick) onHelpClick();
+          }}
+          className="w-[38px] h-[38px] bg-[#2563eb] hover:bg-blue-600 border border-blue-500/35 rounded-full flex items-center justify-center transition-all duration-150 active:scale-95 shadow-[0_4px_12px_rgba(37,99,235,0.3)] cursor-pointer shrink-0"
+        >
+          <HelpCircle size={21} className="text-white stroke-[2.5px]" />
+        </button>
+      </div>
     </div>
   );
 };
@@ -2945,6 +3010,23 @@ export default function App() {
 
   const setScalesSync = (updater: (prev: typeof INITIAL_SCALES) => typeof INITIAL_SCALES) => {
     const next = updater(scalesRef.current);
+    
+    // Capture peak scale data in manual mode to prevent 0 reading issues
+    if (isRunningRef.current && !isAutoRef.current) {
+      if (next.pasir.actual > manualPeakPasirRef.current) {
+        manualPeakPasirRef.current = next.pasir.actual;
+      }
+      if (next.batu.actual > manualPeakBatuRef.current) {
+        manualPeakBatuRef.current = next.batu.actual;
+      }
+      if (next.semen.actual > manualPeakSemenRef.current) {
+        manualPeakSemenRef.current = next.semen.actual;
+      }
+      if (next.air.actual > manualPeakAirRef.current) {
+        manualPeakAirRef.current = next.air.actual;
+      }
+    }
+
     scalesRef.current = next;
     setScales(next);
   };
@@ -3893,6 +3975,11 @@ export default function App() {
     isAutoRef.current = isAuto;
   }, [isAuto]);
 
+  const isRunningRef = useRef(isRunning);
+  useEffect(() => {
+    isRunningRef.current = isRunning;
+  }, [isRunning]);
+
   const [minMixerGateOpenTime, setMinMixerGateOpenTime] = useState<number>(() => {
     const s = localStorage.getItem('min_mixer_gate_open_time');
     return s ? parseInt(s, 10) : 10;
@@ -3910,6 +3997,16 @@ export default function App() {
   const [autoStartTime, setAutoStartTime] = useState<string>("");
   const [activePrintLog, setActivePrintLog] = useState<any | null>(null);
 
+  const [companyName, setCompanyName] = useState<string>(() => {
+    return localStorage.getItem('company_name') || "PT FARIKA RIAU PERKASA";
+  });
+  const [companyTagline, setCompanyTagline] = useState<string>(() => {
+    return localStorage.getItem('company_tagline') || "ONE STOP CONCRETE SOLUTION";
+  });
+  const [companyLogo, setCompanyLogo] = useState<string>(() => {
+    return localStorage.getItem('company_logo') || "";
+  });
+
   const manualGateOpenTimeMsRef = useRef<number>(0);
   const isManualGateOpenTimeValidRef = useRef<boolean>(false);
   const manualGateSequenceStateRef = useRef<'IDLE' | 'OPENING'>('IDLE');
@@ -3924,6 +4021,14 @@ export default function App() {
   }, [mixerDoorPercent]);
   const [isPrint, setIsPrint] = useState(true);
   const [moistureControl, setMoistureControl] = useState(false);
+  const [pasirMoisture, setPasirMoisture] = useState(0);
+  const [batuMoisture, setBatuMoisture] = useState(0);
+  const [airAdjustment, setAirAdjustment] = useState(0);
+  const [isMoistureOpen, setIsMoistureOpen] = useState(false);
+  const [isHmiAdminOpen, setIsHmiAdminOpen] = useState(false);
+  const [isHmiAdminMenuOpen, setIsHmiAdminMenuOpen] = useState(false);
+  const [hmiAdminPassword, setHmiAdminPassword] = useState("");
+  const [hmiAdminError, setHmiAdminError] = useState("");
   const [quarryAggregate, setQuarryAggregate] = useState(false);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [time, setTime] = useState(new Date());
@@ -4016,6 +4121,19 @@ export default function App() {
   const manualBatu2Ref = useRef<number>(0);
   const manualSemenRef = useRef<number>(0);
   const manualAirRef = useRef<number>(0);
+
+  // Peak weight trackers during manual cycle to handle physical bypass buttons
+  const manualPeakPasirRef = useRef<number>(0);
+  const manualPeakBatuRef = useRef<number>(0);
+  const manualPeakSemenRef = useRef<number>(0);
+  const manualPeakAirRef = useRef<number>(0);
+  const manualLogSavedRef = useRef<boolean>(false);
+
+  // Ever-opened gates/buttons trackers during manual session
+  const wasPasir1EverOpenedRef = useRef<boolean>(false);
+  const wasPasir2EverOpenedRef = useRef<boolean>(false);
+  const wasBatu1EverOpenedRef = useRef<boolean>(false);
+  const wasBatu2EverOpenedRef = useRef<boolean>(false);
 
   const weighingCycleRef = useRef(1);
   const currentBatchRef = useRef<number>(0);
@@ -4239,6 +4357,32 @@ export default function App() {
       targetBatchRef.current = totalC;
       setMixerShaftActive(true);
 
+      // Configure targets and reset actuals on scales for manual mode HMI indicators
+      const initialScales: Record<MaterialType, ScaleData> = {} as any;
+      (Object.keys(INITIAL_SCALES) as MaterialType[]).forEach(k => {
+        let targetWeight = Math.round(config.recipe.targets[k] * vPerCycle);
+        if (moistureControl) {
+          if (k === 'pasir') {
+            targetWeight = Math.round(targetWeight * (1 + pasirMoisture / 100));
+          } else if (k === 'batu') {
+            targetWeight = Math.round(targetWeight * (1 + batuMoisture / 100));
+          } else if (k === 'air') {
+            targetWeight = Math.round(targetWeight * (1 + airAdjustment / 100));
+          }
+        }
+        initialScales[k] = { 
+          id: k, 
+          label: INITIAL_SCALES[k].label, 
+          actual: 0, 
+          target: targetWeight, 
+          unit: INITIAL_SCALES[k].unit, 
+          isActive: false, 
+          isComplete: false 
+        };
+      });
+      setScales(initialScales);
+      prevScalesRef.current = initialScales;
+
       // Reset manual cumulative dispensed material trackers
       manualPasir1Ref.current = 0;
       manualPasir2Ref.current = 0;
@@ -4246,6 +4390,17 @@ export default function App() {
       manualBatu2Ref.current = 0;
       manualSemenRef.current = 0;
       manualAirRef.current = 0;
+
+      // Reset peaks and saved guard
+      manualPeakPasirRef.current = 0;
+      manualPeakBatuRef.current = 0;
+      manualPeakSemenRef.current = 0;
+      manualPeakAirRef.current = 0;
+      manualLogSavedRef.current = false;
+      wasPasir1EverOpenedRef.current = false;
+      wasPasir2EverOpenedRef.current = false;
+      wasBatu1EverOpenedRef.current = false;
+      wasBatu2EverOpenedRef.current = false;
 
       const generatedId = `BP-${new Date().getFullYear()}${String(new Date().getMonth()+1).padStart(2,'0')}-${Math.round(Math.random()*8999 + 1000)}`;
       setBatchId(generatedId);
@@ -4346,7 +4501,16 @@ export default function App() {
     // Initial scale targets proportional to vPerCycle
     const initialScales = { ...INITIAL_SCALES };
     (Object.keys(INITIAL_SCALES) as MaterialType[]).forEach(k => {
-      const targetWeight = Math.round(config.recipe.targets[k] * vPerCycle);
+      let targetWeight = Math.round(config.recipe.targets[k] * vPerCycle);
+      if (moistureControl) {
+        if (k === 'pasir') {
+          targetWeight = Math.round(targetWeight * (1 + pasirMoisture / 100));
+        } else if (k === 'batu') {
+          targetWeight = Math.round(targetWeight * (1 + batuMoisture / 100));
+        } else if (k === 'air') {
+          targetWeight = Math.round(targetWeight * (1 + airAdjustment / 100));
+        }
+      }
       initialScales[k] = { 
         id: k, 
         label: INITIAL_SCALES[k].label, 
@@ -4614,14 +4778,18 @@ export default function App() {
   };
 
   const stopBatch = () => {
-    if (isRunning && !isAuto) {
+    const wasManual = isRunning && !isAuto;
+    if (wasManual) {
       saveManualLog();
     }
 
     setIsRunning(false);
     setIsPaused(false);
     isPausedRef.current = false;
-    setProductionState('IDLE');
+    setProductionState(wasManual ? 'COMPLETE' : 'IDLE');
+    if (wasManual) {
+      setMixerStatusText('PRODUKSI MANUAL SELESAI');
+    }
     setIsWeighingActive(false);
     
     // Shut off actuators
@@ -4686,7 +4854,8 @@ export default function App() {
   const handleManualProductionTick = () => {
     // Read current door state from Ref safely
     const currentDoorState = mixerDoorStateTextRef.current;
-    const minOpenSec = minMixerGateOpenTimeRef.current;
+    // Hardcoded to 1.0 second for manual mode as requested by user
+    const minOpenSec = 1.0; 
 
     if (currentDoorState === "OPENED") {
       if (manualGateSequenceStateRef.current === 'IDLE') {
@@ -4729,13 +4898,13 @@ export default function App() {
       if (manualGateSequenceStateRef.current === 'OPENING') {
         const totalOpenSec = manualGateOpenTimeMsRef.current / 1000;
         
-        if (isManualGateOpenTimeValidRef.current) {
+        if (isManualGateOpenTimeValidRef.current || totalOpenSec >= minOpenSec) {
           // Complete manual production cycle counted!
           const nextB = currentBatchRef.current + 1;
           currentBatchRef.current = nextB;
           setCurrentBatch(nextB);
 
-          playKlakson(700); // sound horn upon successfully counted manual batch!
+          playKlakson(1500); // sound industrial ending horn upon successfully completed manual batch!
           
           setRelayLogs(prev => [
             {
@@ -4877,6 +5046,12 @@ export default function App() {
   useEffect(() => {
     if (isRunning && !isAuto) {
       const prev = prevScalesRef.current;
+
+      // Track if a specific material gate was actually opened during this session
+      if (gatePasir1SiloOpen) wasPasir1EverOpenedRef.current = true;
+      if (gatePasir2SiloOpen) wasPasir2EverOpenedRef.current = true;
+      if (gateBatu1SiloOpen) wasBatu1EverOpenedRef.current = true;
+      if (gateBatu2SiloOpen) wasBatu2EverOpenedRef.current = true;
       
       // 1. Pasir
       const diffPasir = scales.pasir.actual - prev.pasir.actual;
@@ -4886,7 +5061,12 @@ export default function App() {
         } else if (gatePasir2SiloOpen) {
           manualPasir2Ref.current += diffPasir;
         } else {
-          manualPasir1Ref.current += diffPasir;
+          // If no gate is currently open, attribute to the one that was ever opened, or default to Pasir 1
+          if (wasPasir2EverOpenedRef.current && !wasPasir1EverOpenedRef.current) {
+            manualPasir2Ref.current += diffPasir;
+          } else {
+            manualPasir1Ref.current += diffPasir;
+          }
         }
       }
 
@@ -4898,7 +5078,12 @@ export default function App() {
         } else if (gateBatu2SiloOpen) {
           manualBatu2Ref.current += diffBatu;
         } else {
-          manualBatu1Ref.current += diffBatu;
+          // If no gate is currently open, attribute to the one that was ever opened, or default to Batu 1
+          if (wasBatu2EverOpenedRef.current && !wasBatu1EverOpenedRef.current) {
+            manualBatu2Ref.current += diffBatu;
+          } else {
+            manualBatu1Ref.current += diffBatu;
+          }
         }
       }
 
@@ -7323,51 +7508,142 @@ export default function App() {
   }, [isRunning, activeMixingTime, selectedRecipe, activeVolume, activeMixingCount]);
 
   const saveManualLog = () => {
+    // Prevent duplicate entries of the same manual batch
+    if (manualLogSavedRef.current) return;
+    manualLogSavedRef.current = true;
+
     // Date and times
     const startStr = manualStartTime || new Date().toLocaleTimeString('id-ID');
     const endStr = new Date().toLocaleTimeString('id-ID');
 
-    const actP1 = Math.round(manualPasir1Ref.current);
-    const actP2 = Math.round(manualPasir2Ref.current);
-    const actB1 = Math.round(manualBatu1Ref.current);
-    const actB2 = Math.round(manualBatu2Ref.current);
-    const actSemen = Math.round(manualSemenRef.current);
-    const actAir = Math.round(manualAirRef.current);
+    let actP1 = Math.round(manualPasir1Ref.current);
+    let actP2 = Math.round(manualPasir2Ref.current);
+    let actB1 = Math.round(manualBatu1Ref.current);
+    let actB2 = Math.round(manualBatu2Ref.current);
+    let actSemen = Math.round(manualSemenRef.current);
+    let actAir = Math.round(manualAirRef.current);
 
-    const totalWeighed = actP1 + actP2 + actB1 + actB2 + actSemen + actAir;
-
-    if (totalWeighed === 0) {
-      setRelayLogs(prev => [
-        {
-          id: 'STOP-MANUAL-VOID-' + Math.random().toString(36).substring(7).toUpperCase(),
-          timestamp: new Date(),
-          message: `[SISTEM MANUAL] SESI PRODUKSI BERAKHIR. Tidak ada material yang ditimbang. Sesi dibatalkan.`,
-          type: 'off'
-        },
-        ...prev
-      ]);
-      return;
-    }
+    // Fallback/Safety override using peak trackers:
+    // If the actual weights recorded on the scales *at their highest point* are higher 
+    // than the HMI gate-tracking accumulators (or if trackers are 0 due to physical bypass buttons), 
+    // we override the actuals with those peak values and calculate proportional splits.
+    const peakPasir = Math.round(manualPeakPasirRef.current);
+    const peakBatu = Math.round(manualPeakBatuRef.current);
+    const peakSemen = Math.round(manualPeakSemenRef.current);
+    const peakAir = Math.round(manualPeakAirRef.current);
 
     const completedBatch = Math.max(1, currentBatchRef.current);
-    const volPerMix = volumePerBatch || 1;
+    const volPerMix = volumePerBatch || 0.1;
     const totalVolumeProduksi = parseFloat((completedBatch * volPerMix).toFixed(2));
+
+    const recP1 = (selectedRecipe as any).pasir1 !== undefined ? (selectedRecipe as any).pasir1 : Math.round((selectedRecipe?.targets.pasir ?? 400) * 0.7);
+    const recB1 = (selectedRecipe as any).batu1 !== undefined ? (selectedRecipe as any).batu1 : Math.round((selectedRecipe?.targets.batu ?? 400) * 0.7);
+
+    const hasUsedPasir1 = wasPasir1EverOpenedRef.current || (actP1 > 0);
+    const hasUsedPasir2 = wasPasir2EverOpenedRef.current || (actP2 > 0);
+    const hasUsedBatu1 = wasBatu1EverOpenedRef.current || (actB1 > 0);
+    const hasUsedBatu2 = wasBatu2EverOpenedRef.current || (actB2 > 0);
+
+    // Calculate actual aggregate values, respecting operator usage
+    if (actP1 + actP2 < peakPasir) {
+      if (hasUsedPasir1 && hasUsedPasir2) {
+        const totalP = (selectedRecipe?.targets.pasir ?? 450);
+        if (totalP > 0) {
+          actP1 = Math.round(peakPasir * (recP1 / totalP));
+          actP2 = Math.max(0, peakPasir - actP1);
+        } else {
+          actP1 = Math.round(peakPasir * 0.7);
+          actP2 = Math.max(0, peakPasir - actP1);
+        }
+      } else if (hasUsedPasir2) {
+        actP2 = peakPasir;
+        actP1 = 0;
+      } else {
+        actP1 = peakPasir;
+        actP2 = 0;
+      }
+    } else {
+      // Ensure unused components are zeroed
+      if (!hasUsedPasir1) {
+        actP2 = actP1 + actP2;
+        actP1 = 0;
+      }
+      if (!hasUsedPasir2) {
+        actP1 = actP1 + actP2;
+        actP2 = 0;
+      }
+    }
+
+    if (actB1 + actB2 < peakBatu) {
+      if (hasUsedBatu1 && hasUsedBatu2) {
+        const totalB = (selectedRecipe?.targets.batu ?? 450);
+        if (totalB > 0) {
+          actB1 = Math.round(peakBatu * (recB1 / totalB));
+          actB2 = Math.max(0, peakBatu - actB1);
+        } else {
+          actB1 = Math.round(peakBatu * 0.7);
+          actB2 = Math.max(0, peakBatu - actB1);
+        }
+      } else if (hasUsedBatu2) {
+        actB2 = peakBatu;
+        actB1 = 0;
+      } else {
+        actB1 = peakBatu;
+        actB2 = 0;
+      }
+    } else {
+      // Ensure unused components are zeroed
+      if (!hasUsedBatu1) {
+        actB2 = actB1 + actB2;
+        actB1 = 0;
+      }
+      if (!hasUsedBatu2) {
+        actB1 = actB1 + actB2;
+        actB2 = 0;
+      }
+    }
+
+    if (actSemen < peakSemen) {
+      actSemen = peakSemen;
+    }
+
+    if (actAir < peakAir) {
+      actAir = peakAir;
+    }
 
     const targetPasir = (selectedRecipe?.targets.pasir ?? 450) * totalVolumeProduksi;
     const targetBatu = (selectedRecipe?.targets.batu ?? 450) * totalVolumeProduksi;
     const targetSemen = (selectedRecipe?.targets.semen ?? 400) * totalVolumeProduksi;
     const targetAir = (selectedRecipe?.targets.air ?? 180) * totalVolumeProduksi;
 
-    const recP1 = (selectedRecipe as any).pasir1 !== undefined ? (selectedRecipe as any).pasir1 : Math.round((selectedRecipe?.targets.pasir ?? 400) * 0.7);
-    const recB1 = (selectedRecipe as any).batu1 !== undefined ? (selectedRecipe as any).batu1 : Math.round((selectedRecipe?.targets.batu ?? 400) * 0.7);
+    // Calculate targets based on operator usage (unused bins default to zero target)
+    let targetPasir1 = 0;
+    let targetPasir2 = 0;
+    if (hasUsedPasir1 && hasUsedPasir2) {
+      targetPasir1 = Math.round(recP1 * totalVolumeProduksi);
+      if (targetPasir1 > targetPasir) targetPasir1 = targetPasir;
+      targetPasir2 = Math.max(0, targetPasir - targetPasir1);
+    } else if (hasUsedPasir2) {
+      targetPasir2 = targetPasir;
+      targetPasir1 = 0;
+    } else {
+      targetPasir1 = targetPasir;
+      targetPasir2 = 0;
+    }
 
-    let targetPasir1 = Math.round(recP1 * totalVolumeProduksi);
-    if (targetPasir1 > targetPasir) targetPasir1 = targetPasir;
-    const targetPasir2 = Math.max(0, targetPasir - targetPasir1);
-
-    let targetBatu1 = Math.round(recB1 * totalVolumeProduksi);
-    if (targetBatu1 > targetBatu) targetBatu1 = targetBatu;
-    const targetBatu2 = Math.max(0, targetBatu - targetBatu1);
+    let targetBatu1 = 0;
+    let targetBatu2 = 0;
+    if (hasUsedBatu1 && hasUsedBatu2) {
+      targetBatu1 = Math.round(recB1 * totalVolumeProduksi);
+      if (targetBatu1 > targetBatu) targetBatu1 = targetBatu;
+      targetBatu2 = Math.max(0, targetBatu - targetBatu1);
+    } else if (hasUsedBatu2) {
+      targetBatu2 = targetBatu;
+      targetBatu1 = 0;
+    } else {
+      targetBatu1 = targetBatu;
+      targetBatu2 = 0;
+    }
 
     const manualLog: BatchLog = {
       id: Math.random().toString(36).substring(7).toUpperCase(),
@@ -7411,7 +7687,9 @@ export default function App() {
     };
 
     setLogs(prev => [manualLog, ...prev].slice(0, 50));
-    setActivePrintLog(manualLog);
+    if (isPrint) {
+      setActivePrintLog(manualLog);
+    }
 
     setRelayLogs(prev => [
       {
@@ -7501,7 +7779,9 @@ export default function App() {
     };
 
     setLogs(prev => [newLog, ...prev].slice(0, 50));
-    setActivePrintLog(newLog);
+    if (isPrint) {
+      setActivePrintLog(newLog);
+    }
   };
 
   const PrintTicketModal = ({ log, onClose }: { log: any; onClose: () => void }) => {
@@ -7607,18 +7887,27 @@ export default function App() {
             <div className="flex items-start justify-between border-b-2 border-slate-800 pb-4">
               <div className="flex items-center gap-3">
                 <div className="shrink-0 scale-[1.1] origin-left">
-                  <div className="w-[50px] h-[50px] rounded-full border-4 border-blue-800 flex items-center justify-center p-0.5 select-none font-bold text-center">
-                    <span className="text-blue-800 text-[8px] font-semibold tracking-tighter leading-none">
-                      PT FARIKA<br/><span className="text-red-500 font-black text-[9px] block">RIAU</span>PERKASA
-                    </span>
-                  </div>
+                  {companyLogo ? (
+                    <img 
+                      src={companyLogo} 
+                      alt="Company Logo" 
+                      className="w-[50px] h-[50px] rounded-full object-cover bg-white border-2 border-slate-300"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <div className="w-[50px] h-[50px] rounded-full border-4 border-blue-800 flex items-center justify-center p-0.5 select-none font-bold text-center">
+                      <span className="text-blue-800 text-[8px] font-semibold tracking-tighter leading-none">
+                        PT FARIKA<br/><span className="text-red-500 font-black text-[9px] block">RIAU</span>PERKASA
+                      </span>
+                    </div>
+                  )}
                 </div>
                 <div className="flex flex-col text-left">
-                  <h2 className="text-[16px] font-sans font-black tracking-tight text-blue-900 leading-none">
-                    PT FARIKA RIAU PERKASA
+                  <h2 className="text-[16px] font-sans font-black tracking-tight text-blue-900 leading-none uppercase">
+                    {companyName}
                   </h2>
                   <span className="text-[10px] font-sans font-extrabold tracking-wide text-slate-700 uppercase mt-1 leading-none">
-                    READYMIX & PRECAST CONCRETE
+                    {companyTagline}
                   </span>
                   <span className="text-[8px] font-mono font-medium text-slate-500 uppercase mt-0.5 leading-none">
                     Jl Soekarno - Hatta Komplek SKA Blok E 62 Telp. 0761-571655
@@ -7785,6 +8074,218 @@ export default function App() {
     );
   };
 
+  const MoistureControlModal = ({
+    isOpen,
+    onClose,
+    onSave,
+    currentPasir,
+    currentBatu,
+    currentAir,
+    recipes,
+    selectedRecipe,
+    onRecipeChange,
+  }: {
+    isOpen: boolean;
+    onClose: () => void;
+    onSave: (p: number, b: number, a: number) => void;
+    currentPasir: number;
+    currentBatu: number;
+    currentAir: number;
+    recipes: Recipe[];
+    selectedRecipe: Recipe;
+    onRecipeChange: (r: Recipe) => void;
+  }) => {
+    const [localPasir, setLocalPasir] = useState<string>(currentPasir.toString());
+    const [localBatu, setLocalBatu] = useState<string>(currentBatu.toString());
+    const [localAir, setLocalAir] = useState<string>(currentAir.toString());
+
+    useEffect(() => {
+      if (isOpen) {
+        setLocalPasir(currentPasir.toString());
+        setLocalBatu(currentBatu.toString());
+        setLocalAir(currentAir.toString());
+      }
+    }, [isOpen, currentPasir, currentBatu, currentAir]);
+
+    if (!isOpen) return null;
+
+    const numPasir = parseFloat(localPasir) || 0;
+    const numBatu = parseFloat(localBatu) || 0;
+    const numAir = parseFloat(localAir) || 0;
+
+    const targetAirLocal = selectedRecipe?.targets.air || 160;
+    const targetPasirLocal = selectedRecipe?.targets.pasir || 450;
+    const targetBatuLocal = selectedRecipe?.targets.batu || 450;
+
+    // Adjustments:
+    // Positive input = add %, negative input = subtract %
+    const pasirSetelahAdjustment = Math.round(targetPasirLocal * (1 + numPasir / 100));
+    const batuSetelahAdjustment = Math.round(targetBatuLocal * (1 + numBatu / 100));
+    const airSetelahAdjustment = Math.round(targetAirLocal * (1 + numAir / 100));
+
+    return (
+      <div 
+        className="fixed inset-0 z-[1000] flex items-center justify-center p-2 bg-slate-950/85 backdrop-blur-xs select-none"
+        onClick={onClose}
+      >
+        <div 
+          className="bg-[#0c101d] border border-slate-700/60 p-4 rounded-[12px] shadow-[0_20px_50px_rgba(0,0,0,0.85)] flex flex-col gap-3.5 w-full max-w-sm max-h-[95vh] overflow-y-auto select-none text-left"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+            <h3 className="text-[15px] font-black uppercase text-white tracking-wide">MOISTURE CONTROL</h3>
+            <button 
+              onClick={onClose}
+              className="text-slate-400 hover:text-white transition-colors cursor-pointer"
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          {/* Form */}
+          <div className="flex flex-col gap-3 text-slate-200">
+            {/* Mutu Beton Dropdown */}
+            <div className="flex flex-col gap-1">
+              <label className="text-[12.5px] font-extrabold text-slate-300">Mutu Beton</label>
+              <div className="relative">
+                <select
+                  value={selectedRecipe?.id || ""}
+                  onChange={(e) => {
+                    const found = recipes.find(r => r.id === e.target.value);
+                    if (found) {
+                      onRecipeChange(found);
+                    }
+                  }}
+                  className="w-full h-[36px] bg-[#070b13] border border-slate-800 hover:border-slate-700 focus:border-cyan-400 focus:shadow-[0_0_8px_rgba(34,211,238,0.25)] text-white text-[12.5px] font-sans rounded-[8px] px-2.5 pr-8 outline-hidden appearance-none transition-all cursor-pointer"
+                >
+                  {recipes.map((r) => (
+                    <option key={r.id} value={r.id} className="text-white bg-[#0c101d] py-1 font-sans">
+                      {r.name}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown
+                  size={14}
+                  className="absolute right-3 top-[11px] text-slate-500 pointer-events-none"
+                />
+              </div>
+            </div>
+
+            {/* Pasir (Moisture %) */}
+            <div className="flex flex-col gap-1">
+              <label className="text-[12.5px] font-extrabold text-slate-300">Pasir (Moisture %)</label>
+              <div className="relative flex items-center bg-[#070b13] border border-cyan-500/80 focus-within:border-cyan-400 rounded-[8px] focus-within:shadow-[0_0_8px_rgba(34,211,238,0.25)] h-[36px] px-2.5 transition-colors">
+                <input
+                  type="number"
+                  step="any"
+                  value={localPasir}
+                  onChange={(e) => setLocalPasir(e.target.value)}
+                  className="w-full bg-transparent border-none text-white text-[14px] font-semibold font-mono focus:outline-none placeholder:text-slate-600"
+                  placeholder="0"
+                />
+                <span className="text-slate-400 font-mono text-[13.5px] pl-1.5">%</span>
+              </div>
+              <span className="text-[9px] italic text-slate-500 font-medium leading-none">Positif = tambah timbangan, negatif = kurang timbangan</span>
+            </div>
+
+            {/* Batu (Moisture %) */}
+            <div className="flex flex-col gap-1">
+              <label className="text-[12.5px] font-extrabold text-slate-300">Batu (Moisture %)</label>
+              <div className="relative flex items-center bg-[#070b13] border border-slate-800 focus-within:border-cyan-400 rounded-[8px] focus-within:border-cyan-500/50 focus-within:shadow-[0_0_8px_rgba(34,211,238,0.2)] h-[36px] px-2.5 transition-colors">
+                <input
+                  type="number"
+                  step="any"
+                  value={localBatu}
+                  onChange={(e) => setLocalBatu(e.target.value)}
+                  className="w-full bg-transparent border-none text-white text-[14px] font-semibold font-mono focus:outline-none placeholder:text-slate-600"
+                  placeholder="0"
+                />
+                <span className="text-slate-400 font-mono text-[13.5px] pl-1.5">%</span>
+              </div>
+              <span className="text-[9px] italic text-slate-500 font-medium leading-none">Positif = tambah timbangan, negatif = kurang timbangan</span>
+            </div>
+
+            {/* Air (Adjustment %) */}
+            <div className="flex flex-col gap-1">
+              <label className="text-[12.5px] font-extrabold text-slate-300">Air (Adjustment %)</label>
+              <div className="relative flex items-center bg-[#070b13] border border-slate-800 focus-within:border-cyan-400 rounded-[8px] focus-within:border-cyan-500/50 focus-within:shadow-[0_0_8px_rgba(34,211,238,0.2)] h-[36px] px-2.5 transition-colors">
+                <input
+                  type="number"
+                  step="any"
+                  value={localAir}
+                  onChange={(e) => setLocalAir(e.target.value)}
+                  className="w-full bg-transparent border-none text-white text-[14px] font-semibold font-mono focus:outline-none placeholder:text-slate-600"
+                  placeholder="0"
+                />
+                <span className="text-slate-400 font-mono text-[13.5px] pl-1.5">%</span>
+              </div>
+              <span className="text-[9px] italic text-slate-500 font-medium leading-none">Koreksi langsung pemakaian air (positif = tambah, negatif = kurang)</span>
+            </div>
+          </div>
+
+          {/* Divider */}
+          <div className="border-t border-slate-800/80 my-0.5" />
+
+          {/* Preview Panel */}
+          <div className="flex flex-col gap-1.5">
+            <h4 className="text-[11px] font-bold text-slate-400 text-left">Preview ({selectedRecipe?.name || "K300"})</h4>
+            <div className="bg-[#070b13]/60 border border-slate-800/60 p-2.5 rounded-[8px] flex flex-col gap-1.5 font-sans select-none text-[12px]">
+              <div className="flex items-center justify-between text-slate-300">
+                <span className="font-medium">Pasir setelah adj:</span>
+                <span className="font-mono font-black text-slate-200">
+                  {targetPasirLocal} kg → <span className={numPasir !== 0 ? "text-[#00ffd0]" : "text-slate-400"}>{pasirSetelahAdjustment} kg</span> ({numPasir >= 0 ? '+' : ''}{numPasir.toFixed(1)}%)
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-slate-300">
+                <span className="font-medium">Batu setelah adj:</span>
+                <span className="font-mono font-black text-slate-200">
+                  {targetBatuLocal} kg → <span className={numBatu !== 0 ? "text-[#00ffd0]" : "text-slate-400"}>{batuSetelahAdjustment} kg</span> ({numBatu >= 0 ? '+' : ''}{numBatu.toFixed(1)}%)
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-slate-200">
+                <span className="font-bold text-slate-300">Air setelah adjustment:</span>
+                <span className="font-mono font-black text-[#00ffd0] text-[14.5px] drop-shadow-[0_0_6px_rgba(0,255,208,0.25)]">
+                  {targetAirLocal} kg → <span>{airSetelahAdjustment} kg</span> ({numAir >= 0 ? '+' : ''}{numAir.toFixed(1)}%)
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Buttons */}
+          <div className="flex items-center justify-between mt-1 pt-2 border-t border-slate-800/40">
+            <button
+              onClick={() => {
+                setLocalPasir("0");
+                setLocalBatu("0");
+                setLocalAir("0");
+              }}
+              className="px-3.5 py-1.5 bg-transparent hover:bg-slate-850 border border-slate-800 text-slate-400 hover:text-white rounded-[6px] text-[11.5px] font-sans font-bold transition-all active:scale-95 cursor-pointer shrink-0"
+            >
+              Reset
+            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={onClose}
+                className="px-3.5 py-1.5 bg-[#0c1220]/80 hover:bg-slate-850 border border-slate-800 text-slate-500 hover:text-white rounded-[6px] text-[11.5px] font-sans font-bold transition-all active:scale-95 cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                onClick={() => {
+                  onSave(numPasir, numBatu, numAir);
+                }}
+                className="px-4.5 py-1.5 bg-[#00e5ff] hover:bg-[#00ffd0] text-black rounded-[6px] text-[12px] font-sans font-extrabold transition-all active:scale-95 cursor-pointer shadow-md"
+              >
+                Simpan
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // Compact Company Header
   const TopCompanyHeader = () => {
     return (
@@ -7792,14 +8293,14 @@ export default function App() {
         {/* Left Side: Logo and Company Info */}
         <div className="flex items-center gap-2.5">
           <div className="scale-75 origin-left shrink-0 -my-2 select-none">
-            <FarikaLogo />
+            <FarikaLogo logoSrc={companyLogo} />
           </div>
           <div className="flex flex-col select-none justify-center">
             <span className="text-[10.5px] font-sans font-black tracking-widest text-[#00e5ff] uppercase leading-none">
-              PT. FARIKA RIAU PERKASA
+              {companyName}
             </span>
             <span className="text-[7.5px] font-mono font-bold tracking-wider text-slate-400 uppercase leading-none mt-0.5">
-              BATCHING PLANT BP-01 PKU
+              {companyTagline}
             </span>
           </div>
         </div>
@@ -7870,14 +8371,25 @@ export default function App() {
           </button>
         </div>
 
-        {/* Right Side: Jam + Tanggal */}
-        <div className="flex flex-col items-end shrink-0 justify-center leading-none">
-          <span className="font-mono text-[16px] font-black tracking-tight text-[#00e5ff] drop-shadow-[0_0_5px_rgba(0,229,255,0.4)] leading-none">
-            {time.toLocaleTimeString('id-ID', { hour12: false }).replace(/:/g, '.')}
-          </span>
-          <span className="text-[7.5px] font-sans font-black text-slate-400 uppercase tracking-tight mt-0.5 leading-none">
-            {getIndonesianDate(time)}
-          </span>
+        {/* Right Side: Jam + Tanggal + Hidden Admin Icon */}
+        <div className="flex items-center gap-3 shrink-0">
+          <div className="flex flex-col items-end justify-center leading-none">
+            <span className="font-mono text-[16px] font-black tracking-tight text-[#00e5ff] drop-shadow-[0_0_5px_rgba(0,229,255,0.4)] leading-none">
+              {time.toLocaleTimeString('id-ID', { hour12: false }).replace(/:/g, '.')}
+            </span>
+            <span className="text-[7.5px] font-sans font-black text-slate-400 uppercase tracking-tight mt-0.5 leading-none">
+              {getIndonesianDate(time)}
+            </span>
+          </div>
+          
+          {/* Subtle industrial gears trigger button */}
+          <button 
+            onClick={() => setIsHmiAdminOpen(true)}
+            className="p-1.5 hover:bg-slate-800/80 hover:text-cyan-400 border border-transparent hover:border-slate-700 rounded-full text-slate-500/60 transition-all cursor-pointer active:scale-95"
+            title="Akses Administrator HMI"
+          >
+            <Settings size={13} className="animate-spin" style={{ animationDuration: '8s' }} />
+          </button>
         </div>
       </nav>
     );
@@ -7885,35 +8397,44 @@ export default function App() {
 
   if (currentView === 'admin-dashboard') {
     return (
-      <AdminDashboard 
-        logs={transformedLogs}
-        mixingSequence={mixingSequence}
-        setMixingSequence={setMixingSequence}
-        activePins={activePins}
-        batchingPlantMode={batchingPlantMode}
-        setBatchingPlantMode={setBatchingPlantMode}
-        flowControlGates={flowControlGates}
-        setFlowControlGates={setFlowControlGates}
-        waitingHopperEnabled={waitingHopperEnabled}
-        setWaitingHopperEnabled={setWaitingHopperEnabled}
-        waitingHopperPulseOn={waitingHopperPulseOn}
-        setWaitingHopperPulseOn={setWaitingHopperPulseOn}
-        waitingHopperPulseOff={waitingHopperPulseOff}
-        setWaitingHopperPulseOff={setWaitingHopperPulseOff}
-        waitingHopperWaterDelay={waitingHopperWaterDelay}
-        setWaitingHopperWaterDelay={setWaitingHopperWaterDelay}
-        waitingHopperWaterPrecharge={waitingHopperWaterPrecharge}
-        setWaitingHopperWaterPrecharge={setWaitingHopperWaterPrecharge}
-        operationMode={operationMode}
-        setOperationMode={setOperationMode}
-        scaleCapacities={scaleCapacities}
-        setScaleCapacities={setScaleCapacities}
-        setActivePrintLog={setActivePrintLog}
-        onLogout={() => {
-          localStorage.removeItem('admin_session');
-          setCurrentView('admin-login');
-        }}
-      />
+      <>
+        <AdminDashboard 
+          logs={transformedLogs}
+          mixingSequence={mixingSequence}
+          setMixingSequence={setMixingSequence}
+          activePins={activePins}
+          batchingPlantMode={batchingPlantMode}
+          setBatchingPlantMode={setBatchingPlantMode}
+          flowControlGates={flowControlGates}
+          setFlowControlGates={setFlowControlGates}
+          waitingHopperEnabled={waitingHopperEnabled}
+          setWaitingHopperEnabled={setWaitingHopperEnabled}
+          waitingHopperPulseOn={waitingHopperPulseOn}
+          setWaitingHopperPulseOn={setWaitingHopperPulseOn}
+          waitingHopperPulseOff={waitingHopperPulseOff}
+          setWaitingHopperPulseOff={setWaitingHopperPulseOff}
+          waitingHopperWaterDelay={waitingHopperWaterDelay}
+          setWaitingHopperWaterDelay={setWaitingHopperWaterDelay}
+          waitingHopperWaterPrecharge={waitingHopperWaterPrecharge}
+          setWaitingHopperWaterPrecharge={setWaitingHopperWaterPrecharge}
+          operationMode={operationMode}
+          setOperationMode={setOperationMode}
+          scaleCapacities={scaleCapacities}
+          setScaleCapacities={setScaleCapacities}
+          setActivePrintLog={setActivePrintLog}
+          companyName={companyName}
+          setCompanyName={setCompanyName}
+          companyTagline={companyTagline}
+          setCompanyTagline={setCompanyTagline}
+          companyLogo={companyLogo}
+          setCompanyLogo={setCompanyLogo}
+          onLogout={() => {
+            localStorage.removeItem('admin_session');
+            setCurrentView('admin-login');
+          }}
+        />
+        {activePrintLog && <PrintTicketModal log={activePrintLog} onClose={() => setActivePrintLog(null)} />}
+      </>
     );
   }
 
@@ -8047,38 +8568,288 @@ export default function App() {
         <AnimatePresence>
           {isHelpOpen && (
             <motion.div 
-              initial={{ opacity: 0, scale: 0.9 }}
+              initial={{ opacity: 0, scale: 0.92 }}
               animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.9 }}
-              className="absolute inset-0 z-[200] flex items-center justify-center p-6 bg-black/85 backdrop-blur-sm rounded-[6px]"
+              exit={{ opacity: 0, scale: 0.92 }}
+              className="absolute inset-0 z-[202] flex items-center justify-center p-4 bg-black/35 rounded-[6px]"
               onClick={() => setIsHelpOpen(false)}
             >
               <div 
-                className="bg-[#0b0f19] border-2 border-[#00e5ff] p-5 rounded-[6px] shadow-2xl flex flex-col gap-3 max-w-sm text-left text-slate-200 select-none"
+                className="bg-[#0c101d] border border-slate-700/80 p-5 rounded-[12px] shadow-[0_10px_35px_rgba(0,0,0,0.7)] flex flex-col items-center text-center gap-4.5 w-[280px] select-none relative"
                 onClick={(e) => e.stopPropagation()}
               >
-                <div className="flex items-center gap-2 text-[#00e5ff] border-b border-slate-800 pb-2">
-                  <HelpCircle size={22} className="" />
-                  <h3 className="text-sm font-black uppercase tracking-wider">PANDUAN SCADA CONTROL</h3>
+                <div className="text-center font-sans space-y-1">
+                  <h3 className="text-[12px] font-semibold text-slate-400">Designed and Created by</h3>
+                  <p className="text-[18px] font-bold tracking-wide text-[#00b4ff]">Wamin Suwito</p>
                 </div>
-                <div className="text-[10.5px] font-mono leading-relaxed space-y-1.5 uppercase text-slate-300">
-                  <p><strong className="text-[#00ffd0]">START:</strong> Memulai penimbangan otomatis.</p>
-                  <p><strong className="text-red-500">STOP:</strong> Pembatalan penimbangan darurat.</p>
-                  <p><strong className="text-cyan-400">AUTO ON:</strong> Operasi PLC otomatis / manual.</p>
-                  <p><strong className="text-teal-400">MOISTURE CONTROL:</strong> Kompensasi kadar air realtime.</p>
-                  <p><strong className="text-blue-400">QUARRY AGGREGATE:</strong> Jalur supply deposit gudang.</p>
-                  <p><strong className="text-[#38bdf8]">PRINT:</strong> Cetak struk timbang selepas batch selesai.</p>
+                
+                <div className="text-[10px] font-sans space-y-1.5 text-slate-300 text-left w-full pl-2 pr-2">
+                  <p className="flex items-center gap-1">
+                    <span className="font-bold text-slate-400">Email:</span>
+                    <a href="mailto:Waminsuwito@yahoo.com" className="text-blue-400 hover:underline">Waminsuwito@yahoo.com</a>
+                  </p>
+                  <p className="flex items-center gap-1">
+                    <span className="font-bold text-slate-400">HP/WhatsApp:</span>
+                    <span className="text-[#22c55e] font-semibold">081271963847</span>
+                  </p>
                 </div>
+                
                 <button 
                   onClick={() => setIsHelpOpen(false)}
-                  className="mt-2 text-center w-full bg-[#00e5ff] text-black py-1.5 rounded-[4px] font-sans font-extrabold uppercase text-xs hover:brightness-110 cursor-pointer"
+                  className="mt-1 text-center w-full py-1.5 bg-[#00ffd0] hover:bg-[#00e5ff] text-black font-sans font-extrabold rounded-[6px] text-[11.5px] transition-all active:scale-95 cursor-pointer shadow-md"
                 >
-                  TUTUP PANDUAN
+                  Tutup
                 </button>
               </div>
             </motion.div>
           )}
         </AnimatePresence>
+
+        {/* Moisture Control Modal Overlay */}
+        <MoistureControlModal
+          isOpen={isMoistureOpen}
+          onClose={() => setIsMoistureOpen(false)}
+          onSave={(p, b, a) => {
+            setPasirMoisture(p);
+            setBatuMoisture(b);
+            setAirAdjustment(a);
+            setMoistureControl(p !== 0 || b !== 0 || a !== 0);
+            setIsMoistureOpen(false);
+          }}
+          currentPasir={pasirMoisture}
+          currentBatu={batuMoisture}
+          currentAir={airAdjustment}
+          recipes={recipesList}
+          selectedRecipe={selectedRecipe}
+          onRecipeChange={setSelectedRecipe}
+        />
+
+        {/* HMI Admin Password Verification Modal */}
+        {isHmiAdminOpen && (
+          <div 
+            className="fixed inset-0 z-[1100] flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-md select-none"
+            onClick={() => {
+              setIsHmiAdminOpen(false);
+              setHmiAdminPassword("");
+              setHmiAdminError("");
+            }}
+          >
+            <div 
+              className="bg-[#0c101d] border-2 border-amber-500/80 p-5 rounded-[12px] shadow-[0_20px_50px_rgba(245,158,11,0.25)] flex flex-col gap-4 w-full max-w-sm text-left animate-in fade-in zoom-in-95 duration-200"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
+                <div className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse" />
+                  <h3 className="text-[14px] font-black uppercase text-amber-400 tracking-wider font-mono">HMI ADMIN SIGN-IN</h3>
+                </div>
+                <button 
+                  onClick={() => {
+                    setIsHmiAdminOpen(false);
+                    setHmiAdminPassword("");
+                    setHmiAdminError("");
+                  }}
+                  className="text-slate-400 hover:text-white transition-colors cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="flex flex-col gap-3">
+                <span className="text-[11px] text-slate-400 leading-normal italic">
+                  Masukkan kata sandi Administrator untuk mengonfigurasi parameter sistem, membuka Developer Tools, atau mengatur resolusi layar HMI.
+                </span>
+
+                <div className="flex flex-col gap-1.5 text-slate-300">
+                  <label className="text-[11px] font-mono font-black uppercase tracking-wide text-slate-400">Sandi Keamanan Admin</label>
+                  <input
+                    type="password"
+                    className="w-full h-[40px] bg-[#070b13] border border-slate-800 focus:border-amber-500 focus:shadow-[0_0_8px_rgba(245,158,11,0.15)] text-white text-[15px] font-semibold font-mono rounded-[8px] px-3 outline-none tracking-widest text-center transition-all"
+                    placeholder="••••••"
+                    value={hmiAdminPassword}
+                    onChange={(e) => setHmiAdminPassword(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        const trimmed = hmiAdminPassword.trim();
+                        if (trimmed === "admin" || trimmed === "1234") {
+                          setHmiAdminError("");
+                          setHmiAdminPassword("");
+                          setIsHmiAdminOpen(false);
+                          setIsHmiAdminMenuOpen(true);
+                        } else {
+                          setHmiAdminError("PIN/Sandi salah!");
+                        }
+                      }
+                    }}
+                    autoFocus
+                  />
+                </div>
+
+                {hmiAdminError && (
+                  <span className="text-rose-500 font-sans text-[11px] font-bold text-center">
+                    ⚠ {hmiAdminError}
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center justify-end gap-2 mt-1 border-t border-slate-850 pt-2.5">
+                <button
+                  onClick={() => {
+                    setIsHmiAdminOpen(false);
+                    setHmiAdminPassword("");
+                    setHmiAdminError("");
+                  }}
+                  className="px-4 py-1.5 bg-transparent hover:bg-slate-800/60 border border-slate-800 text-slate-400 hover:text-white rounded-[6px] text-[11.5px] font-sans font-bold transition-all active:scale-95 cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  onClick={() => {
+                    const trimmed = hmiAdminPassword.trim();
+                    if (trimmed === "admin" || trimmed === "1234") {
+                      setHmiAdminError("");
+                      setHmiAdminPassword("");
+                      setIsHmiAdminOpen(false);
+                      setIsHmiAdminMenuOpen(true);
+                    } else {
+                      setHmiAdminError("PIN/Sandi salah!");
+                    }
+                  }}
+                  className="px-5 py-1.5 bg-amber-500 hover:bg-amber-400 text-neutral-950 rounded-[6px] text-[11.5px] font-sans font-black tracking-wider transition-all active:scale-95 cursor-pointer shadow-md"
+                >
+                  Verifikasi
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* HMI Admin Options Menu Modal */}
+        {isHmiAdminMenuOpen && (
+          <div 
+            className="fixed inset-0 z-[1100] flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-md select-none"
+            onClick={() => setIsHmiAdminMenuOpen(false)}
+          >
+            <div 
+              className="bg-[#0c101d] border-2 border-cyan-500/80 p-5 rounded-[12px] shadow-[0_20px_50px_rgba(6,182,212,0.25)] flex flex-col gap-4 w-full max-w-sm text-left animate-in fade-in zoom-in-95 duration-200"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
+                <div className="flex items-center gap-2">
+                  <Settings size={16} className="text-cyan-400 animate-spin" style={{ animationDuration: '10s' }} />
+                  <h3 className="text-[14.5px] font-black uppercase text-cyan-400 tracking-wider font-mono">HMI SECURITY & TOOLS HMI</h3>
+                </div>
+                <button 
+                  onClick={() => setIsHmiAdminMenuOpen(false)}
+                  className="text-slate-400 hover:text-white transition-colors cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="flex flex-col gap-2 pt-1 font-sans">
+                <span className="text-[10px] text-slate-400 uppercase tracking-widest font-black mb-1">
+                  Actions & Diagnostics:
+                </span>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => {
+                      const api = (window as any).electronAPI;
+                      if (api) {
+                        api.enterFullscreen();
+                      } else {
+                        document.documentElement.requestFullscreen().catch(() => {});
+                      }
+                    }}
+                    className="py-2 px-2 bg-slate-900 border border-slate-800 hover:border-cyan-500/50 hover:bg-slate-850 rounded-[8px] text-[11px] font-sans font-bold text-slate-300 hover:text-white text-center transition-colors active:scale-95 cursor-pointer"
+                  >
+                    🖥 Fullscreen
+                  </button>
+                  <button
+                    onClick={() => {
+                      const api = (window as any).electronAPI;
+                      if (api) {
+                        api.exitFullscreen();
+                      } else {
+                        if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
+                      }
+                    }}
+                    className="py-2 px-2 bg-slate-900 border border-slate-800 hover:border-amber-500/50 hover:bg-slate-850 rounded-[8px] text-[11px] font-sans font-bold text-slate-300 hover:text-white text-center transition-colors active:scale-95 cursor-pointer"
+                  >
+                    🪟 Windowed
+                  </button>
+                </div>
+
+                <button
+                  onClick={() => {
+                    const api = (window as any).electronAPI;
+                    if (api) {
+                      api.openDevTools();
+                    } else {
+                      alert("Developer Tools hanya didukung pada aplikasi desktop Electron.");
+                    }
+                  }}
+                  className="w-full py-2.5 px-3 flex items-center justify-between bg-slate-900 border border-slate-800 hover:border-cyan-500/50 hover:bg-slate-850 rounded-[8px] text-[11px] font-sans font-bold text-slate-300 hover:text-white transition-colors active:scale-95 cursor-pointer"
+                >
+                  <span>🛠 Developer Tools (F12)</span>
+                  <span className="text-[9px] px-1.5 py-0.5 bg-slate-800 text-slate-400 rounded-sm uppercase font-mono font-black scale-90">DEV Only</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    localStorage.setItem('admin_session', 'true');
+                    setCurrentView('admin-dashboard');
+                    setIsHmiAdminMenuOpen(false);
+                  }}
+                  className="w-full py-2.5 px-3 flex items-center justify-between bg-slate-900 border border-slate-800 hover:border-cyan-500/50 hover:bg-slate-850 rounded-[8px] text-[11px] font-sans font-bold text-slate-300 hover:text-white transition-colors active:scale-95 cursor-pointer"
+                >
+                  <span>⚙ Settings (Admin Dashboard)</span>
+                  <span className="text-[9px] px-1.5 py-0.5 bg-cyan-950 text-cyan-400 rounded-sm uppercase font-mono font-black scale-90">CONFIG</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    const api = (window as any).electronAPI;
+                    if (api) {
+                      api.restartApp();
+                    } else {
+                      window.location.reload();
+                    }
+                  }}
+                  className="w-full py-2.5 px-3 flex items-center justify-between bg-slate-900 border border-slate-800 hover:border-cyan-500/50 hover:bg-slate-850 rounded-[8px] text-[11px] font-sans font-bold text-slate-300 hover:text-white transition-colors active:scale-95 cursor-pointer"
+                >
+                  <span>🔄 Restart HMI Application</span>
+                  <span className="text-[9px] px-1.5 py-0.5 bg-slate-800 text-slate-400 rounded-sm uppercase font-mono font-black scale-90">REBOOT</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    const api = (window as any).electronAPI;
+                    if (api) {
+                      api.shutdownApp();
+                    } else {
+                      alert("Shutdown command sent (only supported in actual desktop app builds).");
+                    }
+                  }}
+                  className="w-full py-2.5 px-3 flex items-center justify-between bg-rose-950/40 border border-rose-900/30 hover:border-rose-500/80 hover:bg-rose-900/40 rounded-[8px] text-[11px] font-sans font-bold text-rose-300 hover:text-rose-100 transition-colors active:scale-95 cursor-pointer"
+                >
+                  <span>🔌 Shutdown HMI Station</span>
+                  <span className="text-[9px] px-1.5 py-0.5 bg-rose-950 text-rose-400 rounded-sm uppercase font-mono font-black scale-90">PWR OFF</span>
+                </button>
+              </div>
+
+              <div className="flex items-center justify-end border-t border-slate-850 pt-2.5 mt-1">
+                <button
+                  onClick={() => setIsHmiAdminMenuOpen(false)}
+                  className="px-5 py-1.5 bg-cyan-500 hover:bg-cyan-400 text-neutral-950 rounded-[6px] text-[11px] font-sans font-black tracking-wide transition-all active:scale-95 cursor-pointer"
+                >
+                  Tutup
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Fill Silo Form Overlay */}
         <AnimatePresence>
@@ -8536,6 +9307,7 @@ export default function App() {
                 setIsAuto={setIsAuto}
                 moistureControl={moistureControl}
                 setMoistureControl={setMoistureControl}
+                onMoistureClick={() => setIsMoistureOpen(true)}
                 quarryAggregate={quarryAggregate}
                 setQuarryAggregate={setQuarryAggregate}
                 isPrint={isPrint}
@@ -8615,150 +9387,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* CARD WAITING HOPPER SYSTEM SETTINGS */}
-            <div className="bg-[#0b1329] border border-slate-800 rounded-[5px] p-2.5 flex flex-col gap-1.5 overflow-hidden relative shadow-md shrink-0">
-              <div className="flex justify-between items-center border-b border-slate-800 pb-1 shrink-0 select-none">
-                <span className="text-[8px] font-sans font-black tracking-widest text-[#00ffd0] uppercase flex items-center gap-1">
-                  <span className={`w-1.5 h-1.5 rounded-full ${waitingHopperEnabled ? 'bg-[#00ffd0] animate-pulse' : 'bg-slate-600'}`} />
-                  SETTING WAITING HOPPER
-                </span>
-                <span className={`text-[6.5px] font-sans font-black px-1 py-0.5 rounded leading-none ${waitingHopperEnabled ? 'bg-[#00ffd0]/10 text-[#00ffd0] border border-[#00ffd0]/20' : 'bg-slate-900 text-slate-500'}`}>
-                  {waitingHopperEnabled ? 'ACTIVE' : 'BYPASS'}
-                </span>
-              </div>
-              
-              <div className="flex flex-col gap-1.5">
-                {/* Switch Toggle */}
-                <div className="flex items-center justify-between">
-                  <span className="text-[8.5px] font-black text-slate-300 uppercase font-mono">SISTEM WAITING HOPPER</span>
-                  <button
-                    onClick={() => setWaitingHopperEnabled(!waitingHopperEnabled)}
-                    disabled={isRunning}
-                    className={`text-[8px] font-black px-2 py-0.5 rounded transition-all cursor-pointer select-none ${
-                      isRunning ? 'opacity-40 cursor-not-allowed bg-slate-900 text-slate-600 border border-slate-950' :
-                      waitingHopperEnabled 
-                        ? 'bg-[#00ffd0] hover:bg-[#00e5ff] text-black font-black font-mono' 
-                        : 'bg-slate-800 hover:bg-slate-700 text-slate-400 font-bold font-mono'
-                    }`}
-                  >
-                    {waitingHopperEnabled ? 'AKTIF' : 'NORMAL'}
-                  </button>
-                </div>
-
-                {waitingHopperEnabled && (
-                  <div className="space-y-1.5 border-t border-slate-800 pt-1 text-[8px] font-sans font-medium">
-                    {/* Gate Pulse ON Time */}
-                    <div className="flex flex-col gap-0.5">
-                      <div className="flex justify-between text-slate-400">
-                        <span>PULSA VALVE ON</span>
-                        <span className="text-[#00ffd0] font-black font-mono">{waitingHopperPulseOn}s</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <button 
-                          onClick={() => setWaitingHopperPulseOn(p => Math.max(0.5, parseFloat((p - 0.5).toFixed(1))))}
-                          disabled={isRunning}
-                          className="w-4 h-4 bg-slate-800 rounded flex items-center justify-center text-[9px] font-extrabold hover:bg-slate-700 disabled:opacity-45 text-white"
-                        >-</button>
-                        <input 
-                          type="range" min="0.5" max="5" step="0.5"
-                          value={waitingHopperPulseOn} 
-                          onChange={(e) => setWaitingHopperPulseOn(parseFloat(e.target.value))}
-                          disabled={isRunning}
-                          className="flex-1 accent-[#00ffd0] h-0.5 bg-slate-900 rounded-lg appearance-none cursor-pointer disabled:opacity-45"
-                        />
-                        <button 
-                          onClick={() => setWaitingHopperPulseOn(p => Math.min(5, parseFloat((p + 0.5).toFixed(1))))}
-                          disabled={isRunning}
-                          className="w-4 h-4 bg-slate-800 rounded flex items-center justify-center text-[9px] font-extrabold hover:bg-slate-700 disabled:opacity-45 text-white"
-                        >+</button>
-                      </div>
-                    </div>
-
-                    {/* Gate Pulse OFF Time */}
-                    <div className="flex flex-col gap-0.5">
-                      <div className="flex justify-between text-slate-400">
-                        <span>PULSA VALVE OFF</span>
-                        <span className="text-[#00ffd0] font-black font-mono">{waitingHopperPulseOff}s</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <button 
-                          onClick={() => setWaitingHopperPulseOff(p => Math.max(0.5, parseFloat((p - 0.5).toFixed(1))))}
-                          disabled={isRunning}
-                          className="w-4 h-4 bg-slate-800 rounded flex items-center justify-center text-[9px] font-extrabold hover:bg-slate-700 disabled:opacity-45 text-white"
-                        >-</button>
-                        <input 
-                          type="range" min="0.5" max="5" step="0.5"
-                          value={waitingHopperPulseOff} 
-                          onChange={(e) => setWaitingHopperPulseOff(parseFloat(e.target.value))}
-                          disabled={isRunning}
-                          className="flex-1 accent-[#00ffd0] h-0.5 bg-slate-900 rounded-lg appearance-none cursor-pointer disabled:opacity-45"
-                        />
-                        <button 
-                          onClick={() => setWaitingHopperPulseOff(p => Math.min(5, parseFloat((p + 0.5).toFixed(1))))}
-                          disabled={isRunning}
-                          className="w-4 h-4 bg-slate-800 rounded flex items-center justify-center text-[9px] font-extrabold hover:bg-slate-700 disabled:opacity-45 text-white"
-                        >+</button>
-                      </div>
-                    </div>
-
-                    {/* Delay After Water Discharge */}
-                    <div className="flex flex-col gap-0.5">
-                      <div className="flex justify-between text-slate-400">
-                        <span>JEDA SETELAH AIR TUANG Selesai</span>
-                        <span className="text-[#00ffd0] font-black font-mono">{waitingHopperWaterDelay}s</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <button 
-                          onClick={() => setWaitingHopperWaterDelay(p => Math.max(1, p - 1))}
-                          disabled={isRunning}
-                          className="w-4 h-4 bg-slate-800 rounded flex items-center justify-center text-[9px] font-extrabold hover:bg-slate-700 disabled:opacity-45 text-white"
-                        >-</button>
-                        <input 
-                          type="range" min="1" max="15" step="1"
-                          value={waitingHopperWaterDelay} 
-                          onChange={(e) => setWaitingHopperWaterDelay(parseInt(e.target.value))}
-                          disabled={isRunning}
-                          className="flex-1 accent-[#00ffd0] h-0.5 bg-slate-900 rounded-lg appearance-none cursor-pointer disabled:opacity-45"
-                        />
-                        <button 
-                          onClick={() => setWaitingHopperWaterDelay(p => Math.min(15, p + 1))}
-                          disabled={isRunning}
-                          className="w-4 h-4 bg-slate-800 rounded flex items-center justify-center text-[9px] font-extrabold hover:bg-slate-700 disabled:opacity-45 text-white"
-                        >+</button>
-                      </div>
-                    </div>
-
-                    {/* Water Precharge Percentage */}
-                    <div className="flex flex-col gap-0.5">
-                      <div className="flex justify-between text-slate-400">
-                        <span>VOLUME AIR PRECHARGE</span>
-                        <span className="text-[#00ffd0] font-black font-mono">{waitingHopperWaterPrecharge}%</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <button 
-                          onClick={() => setWaitingHopperWaterPrecharge(p => Math.max(10, p - 5))}
-                          disabled={isRunning}
-                          className="w-4 h-4 bg-slate-800 rounded flex items-center justify-center text-[9px] font-extrabold hover:bg-slate-700 disabled:opacity-45 text-white"
-                        >-</button>
-                        <input 
-                          type="range" min="10" max="100" step="5"
-                          value={waitingHopperWaterPrecharge} 
-                          onChange={(e) => setWaitingHopperWaterPrecharge(parseInt(e.target.value))}
-                          disabled={isRunning}
-                          className="flex-1 accent-[#00ffd0] h-0.5 bg-slate-900 rounded-lg appearance-none cursor-pointer disabled:opacity-45"
-                        />
-                        <button 
-                          onClick={() => setWaitingHopperWaterPrecharge(p => Math.min(100, p + 5))}
-                          disabled={isRunning}
-                          className="w-4 h-4 bg-slate-800 rounded flex items-center justify-center text-[9px] font-extrabold hover:bg-slate-700 disabled:opacity-45 text-white"
-                        >+</button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
             {/* CARD MANUAL PRODUCTION DETECTION SETTINGS */}
             <div className="bg-[#0b1329] border border-slate-800 rounded-[5px] p-2.5 flex flex-col gap-1.5 overflow-hidden relative shadow-md shrink-0">
               <div className="flex justify-between items-center border-b border-slate-800 pb-1 shrink-0 select-none">
@@ -8780,12 +9408,12 @@ export default function App() {
                   </div>
                   <div className="flex items-center gap-1">
                     <button 
-                      onClick={() => setMinMixerGateOpenTime(p => Math.max(5, p - 1))}
+                      onClick={() => setMinMixerGateOpenTime(p => Math.max(1, p - 1))}
                       disabled={isRunning}
-                      className="w-4 h-4 bg-slate-800 rounded flex items-center justify-center text-[9px] font-extrabold hover:bg-slate-700 disabled:opacity-45 text-white cursor-pointer"
+                      className="w-4 h-4 bg-slate-800 rounded flex items-center justify-center text-[9px] font-extrabold hover:bg-slate-700 disabled:opacity-45 text-white cursor-pointer py-0 px-0 pt-0 pb-0"
                     >-</button>
                     <input 
-                      type="range" min="5" max="30" step="1"
+                      type="range" min="1" max="30" step="1"
                       value={minMixerGateOpenTime} 
                       onChange={(e) => setMinMixerGateOpenTime(parseInt(e.target.value, 10))}
                       disabled={isRunning}
@@ -8794,7 +9422,7 @@ export default function App() {
                     <button 
                       onClick={() => setMinMixerGateOpenTime(p => Math.min(30, p + 1))}
                       disabled={isRunning}
-                      className="w-4 h-4 bg-slate-800 rounded flex items-center justify-center text-[9px] font-extrabold hover:bg-slate-700 disabled:opacity-45 text-white cursor-pointer"
+                      className="w-4 h-4 bg-slate-800 rounded flex items-center justify-center text-[9px] font-extrabold hover:bg-slate-700 disabled:opacity-45 text-white cursor-pointer py-0 px-0 pt-0 pb-0"
                     >+</button>
                   </div>
                   <p className="text-[7.5px] text-slate-500 font-sans italic pt-0.5 leading-normal">
@@ -8954,6 +9582,8 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {activePrintLog && <PrintTicketModal log={activePrintLog} onClose={() => setActivePrintLog(null)} />}
 
       {/* Hidden File Input for Truck Image Upload */}
       <input 

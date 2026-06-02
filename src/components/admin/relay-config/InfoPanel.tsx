@@ -3,39 +3,26 @@ import { AlertTriangle } from "lucide-react";
 
 export const InfoPanel: React.FC = () => {
   return (
-    <div className="bg-[#fefce8] border border-[#fef08a] rounded-[6px] p-4 text-slate-800 font-sans shadow-xs shrink-0 select-none text-left">
-      <div className="flex items-start gap-2 text-[#ca8a04]">
-        <AlertTriangle size={15} className="mt-0.5 shrink-0" />
-        <span className="text-[12px] font-bold tracking-wide uppercase">
-          PENTING - Sistem Hidrolik Solenoid Pintu Mixer:
+    <div className="bg-[#fefce8] border border-[#fef08a] rounded-[6px] p-2.5 text-slate-800 font-sans shadow-xs shrink-0 select-none text-left flex flex-col justify-between max-h-[140px] overflow-y-auto">
+      <div className="flex items-center gap-1.5 text-[#ca8a04] shrink-0">
+        <AlertTriangle size={13} className="shrink-0" />
+        <span className="text-[10.5px] font-sans font-black tracking-wide uppercase">
+          PENTING - SOLENOID PINTU MIXER:
         </span>
       </div>
 
-      <ul className="mt-2.5 space-y-2 pl-5 list-disc text-[11px] leading-relaxed text-slate-700">
+      <ul className="mt-1 space-y-1 pl-4 list-disc text-[9.5px] leading-tight text-slate-700 flex-1">
         <li>
-          <strong className="text-slate-800">Pintu Mixer Buka (Relay #14):</strong>
-          <div className="pl-4 mt-0.5 space-y-0.5 list-none">
-            <div>
-              <strong className="text-slate-800">Timer 1, 3, 5:</strong> Durasi solenoid BUKA ON (dalam ms) - pintu terbuka bertahap
-            </div>
-            <div>
-              <strong className="text-slate-800">Timer 2, 4, 6:</strong> Durasi DIAM (solenoid OFF, pintu tetap di posisi terakhir)
-            </div>
-            <div className="text-[#ca8a04] font-medium leading-normal">
-              Sequence: 7cm → diam → 24cm → diam → 30cm → diam
-            </div>
+          <strong className="text-slate-850">Buka (Relay #14):</strong> Buka Bertahap
+          <div className="pl-3 text-[9px] text-slate-600 leading-normal">
+            <strong>Timer 1, 3, 5:</strong> Buka ON (ms) / <strong>Timer 2, 4, 6:</strong> Diam (ms)
+            <div className="text-[#b45309] font-semibold">Sequence: 7cm → diam → 24cm → diam → 30cm → diam</div>
           </div>
         </li>
-
         <li>
-          <strong className="text-slate-800">Pintu Mixer Tutup (Relay #15):</strong>
-          <div className="pl-4 mt-0.5">
-            <div>
-              <strong className="text-slate-800">Timer 1:</strong> Durasi solenoid TUTUP ON untuk menutup pintu penuh (dalam ms)
-            </div>
-            <div className="text-slate-500 font-medium italic mt-0.5">
-              Hanya aktif SETELAH semua siklus buka selesai
-            </div>
+          <strong className="text-slate-850">Tutup (Relay #15):</strong> Tutup Penuh
+          <div className="pl-3 text-[9px] text-slate-600 leading-normal">
+            <strong>Timer 1:</strong> Tutup ON (ms) <span className="text-slate-500 italic">(Aktif setelah siklus buka selesai)</span>
           </div>
         </li>
       </ul>
