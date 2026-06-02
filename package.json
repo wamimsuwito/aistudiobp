@@ -1,5 +1,7 @@
 {
-  "name": "react-example",
+  "name": "lisa-batch-plant-hmi",
+  "description": "Lisa Batch Plant HMI - Professional Application for Batching Plant Operators",
+  "author": "Wamin Suwito",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -63,7 +65,6 @@
       "shortcutName": "Lisa Batch Plant HMI",
       "artifactName": "Lisa BatchPlantHMI_Setup.exe",
       "uninstallDisplayName": "Lisa Batch Plant HMI",
-      "publisherName": "Wamin Suwito",
       "runAfterFinish": true
     },
     "mac": {
