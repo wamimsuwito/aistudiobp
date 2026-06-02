@@ -9024,84 +9024,75 @@ export default function App() {
             </motion.div>
           )}
         </AnimatePresence>
- 
-        {/* Inner layout 3-Column Grid representing the pristine Lovable HMI design */}
-        <div className="flex-1 grid grid-cols-[230px_1fr_240px] gap-3 min-h-0 relative select-none">
-                    {/* LEFT PANEL: AMPERE, SLUMP, AND ACTIVITY LOGS */}
-          <div className="flex flex-col gap-3 min-h-0">
-            {/* MONITOR TIMBANGAN (Moved to Left Panel as requested by user, optimized to fill the side-rail) */}
-            <div className="bg-[#0b1329] border border-slate-800 rounded-[5px] p-2.5 flex flex-col gap-2 shadow-md flex-1">
-              <div className="flex justify-between items-center border-b border-slate-850 pb-1.5 px-0.5 select-none font-sans shrink-0">
-                <span className="text-[9px] font-black tracking-widest text-[#00ffd0] uppercase flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
-                  TIMBANGAN MATERIAL
-                </span>
-              </div>              <div className="grid grid-cols-1 gap-2 flex-1 min-h-0">
-                {(batchingPlantMode === 'SYSTEM_2' ? [
-                  { key: 'aggregate_combined', label: 'AGGREGATE (AKUMULATIF)', isCombined: true },
-                  { key: 'semen', label: 'SEMEN (CEMENT)' },
-                  { key: 'air', label: 'AIR & ADITIF' }
-                ] : [
-                  { key: 'pasir', label: 'PASIR (SAND)' },
-                  { key: 'batu', label: 'BATU (STONE)' },
-                  { key: 'semen', label: 'SEMEN (CEMENT)' },
-                  { key: 'air', label: 'AIR & ADITIF' }
-                ]).map((itemConf) => {
-                  const { key, label } = itemConf;
-                  let item: any;
-                  if (itemConf.isCombined) {
-                    item = {
-                      target: scales.pasir.target + scales.batu.target,
-                      actual: scales.pasir.actual + scales.batu.actual,
-                      isActive: scales.pasir.isActive || scales.batu.isActive,
-                      isComplete: scales.pasir.isComplete && scales.batu.isComplete,
-                      unit: 'kg'
-                    };
-                  } else {
-                    item = scales[key as MaterialType];
-                  }
+
+        {/* TOP PANEL: HORIZONTAL WEIGHING CARDS (Moved to top as requested by user, shifted silos and other elements downwards) */}
+        <div className="bg-[#0b1329] border border-slate-800 rounded-[5px] p-2.5 flex flex-col gap-2 shadow-md shrink-0">
+          <div className="flex justify-between items-center border-b border-slate-850 pb-1 px-0.5 select-none font-sans shrink-0">
+            <span className="text-[9px] font-black tracking-widest text-[#00ffd0] uppercase flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+              TIMBANGAN MATERIAL
+            </span>
+            <span className="text-[7.5px] font-mono text-slate-500 font-black uppercase">LIVE INDICATOR</span>
+          </div>
+          <div className={`grid gap-2 shrink-0 ${batchingPlantMode === 'SYSTEM_2' ? 'grid-cols-3' : 'grid-cols-4'}`}>
+            {(batchingPlantMode === 'SYSTEM_2' ? [
+              { key: 'aggregate_combined', label: 'AGGREGATE (AKUMULATIF)', isCombined: true },
+              { key: 'semen', label: 'SEMEN (CEMENT)' },
+              { key: 'air', label: 'AIR & ADITIF' }
+            ] : [
+              { key: 'pasir', label: 'PASIR (SAND)' },
+              { key: 'batu', label: 'BATU (STONE)' },
+              { key: 'semen', label: 'SEMEN (CEMENT)' },
+              { key: 'air', label: 'AIR & ADITIF' }
+            ]).map((itemConf) => {
+              const { key, label } = itemConf;
+              let item: any;
+              if (itemConf.isCombined) {
+                item = {
+                  target: scales.pasir.target + scales.batu.target,
+                  actual: scales.pasir.actual + scales.batu.actual,
+                  isActive: scales.pasir.isActive || scales.batu.isActive,
+                  isComplete: scales.pasir.isComplete && scales.batu.isComplete,
+                  unit: 'kg'
+                };
+              } else {
+                item = scales[key as MaterialType];
+              }
+              
+              return (
+                <div key={key} className="bg-[#121c32]/50 border border-slate-800 rounded-[5px] p-2 flex flex-col justify-between overflow-hidden relative shadow-sm min-h-[58px] transition-all duration-250">
+                  {/* Card Header (Target) */}
+                  <div className="flex justify-between items-center border-b border-slate-850 pb-0.5 select-none leading-none shrink-0">
+                    <span className="text-[8.5px] font-sans font-black text-slate-400 uppercase tracking-widest truncate">{label}</span>
+                    <span className="text-[9.5px] font-mono font-black text-slate-400">
+                      TARGET: <span className="text-amber-400 font-extrabold">{item.target.toFixed(0)}</span> <span className="text-[7.5px] text-slate-500 font-bold">KG</span>
+                    </span>
+                  </div>
                   
-                  return (
-                    <div key={key} className="bg-[#121c32]/50 border border-slate-800 rounded-[5px] p-2.5 flex flex-col justify-between overflow-hidden relative shadow-sm flex-1 min-h-[60px] transition-all duration-250">
-                      {/* Card Header (Target) */}
-                      <div className="flex justify-between items-center border-b border-slate-850 pb-1.5 select-none leading-none shrink-0">
-                        <span className="text-[8.5px] font-sans font-black text-slate-400 uppercase tracking-widest truncate">{label}</span>
-                        <span className="text-[10px] font-mono font-black text-slate-400">
-                          TARGET: <span className="text-amber-400 font-extrabold">{item.target.toFixed(0)}</span> <span className="text-[7.5px] text-slate-500">KG</span>
-                        </span>
-                      </div>
-                      
-                      {/* Card Input/Value */}
-                      <div className="flex justify-between items-center mt-1 leading-none">
-                        <span className={`font-mono text-[38px] font-black tracking-tighter leading-none ${
-                          item.isActive 
-                            ? 'text-[#00ffd0] drop-shadow-[0_0_10px_rgba(0,255,208,0.6)] font-black' 
-                            : item.isComplete 
-                              ? 'text-[#00ff9c] drop-shadow-[0_0_6px_rgba(0,255,156,0.3)]' 
-                              : 'text-slate-200'
-                        }`}>
-                          {item.actual.toFixed(0)} <span className="text-[12px] font-sans font-black text-slate-550 lowercase tracking-widest">KG</span>
-                        </span>
-                        <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-                          item.isActive 
-                            ? 'bg-[#00ffd0] shadow-[0_0_10px_rgba(0,255,208,0.8)]' 
-                            : item.isComplete 
-                              ? 'bg-[#00ff9c] shadow-[0_0_6px_rgba(0,255,156,0.5)]' 
-                              : 'bg-slate-800'
-                        }`} />
-                      </div>
+                  {/* Card Input/Value & LED/Jog Button Row */}
+                  <div className="flex justify-between items-center mt-1 select-none leading-none">
+                    <span className={`font-mono text-[22px] sm:text-[24px] md:text-[28px] font-black tracking-tighter leading-none ${
+                      item.isActive 
+                        ? 'text-[#00ffd0] drop-shadow-[0_0_10px_rgba(0,255,208,0.6)] font-black' 
+                        : item.isComplete 
+                          ? 'text-[#00ff9c] drop-shadow-[0_0_6px_rgba(0,255,156,0.3)]' 
+                          : 'text-slate-200'
+                    }`}>
+                      {item.actual.toFixed(0)} <span className="text-[10px] font-sans font-black text-slate-550 lowercase tracking-widest">KG</span>
+                    </span>
 
-                      {/* Bottom Micro progress indicator */}
-                      <div className="h-[3px] w-full bg-[#111827] mt-[7px] rounded-full overflow-hidden shrink-0">
-                        <div 
-                          className={`h-full transition-all duration-300 ${item.isComplete ? 'bg-[#00ff9c]' : item.isActive ? 'bg-[#00ffd0]' : 'bg-slate-750'}`}
-                          style={{ width: `${Math.min(100, (item.actual / (item.target || 1)) * 100)}%` }}
-                        />
-                      </div>
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${
+                        item.isActive 
+                          ? 'bg-[#00ffd0] shadow-[0_0_10px_rgba(0,255,208,0.8)]' 
+                          : item.isComplete 
+                            ? 'bg-[#00ff9c] shadow-[0_0_6px_rgba(0,255,156,0.5)]' 
+                            : 'bg-slate-800'
+                      }`} />
 
-                      {/* Manual JOG Touchscreen Button */}
+                      {/* Manual JOG Buttons merged for desktop ergonomics */}
                       {itemConf.isCombined ? (
-                        <div className="grid grid-cols-4 gap-1 mt-2 shrink-0">
+                        <div className="flex gap-1 shrink-0">
                           <button
                             onMouseDown={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir1(true); }}
                             onMouseUp={() => setJoggingPasir1(false)}
@@ -9109,7 +9100,7 @@ export default function App() {
                             onTouchStart={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir1(true); }}
                             onTouchEnd={() => setJoggingPasir1(false)}
                             disabled={!isRunning || scales.pasir.isComplete}
-                            className={`py-1 px-0.5 flex items-center justify-center text-[8px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center
+                            className={`py-1 px-1.5 flex items-center justify-center text-[7.5px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
                               ${joggingPasir1
                                 ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
                                 : scales.pasir.isComplete || !isRunning
@@ -9126,7 +9117,7 @@ export default function App() {
                             onTouchStart={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir2(true); }}
                             onTouchEnd={() => setJoggingPasir2(false)}
                             disabled={!isRunning || scales.pasir.isComplete}
-                            className={`py-1 px-0.5 flex items-center justify-center text-[8px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center
+                            className={`py-1 px-1.5 flex items-center justify-center text-[8px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
                               ${joggingPasir2
                                 ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
                                 : scales.pasir.isComplete || !isRunning
@@ -9143,7 +9134,7 @@ export default function App() {
                             onTouchStart={() => { if (isRunning && !scales.batu.isComplete) setJoggingBatu1(true); }}
                             onTouchEnd={() => setJoggingBatu1(false)}
                             disabled={!isRunning || scales.batu.isComplete}
-                            className={`py-1 px-0.5 flex items-center justify-center text-[8px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center
+                            className={`py-1 px-1.5 flex items-center justify-center text-[7.5px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
                               ${joggingBatu1
                                 ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
                                 : scales.batu.isComplete || !isRunning
@@ -9160,7 +9151,7 @@ export default function App() {
                             onTouchStart={() => { if (isRunning && !scales.batu.isComplete) setJoggingBatu2(true); }}
                             onTouchEnd={() => setJoggingBatu2(false)}
                             disabled={!isRunning || scales.batu.isComplete}
-                            className={`py-1 px-0.5 flex items-center justify-center text-[8px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center
+                            className={`py-1 px-1.5 flex items-center justify-center text-[7.5px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
                               ${joggingBatu2
                                 ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
                                 : scales.batu.isComplete || !isRunning
@@ -9172,7 +9163,7 @@ export default function App() {
                           </button>
                         </div>
                       ) : key === 'pasir' ? (
-                        <div className="grid grid-cols-2 gap-1.5 mt-2 shrink-0">
+                        <div className="flex gap-1.5 shrink-0">
                           <button
                             onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingPasir1(true); }}
                             onMouseUp={() => setJoggingPasir1(false)}
@@ -9180,7 +9171,7 @@ export default function App() {
                             onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingPasir1(true); }}
                             onTouchEnd={() => setJoggingPasir1(false)}
                             disabled={!isRunning || item.isComplete}
-                            className={`py-1 px-1 flex items-center justify-center text-[8.5px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center
+                            className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
                               ${joggingPasir1
                                 ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
                                 : item.isComplete || !isRunning
@@ -9188,7 +9179,7 @@ export default function App() {
                                   : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
                               }`}
                           >
-                            {joggingPasir1 ? 'JOG 1...' : 'JOG PASIR 1'}
+                            {joggingPasir1 ? 'JOG 1' : 'PASIR 1'}
                           </button>
                           <button
                             onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingPasir2(true); }}
@@ -9197,7 +9188,7 @@ export default function App() {
                             onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingPasir2(true); }}
                             onTouchEnd={() => setJoggingPasir2(false)}
                             disabled={!isRunning || item.isComplete}
-                            className={`py-1 px-1 flex items-center justify-center text-[8.5px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center
+                            className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
                               ${joggingPasir2
                                 ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
                                 : item.isComplete || !isRunning
@@ -9205,11 +9196,11 @@ export default function App() {
                                   : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
                               }`}
                           >
-                            {joggingPasir2 ? 'JOG 2...' : 'JOG PASIR 2'}
+                            {joggingPasir2 ? 'JOG 2' : 'PASIR 2'}
                           </button>
                         </div>
                       ) : key === 'batu' ? (
-                        <div className="grid grid-cols-2 gap-1.5 mt-2 shrink-0">
+                        <div className="flex gap-1.5 shrink-0">
                           <button
                             onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingBatu1(true); }}
                             onMouseUp={() => setJoggingBatu1(false)}
@@ -9217,7 +9208,7 @@ export default function App() {
                             onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingBatu1(true); }}
                             onTouchEnd={() => setJoggingBatu1(false)}
                             disabled={!isRunning || item.isComplete}
-                            className={`py-1 px-1 flex items-center justify-center text-[8.5px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center
+                            className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
                               ${joggingBatu1
                                 ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
                                 : item.isComplete || !isRunning
@@ -9225,7 +9216,7 @@ export default function App() {
                                   : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
                               }`}
                           >
-                            {joggingBatu1 ? 'JOG 1...' : 'JOG BATU 1'}
+                            {joggingBatu1 ? 'JOG 1' : 'BATU 1'}
                           </button>
                           <button
                             onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingBatu2(true); }}
@@ -9234,7 +9225,7 @@ export default function App() {
                             onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingBatu2(true); }}
                             onTouchEnd={() => setJoggingBatu2(false)}
                             disabled={!isRunning || item.isComplete}
-                            className={`py-1 px-1 flex items-center justify-center text-[8.5px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center
+                            className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
                               ${joggingBatu2
                                 ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
                                 : item.isComplete || !isRunning
@@ -9242,7 +9233,7 @@ export default function App() {
                                   : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
                               }`}
                           >
-                            {joggingBatu2 ? 'JOG 2...' : 'JOG BATU 2'}
+                            {joggingBatu2 ? 'JOG 2' : 'BATU 2'}
                           </button>
                         </div>
                       ) : (
@@ -9272,25 +9263,28 @@ export default function App() {
                             if (key === 'air') setJoggingAir(false);
                           }}
                           disabled={!isRunning || item.isComplete}
-                          className={`mt-2 py-1 px-3 text-[10px] font-sans font-black tracking-widest rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center
+                          className={`py-1 px-2 text-[8px] font-sans font-black tracking-widest rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer h-5 min-w-[55px]
                             ${(key === 'semen' ? joggingSemen : joggingAir)
-                              ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
+                              ? 'bg-amber-500 text-black border-[#fb923c] font-extrabold animate-pulse'
                               : item.isComplete || !isRunning
                                 ? 'bg-slate-900 border-slate-950 text-slate-600 cursor-not-allowed font-medium'
-                                : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
+                                : 'bg-[#121c32] text-[#f59e0b] border-amber-550/25 cursor-pointer hover:bg-[#a87c16]/10 hover:border-amber-500/50'
                             }`}
                         >
-                          {(key === 'semen' ? joggingSemen : joggingAir) ? 'JOGGING...' : 'MANUAL JOG'}
+                          {(key === 'semen' ? joggingSemen : joggingAir) ? 'JOG' : 'JOG'}
                         </button>
                       )}
                     </div>
-                  );
-                })}
-              </div>
-            </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
+        </div>
 
-          {/* CENTER PANEL: HORIZONTAL WEIGHING CARDS & MECHANICAL DIAGRAM */}
+        {/* Inner layout 2-Column Grid representing the pristine Lovable HMI design matching full-screen layouts */}
+        <div className="flex-1 grid grid-cols-[1fr_240px] gap-3 min-h-0 relative select-none">
+          {/* CENTER PANEL: MECHANICAL DIAGRAM */}
           <div className="flex-1 flex flex-col gap-3 min-h-0">
             {/* MECHANICAL SCADA CANVAS AREA (Elegant representation) */}
             <div className="flex-1 bg-[#05080c] border border-slate-800 rounded-[5px] relative overflow-hidden flex items-center justify-center p-1.5 shadow-inner">
