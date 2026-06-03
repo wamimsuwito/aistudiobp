@@ -917,9 +917,9 @@ const ScadaDiagram = ({
   return (
     <div className="w-full h-full flex items-center justify-center bg-[#05080c] overflow-hidden rounded-[4px] relative">
       <svg 
-        viewBox="-120 -30 1250 640" 
+        viewBox="45 -30 1085 640" 
         className="w-full h-full max-h-full" 
-        preserveAspectRatio="xMidYMin meet"
+        preserveAspectRatio="xMinYMin meet"
         onClick={() => {
           if (!isAuto) {
             setSelectedManualDevice(null);
@@ -2590,15 +2590,7 @@ const ScadaDiagram = ({
           />
         </g>
 
-        {/* AMPERE MIXER (Small, plain display showing only the value inside the chute above the mixer as requested) */}
-        <foreignObject x="645.5" y="325" width="64" height="20">
-          <div className="w-full h-full bg-[#070b12]/95 border border-cyan-500/30 rounded-[3px] flex items-center justify-center font-mono shadow-md">
-            <span className="text-[12px] font-black text-[#00ffd0] select-none tracking-tight drop-shadow-[0_0_5px_rgba(0,255,208,0.4)]">
-              {isMixerRotating ? (ampere || 24.5).toFixed(1) : (isRunning ? (isPaused ? "1.5" : "2.5") : "0.0")}{" "}
-              <span className="text-[8px] font-sans font-bold text-slate-400">A</span>
-            </span>
-          </div>
-        </foreignObject>
+        {/* Deleted AMPERE MIXER as requested by user */}
 
         {/* INDUSTRIAL MIXING TIMER (Moved to right of Mixer as requested) */}
         {(() => {
@@ -2845,7 +2837,7 @@ const ScadaDiagram = ({
         <div 
           className="absolute bg-[#0b1329]/95 backdrop-blur-md border border-[#38bdf8]/60 p-3 rounded-lg shadow-2xl z-20 w-64 text-white font-sans select-none flex flex-col gap-2.5 animation-fade-in"
           style={{
-            left: `${Math.min(90, Math.max(10, ((selectedManualDevice.x + 120) / 1250) * 100))}%`,
+            left: `${Math.min(90, Math.max(10, ((selectedManualDevice.x - 45) / 1085) * 100))}%`,
             top: `${Math.min(85, Math.max(20, ((selectedManualDevice.y + 30) / 640) * 100))}%`,
             transform: 'translate(-50%, -100%)',
             marginTop: '-12px'
@@ -9060,29 +9052,29 @@ export default function App() {
               }
               
               return (
-                <div key={key} className="bg-[#121c32]/50 border border-slate-800 rounded-[5px] p-2 flex flex-col justify-between overflow-hidden relative shadow-sm min-h-[58px] transition-all duration-250">
+                <div key={key} className="bg-[#121c32]/50 border border-slate-800 rounded-[5px] p-3 shadow-md flex flex-col justify-between overflow-hidden relative min-h-[148px] transition-all duration-250">
                   {/* Card Header (Target) */}
-                  <div className="flex justify-between items-center border-b border-slate-850 pb-0.5 select-none leading-none shrink-0">
-                    <span className="text-[8.5px] font-sans font-black text-slate-400 uppercase tracking-widest truncate">{label}</span>
-                    <span className="text-[9.5px] font-mono font-black text-slate-400">
+                  <div className="flex justify-between items-center border-b border-slate-850 pb-1.5 select-none leading-none shrink-0">
+                    <span className="text-[9px] font-sans font-black text-slate-400 uppercase tracking-widest truncate">{label}</span>
+                    <span className="text-[10px] font-mono font-black text-slate-400">
                       TARGET: <span className="text-amber-400 font-extrabold">{item.target.toFixed(0)}</span> <span className="text-[7.5px] text-slate-500 font-bold">KG</span>
                     </span>
                   </div>
                   
                   {/* Card Input/Value & LED/Jog Button Row */}
-                  <div className="flex justify-between items-center mt-1 select-none leading-none">
-                    <span className={`font-mono text-[22px] sm:text-[24px] md:text-[28px] font-black tracking-tighter leading-none ${
+                  <div className="flex justify-between items-center mt-2.5 mb-2 select-none leading-none">
+                    <span className={`font-mono text-[28px] sm:text-[32px] md:text-[36px] font-black tracking-tighter leading-none ${
                       item.isActive 
                         ? 'text-[#00ffd0] drop-shadow-[0_0_10px_rgba(0,255,208,0.6)] font-black' 
                         : item.isComplete 
                           ? 'text-[#00ff9c] drop-shadow-[0_0_6px_rgba(0,255,156,0.3)]' 
                           : 'text-slate-200'
                     }`}>
-                      {item.actual.toFixed(0)} <span className="text-[10px] font-sans font-black text-slate-550 lowercase tracking-widest">KG</span>
+                      {item.actual.toFixed(0)} <span className="text-[11px] font-sans font-black text-slate-500 lowercase tracking-widest">KG</span>
                     </span>
 
                     <div className="flex items-center gap-2">
-                      <span className={`w-2 h-2 rounded-full shrink-0 ${
+                      <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${
                         item.isActive 
                           ? 'bg-[#00ffd0] shadow-[0_0_10px_rgba(0,255,208,0.8)]' 
                           : item.isComplete 
@@ -9276,6 +9268,14 @@ export default function App() {
                       )}
                     </div>
                   </div>
+
+                  {/* Bottom Micro progress indicator to fill taller card space */}
+                  <div className="h-1.5 w-full bg-[#111827] mt-3 rounded-full overflow-hidden shrink-0 border border-slate-800/80">
+                    <div 
+                      className={`h-full transition-all duration-300 ${item.isComplete ? 'bg-[#00ff9c] shadow-[0_0_8px_rgba(0,255,156,0.6)]' : item.isActive ? 'bg-[#00ffd0] shadow-[0_0_8px_rgba(0,255,208,0.6)] animate-pulse' : 'bg-slate-750'}`}
+                      style={{ width: `${Math.min(100, (item.actual / (item.target || 1)) * 100)}%` }}
+                    />
+                  </div>
                 </div>
               );
             })}
@@ -9359,27 +9359,7 @@ export default function App() {
 
           {/* RIGHT PANEL: MIXING GAUGES AND PLC CONTROL PANEL BUTTON BOARD */}
           <div className="flex flex-col gap-3 min-h-0 overflow-y-auto scrollbar-thin pr-1 pb-4">
-            {/* ESTIMASI SLUMP CARD */}
-            <div className="bg-[#0b1329] border border-slate-800 rounded-[5px] p-2.5 flex flex-col justify-between overflow-hidden relative shadow-md shrink-0 h-[105px]">
-              <div className="flex justify-between items-center border-b border-slate-850 pb-1.5">
-                <span className="text-[8.5px] font-sans font-bold tracking-wider text-emerald-400 flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                  Estimasi Slump ( Cm)
-                </span>
-              </div>
-              <div className="flex items-baseline justify-between py-1">
-                <span className="font-mono text-[22px] font-black tracking-tight text-emerald-400">
-                  {mixerShaftActive ? (slump ? `${slump.toFixed(1)} cm` : "Calculating...") : (isRunning ? `${activeSlump}` : "?")}{" "}
-                </span>
-              </div>
-              {/* Slump Bar Indicator */}
-              <div className="w-full bg-[#1e293b]/55 h-1.5 rounded-full overflow-hidden mt-1">
-                <div 
-                  className="bg-emerald-400 h-full rounded-full transition-all duration-300"
-                  style={{ width: `${mixerShaftActive ? 68 : (isRunning ? 50 : 0)}%` }}
-                />
-              </div>
-            </div>
+            {/* Deleted Estimasi Slump as requested by user */}
 
             {/* CARD MANUAL PRODUCTION DETECTION SETTINGS */}
             <div className="bg-[#0b1329] border border-slate-800 rounded-[5px] p-2.5 flex flex-col gap-1.5 overflow-hidden relative shadow-md shrink-0">
