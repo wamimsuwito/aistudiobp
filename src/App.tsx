@@ -8762,6 +8762,7 @@ export default function App() {
   const tabletChannelRef = useRef<BroadcastChannel | null>(null);
   const tabletWsRef = useRef<WebSocket | null>(null);
   const incomingMessageHandlerRef = useRef<(rawMsg: string) => void>(() => {});
+  const sendRealtimeStateSyncRef = useRef<() => void>(() => {});
 
   const sendRealtimeStateSync = () => {
     const currentState = {
@@ -8807,8 +8808,21 @@ export default function App() {
     } catch (e) {}
   };
 
+  // Keep the sync function Ref updated on every render
+  sendRealtimeStateSyncRef.current = sendRealtimeStateSync;
+
   // Keep incoming message handler updated on every render to ensure it has the latest React scope
   incomingMessageHandlerRef.current = (rawMsg: string) => {
+    // SECURITY GUARD: Only the primary HMI instance (Electron app or active foreground browser tab) should respond to sync requests or control commands.
+    // This prevents background tabs or secondary browser windows from sending stale states or fighting over control commands.
+    const isElectronApp = !!(window as any).electronAPI;
+    const isForegroundTab = !document.hidden;
+    const isPrimaryHmi = isElectronApp || isForegroundTab;
+
+    if (!isPrimaryHmi) {
+      return; // Silently ignore to prevent collision
+    }
+
     try {
       const data = JSON.parse(rawMsg);
       if (data.type === 'REQUEST_STATE') {
@@ -8841,7 +8855,7 @@ export default function App() {
         tabletWsRef.current = ws;
         
         ws.onopen = () => {
-          sendRealtimeStateSync();
+          sendRealtimeStateSyncRef.current();
         };
 
         ws.onmessage = (event) => {
@@ -8865,7 +8879,7 @@ export default function App() {
     connectWS();
 
     setTimeout(() => {
-      sendRealtimeStateSync();
+      sendRealtimeStateSyncRef.current();
     }, 150);
 
     return () => {
@@ -8881,7 +8895,13 @@ export default function App() {
 
   // 2. Realtime Broadcaster (Fires lightweight transmissions on device/sensor status updates)
   useEffect(() => {
-    sendRealtimeStateSync();
+    const isElectronApp = !!(window as any).electronAPI;
+    const isForegroundTab = !document.hidden;
+    const isPrimaryHmi = isElectronApp || isForegroundTab;
+
+    if (isPrimaryHmi) {
+      sendRealtimeStateSync();
+    }
   }, [
     gatePasir1SiloOpen,
     gatePasir2SiloOpen,
