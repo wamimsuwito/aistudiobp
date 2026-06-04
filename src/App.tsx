@@ -5239,6 +5239,20 @@ export default function App() {
             },
             ...prev
           ]);
+
+          if (nextB >= targetBatchRef.current) {
+            stopBatch();
+            setIsDone(true);
+            setRelayLogs(prev => [
+              {
+                id: 'MANUAL-COMP-' + Math.random().toString(36).substring(7).toUpperCase(),
+                timestamp: new Date(),
+                message: `[PRODUKSI] SELURUH BATCH SELESAI (TOTAL: ${nextB} BATCH).`,
+                type: 'done'
+              },
+              ...prev
+            ]);
+          }
         } else {
           // Too short! DO NOT COUNT CYCLE
           setRelayLogs(prev => [
@@ -5279,51 +5293,57 @@ export default function App() {
     if (operationMode !== 'SIMULASI') return;
 
     const interval = setInterval(() => {
-      // In auto mode or semi-auto mode, if isRunning is true, the automatic weighing system handles it.
-      // So we only update manually if isRunning is false, OR if it's manual mode (!isAuto && batchingModeRef.current !== 'SEMI_AUTO').
-      if (isRunning && (isAuto || batchingModeRef.current === 'SEMI_AUTO')) return;
+      // In auto mode, if isRunning is true, the automatic weighing system handles it.
+      if (isRunning && isAuto) return;
 
       setScalesSync(prev => {
         const next = { ...prev };
         let changed = false;
 
+        // Determine if specific dosing is automatically controlled right now in SEMI_AUTO
+        const isSemi = batchingModeRef.current === 'SEMI_AUTO' && isRunning;
+        const isPasirAuto = isSemi && (semiAutoDosingRef.current.pasir1 || semiAutoDosingRef.current.pasir2);
+        const isBatuAuto = isSemi && (semiAutoDosingRef.current.batu1 || semiAutoDosingRef.current.batu2);
+        const isSemenAuto = isSemi && semiAutoDosingRef.current.semen;
+        const isAirAuto = isSemi && semiAutoDosingRef.current.air;
+
         // 1. Sand (Pasir)
-        if (gatePasir1SiloOpen || gatePasir2SiloOpen) {
+        if (!isPasirAuto && (gatePasir1SiloOpen || gatePasir2SiloOpen)) {
           const inc = (8 + Math.random() * 4) * 0.1; // 0.8 - 1.2 kg per tick
           next.pasir.actual = parseFloat(Math.min(1000, next.pasir.actual + inc).toFixed(1));
           changed = true;
         }
 
         // 2. Gravel (Batu)
-        if (gateBatu1SiloOpen || gateBatu2SiloOpen) {
+        if (!isBatuAuto && (gateBatu1SiloOpen || gateBatu2SiloOpen)) {
           const inc = (10 + Math.random() * 5) * 0.1; // 1.0 - 1.5 kg per tick
           next.batu.actual = parseFloat(Math.min(1000, next.batu.actual + inc).toFixed(1));
           changed = true;
         }
 
         // 3. Cement (Semen)
-        if (screwSemenActive) {
+        if (!isSemenAuto && screwSemenActive) {
           const inc = (6 + Math.random() * 3) * 0.1; // 0.6 - 0.9 kg per tick
           next.semen.actual = parseFloat(Math.min(800, next.semen.actual + inc).toFixed(1));
           changed = true;
         }
 
         // 4. Water (Air)
-        if (valveWaterActive) {
+        if (!isAirAuto && valveWaterActive) {
           const inc = (4 + Math.random() * 2) * 0.1; // 0.4 - 0.6 kg per tick
           next.air.actual = parseFloat(Math.min(400, next.air.actual + inc).toFixed(1));
           changed = true;
         }
 
         // 5. Semen discharge
-        if (gateSemenHopperOpen) {
+        if (!isSemenAuto && gateSemenHopperOpen) {
           const dec = (15 + Math.random() * 8) * 0.1;
           next.semen.actual = parseFloat(Math.max(0, next.semen.actual - dec).toFixed(1));
           changed = true;
         }
 
         // 6. Water discharge
-        if (gateWaterHopperOpen) {
+        if (!isAirAuto && gateWaterHopperOpen) {
           const dec = (10 + Math.random() * 5) * 0.1;
           next.air.actual = parseFloat(Math.max(0, next.air.actual - dec).toFixed(1));
           changed = true;
@@ -5333,11 +5353,11 @@ export default function App() {
         if (gatePasirHopperOpen || gateBatuHopperOpen) {
           const decPasir = (25 + Math.random() * 15) * 0.1;
           const decBatu = (30 + Math.random() * 20) * 0.1;
-          if (gatePasirHopperOpen) {
+          if (gatePasirHopperOpen && !isPasirAuto) {
             next.pasir.actual = parseFloat(Math.max(0, next.pasir.actual - decPasir).toFixed(1));
             changed = true;
           }
-          if (gateBatuHopperOpen) {
+          if (gateBatuHopperOpen && !isBatuAuto) {
             next.batu.actual = parseFloat(Math.max(0, next.batu.actual - decBatu).toFixed(1));
             changed = true;
           }
@@ -6781,6 +6801,10 @@ export default function App() {
 
             return updated;
           });
+        }
+
+        if (batchingModeRef.current === 'SEMI_AUTO') {
+          return;
         }
 
         // --- 1.8. INDUSTRIAL TRANSIT TICKER ---
