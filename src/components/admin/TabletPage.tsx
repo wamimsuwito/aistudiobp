@@ -6,7 +6,8 @@ import {
   Wifi, 
   WifiOff, 
   ShieldAlert, 
-  AlertTriangle 
+  AlertTriangle,
+  Download
 } from "lucide-react";
 
 interface RoundButtonProps {
@@ -24,44 +25,44 @@ const RoundButton: React.FC<RoundButtonProps> = ({
   onClick, 
   colorType = "green" 
 }) => {
-  let ledBgClass = "bg-[#1f2533] border-slate-700 shadow-[inset_0_3px_5px_rgba(0,0,0,0.8)] text-slate-500";
+  let ledBgClass = "bg-[#1f2533] border-slate-700 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)] text-slate-500";
   let glowClass = "";
   
   if (isActive && !isDisabled) {
     if (colorType === "green") {
       ledBgClass = "bg-[#00ff41] border-[#05ff62]";
-      glowClass = "shadow-[0_0_15px_#10b981,_inset_0_3px_8px_rgba(255,255,255,0.7)] text-white";
+      glowClass = "shadow-[0_0_10px_#10b981,_inset_0_2px_5px_rgba(255,255,255,0.7)] text-white";
     } else if (colorType === "amber") {
       ledBgClass = "bg-amber-500 border-amber-400";
-      glowClass = "shadow-[0_0_15px_#f59e0b,_inset_0_3px_8px_rgba(255,255,255,0.7)] text-white";
+      glowClass = "shadow-[0_0_10px_#f59e0b,_inset_0_2px_5px_rgba(255,255,255,0.7)] text-white";
     } else if (colorType === "red") {
       ledBgClass = "bg-rose-600 border-rose-500";
-      glowClass = "shadow-[0_0_15px_#e11d48,_inset_0_3px_8px_rgba(255,255,255,0.7)] text-white";
+      glowClass = "shadow-[0_0_10px_#e11d48,_inset_0_2px_5px_rgba(255,255,255,0.7)] text-white";
     } else if (colorType === "blue") {
       ledBgClass = "bg-cyan-500 border-cyan-400";
-      glowClass = "shadow-[0_0_15px_#06b6d4,_inset_0_3px_8px_rgba(255,255,255,0.7)] text-white";
+      glowClass = "shadow-[0_0_10px_#06b6d4,_inset_0_2px_5px_rgba(255,255,255,0.7)] text-white";
     }
   }
 
   return (
-    <div className="flex flex-col items-center justify-center space-y-1.5 p-1 shrink-0">
+    <div className="flex flex-col items-center justify-center space-y-1 p-0.5 shrink-0 select-none">
       <button
         disabled={isDisabled}
         onClick={onClick}
-        className="relative w-16 h-16 sm:w-[68px] sm:h-[68px] rounded-full flex items-center justify-center transition-all focus:outline-none select-none active:scale-95 cursor-pointer 
-          border-4 border-slate-700 bg-slate-850 shadow-[2px_4px_6px_rgba(0,0,0,0.5),_inset_0_-2px_4px_rgba(0,0,0,0.4)]
+        className="relative w-11 h-11 sm:w-[48px] sm:h-[48px] rounded-full flex items-center justify-center transition-all focus:outline-none select-none active:scale-95 cursor-pointer 
+          border-[3px] border-slate-700 bg-slate-850 shadow-[1px_2px_4px_rgba(0,0,0,0.5),_inset_0_-1.5px_3px_rgba(0,0,0,0.4)]
           disabled:opacity-35 disabled:cursor-not-allowed group"
       >
         {/* Inner Glowing Lamp Dome */}
-        <div className={`w-11 h-11 sm:w-12 sm:h-12 rounded-full transition-all duration-200 relative overflow-hidden flex items-center justify-center ${ledBgClass} ${glowClass}`}>
+        <div className={`w-7.5 h-7.5 sm:w-[32px] sm:h-[32px] rounded-full transition-all duration-200 relative overflow-hidden flex items-center justify-center ${ledBgClass} ${glowClass}`}>
           {/* Circular gloss effect (reflection specular) */}
-          <div className="absolute top-[2px] left-[5px] w-5 sm:w-6 h-2 bg-white/25 rounded-full transform -rotate-[15deg] blur-[0.2px]" />
-          <div className="absolute bottom-[2px] right-[5px] w-2 sm:w-2.5 h-1 bg-white/5 rounded-full transform -rotate-[15deg] blur-[0.5px]" />
+          <div className="absolute top-[1.5px] left-[3.5px] w-[14px] sm:w-[16px] h-1.5 bg-white/25 rounded-full transform -rotate-[15deg] blur-[0.2px]" />
+          <div className="absolute bottom-[1.5px] right-[3.5px] w-1.5 sm:w-[7px] h-0.5 bg-white/5 rounded-full transform -rotate-[15deg] blur-[0.5px]" />
         </div>
       </button>
       
       {/* Label underneath */}
-      <span className="text-[10px] sm:text-[10.5px] font-mono tracking-wider font-extrabold text-slate-350 select-none uppercase text-center w-full min-h-[22px] flex items-center justify-center leading-tight">
+      <span className="text-[8px] sm:text-[8.5px] font-mono tracking-wider font-extrabold text-slate-350 select-none uppercase text-center w-full min-h-[14px] flex items-center justify-center leading-none">
         {label}
       </span>
     </div>
@@ -107,6 +108,50 @@ export const TabletPage: React.FC = () => {
   const [lastSyncTime, setLastSyncTime] = useState<string>("Menghubungkan...");
   
   const tabletWsRef = useRef<WebSocket | null>(null);
+
+  // PWA Install Prompt state
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isStandalone, setIsStandalone] = useState<boolean>(false);
+
+  useEffect(() => {
+    // Check if running in standalone PWA mode
+    const isStandaloneMode = 
+      window.matchMedia('(display-mode: standalone)').matches || 
+      (window.navigator as any).standalone === true;
+    setIsStandalone(isStandaloneMode);
+
+    const handleBeforeInstallPrompt = (e: any) => {
+      // Prevent browser default installation banner
+      e.preventDefault();
+      // Store the event so we can trigger it later
+      setDeferredPrompt(e);
+      console.log('PWA: beforeinstallprompt event captured.');
+    };
+
+    const handleAppInstalled = () => {
+      setDeferredPrompt(null);
+      setIsStandalone(true);
+      console.log('Lisa Batch Remote was successfully installed as PWA! Standalone mode active.');
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', handleAppInstalled);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
+    };
+  }, []);
+
+  const triggerPwaInstall = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    console.log(`PWA Installation outcome: ${outcome}`);
+    if (outcome === 'accepted') {
+      setDeferredPrompt(null);
+    }
+  };
 
   // Setup BroadcastChannel and WebSocket for local communication
   useEffect(() => {
@@ -191,8 +236,15 @@ export const TabletPage: React.FC = () => {
     connectWS();
     // Request state initially
     setTimeout(requestInitialState, 300);
-    // Request state periodically to sync over BroadcastChannel when websocket is offline (e.g. in dev cloud environment)
-    const stateInterval = setInterval(requestInitialState, 3000);
+    // Request state periodically to sync, and check if connection is active
+    const stateInterval = setInterval(() => {
+      requestInitialState();
+      
+      // Watchdog: If there have been no state updates for more than 7.5 seconds, transition to offline state
+      if (Date.now() - lastActiveTime > 7500) {
+        setIsOnline(false);
+      }
+    }, 2500);
 
     return () => {
       channel.close();
@@ -284,51 +336,62 @@ export const TabletPage: React.FC = () => {
     <div className="min-h-screen bg-[#111622] text-slate-100 flex flex-col font-sans select-none overflow-hidden">
       
       {/* Top Header Bar */}
-      <header className="h-[60px] bg-[#1a2235] border-b border-slate-800 flex items-center justify-between px-6 shrink-0 shadow-md">
+      <header className="h-[48px] bg-[#1a2235] border-b border-slate-800 flex items-center justify-between px-6 shrink-0 shadow-md">
         <div className="flex items-center gap-3">
-          <div className="p-2 bg-slate-900 rounded border border-slate-700/60 text-cyan-400">
-            <Tablet size={22} className={isOnline ? "animate-pulse" : ""} />
+          <div className="p-1.5 bg-slate-900 rounded border border-slate-700/60 text-cyan-400">
+            <Tablet size={18} className={isOnline ? "animate-pulse" : ""} />
           </div>
           <div>
-            <h1 className="text-[13px] font-black tracking-widest uppercase text-white font-mono flex items-center gap-2">
+            <h1 className="text-[11px] font-black tracking-widest uppercase text-white font-mono flex items-center gap-1.5">
               LISA BATCH SMART-REMOTE
-              <span className="text-[9px] bg-cyan-950 px-2 py-0.5 rounded text-cyan-400 border border-cyan-800">TABLET</span>
+              <span className="text-[8px] bg-cyan-950 px-1.5 py-0.5 rounded text-cyan-400 border border-cyan-800 font-bold">TABLET</span>
             </h1>
-            <p className="text-[9px] font-mono text-slate-400 uppercase tracking-wider">
+            <p className="text-[8px] font-mono text-slate-400 uppercase tracking-wider leading-none mt-0.5">
               PT. Farika Riau Perkasa • Mobile Operator Terminal
             </p>
           </div>
         </div>
 
         {/* Realtime Status Alerts */}
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
+          {deferredPrompt && !isStandalone && (
+            <button
+              onClick={triggerPwaInstall}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-500/20 px-2.5 py-0.5 rounded text-[8px] font-mono font-black uppercase transition-all flex items-center gap-1 cursor-pointer animate-pulse"
+              title="Install Lisa Batch Remote"
+            >
+              <Download size={11} className="transition-transform group-hover:translate-y-0.5" />
+              <span>Install App</span>
+            </button>
+          )}
+
           {mainPlantIsAuto && (
-            <div className="bg-cyan-950/40 border border-cyan-800/80 px-2.5 py-1 rounded flex items-center gap-1.5 animate-pulse text-cyan-400">
-              <AlertTriangle size={13} className="text-cyan-450" />
-              <span className="text-[8.5px] font-mono font-black uppercase">SISTEM UTAMA: AUTO MODE ACTIVE</span>
+            <div className="bg-cyan-950/40 border border-cyan-800/80 px-2 py-0.5 rounded flex items-center gap-1 animate-pulse text-cyan-400">
+              <AlertTriangle size={11} className="text-cyan-450" />
+              <span className="text-[7.5px] font-mono font-black uppercase">SISTEM UTAMA: AUTO MODE ACTIVE</span>
             </div>
           )}
 
-          <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-[#0a0f18] border border-slate-800 text-[10px] font-mono text-slate-400">
+          <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#0a0f18] border border-slate-800 text-[8.5px] font-mono text-slate-400">
             <span>SYNC:</span>
             <span className="text-cyan-400 font-bold">{lastSyncTime}</span>
           </div>
 
           {/* Connection Wi-Fi Indicator */}
-          <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-mono font-extrabold uppercase border ${
+          <div className={`flex items-center gap-1 px-2 py-0.5 rounded text-[8.5px] font-mono font-extrabold uppercase border ${
             isOnline 
               ? "bg-emerald-950/20 border-emerald-800/50 text-emerald-400" 
               : "bg-rose-950/20 border-rose-800/50 text-rose-400 animate-pulse"
           }`}>
-            {isOnline ? <Wifi size={13} /> : <WifiOff size={13} />}
+            {isOnline ? <Wifi size={11} /> : <WifiOff size={11} />}
             <span>{isOnline ? "WiFi Connected" : "WiFi Offline"}</span>
           </div>
 
           {/* Mode Switch button Control / Monitor */}
-          <div className="bg-[#0b101c] p-1 rounded-md border border-slate-800 flex items-center">
+          <div className="bg-[#0b101c] p-0.5 rounded-md border border-slate-800 flex items-center">
             <button
               onClick={() => setMode("MONITORING")}
-              className={`px-3 py-1 text-[9.5px] font-mono font-black uppercase transition-all rounded-[3px] cursor-pointer ${
+              className={`px-2 py-0.5 text-[8.5px] font-mono font-black uppercase transition-all rounded-[3px] cursor-pointer ${
                 mode === "MONITORING"
                   ? "bg-slate-700 text-white shadow-inner font-extrabold"
                   : "text-slate-500 hover:text-slate-300"
@@ -344,13 +407,13 @@ export const TabletPage: React.FC = () => {
                   setShowPinModal(true);
                 }
               }}
-              className={`px-3 py-1 text-[9.5px] font-mono font-black uppercase transition-all rounded-[3px] cursor-pointer flex items-center gap-1 ${
+              className={`px-2 py-0.5 text-[8.5px] font-mono font-black uppercase transition-all rounded-[3px] cursor-pointer flex items-center gap-0.5 ${
                 mode === "CONTROL"
                   ? "bg-emerald-600 text-white font-extrabold"
                   : "text-slate-500 hover:text-slate-300"
               }`}
             >
-              {mode === "CONTROL" ? <Unlock size={11} /> : <Lock size={11} />}
+              {mode === "CONTROL" ? <Unlock size={9} /> : <Lock size={9} />}
               Control
             </button>
           </div>
@@ -358,30 +421,30 @@ export const TabletPage: React.FC = () => {
       </header>
 
       {/* Main Responsive Layout for Tablet mimicking physical controls */}
-      <main className="flex-grow p-4 overflow-y-auto space-y-6">
+      <main className="flex-grow p-2.5 sm:p-3 overflow-y-auto space-y-3">
         
         {/* UPPER MIMIC PANEL GROUP (MATERIAL INFEED & STORAGE) */}
-        <div className="bg-[#121622] rounded-lg border border-slate-700/70 p-4 shadow-xl">
-          <div className="flex items-center justify-between mb-4 border-b border-slate-750 pb-2">
-            <div className="flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse border border-cyan-300" />
-              <span className="text-xs font-mono font-extrabold text-cyan-400 tracking-wider">PANEL KENDALI MIMIK ATAS : STORAGE & BIN INFEED</span>
+        <div className="bg-[#121622] rounded-lg border border-slate-700/70 p-2.5 shadow-xl">
+          <div className="flex items-center justify-between mb-2 border-b border-slate-75 pb-1.5">
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse border border-cyan-300" />
+              <span className="text-[10.5px] font-mono font-extrabold text-cyan-400 tracking-wider">PANEL KENDALI MIMIK ATAS : STORAGE & BIN INFEED</span>
             </div>
-            <span className="text-[9px] font-mono text-slate-500 uppercase tracking-widest">[ SEKSI 01 - STORAGE ]</span>
+            <span className="text-[8px] font-mono text-slate-500 uppercase tracking-widest">[ SEKSI 01 - STORAGE ]</span>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-2.5">
             
             {/* 1. CLUSTER PASIR */}
-            <div className="lg:col-span-3 bg-[#191e2b] rounded-md border-2 border-slate-700/60 p-3 h-[240px] flex flex-col justify-between relative shadow-inner">
+            <div className="lg:col-span-3 bg-[#191e2b] rounded-md border-2 border-slate-700/60 p-2 h-[170px] flex flex-col justify-between relative shadow-inner">
               {/* Corner screws for HMI feel */}
-              <div className="absolute top-1 left-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
-              <div className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
-              <div className="absolute bottom-1 left-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
-              <div className="absolute bottom-1 right-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute top-0.5 left-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute top-0.5 right-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute bottom-0.5 left-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute bottom-0.5 right-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
 
               <div className="text-center">
-                <span className="text-[10px] font-mono font-black text-slate-400 tracking-widest uppercase">
+                <span className="text-[9px] font-mono font-black text-slate-400 tracking-widest uppercase">
                   SECTION 01-A : PASIR
                 </span>
               </div>
@@ -403,7 +466,7 @@ export const TabletPage: React.FC = () => {
               </div>
 
               {/* dump pasir centered below */}
-              <div className="flex justify-center items-center pb-2">
+              <div className="flex justify-center items-center pb-0.5">
                 <RoundButton
                   label="dump pasir"
                   isActive={deviceStates.gatePasirHopperOpen}
@@ -414,15 +477,15 @@ export const TabletPage: React.FC = () => {
             </div>
 
             {/* 2. CLUSTER BATU */}
-            <div className="lg:col-span-3 bg-[#191e2b] rounded-md border-2 border-slate-700/60 p-3 h-[240px] flex flex-col justify-between relative shadow-inner">
+            <div className="lg:col-span-3 bg-[#191e2b] rounded-md border-2 border-slate-700/60 p-2 h-[170px] flex flex-col justify-between relative shadow-inner">
               {/* Corner screws for HMI feel */}
-              <div className="absolute top-1 left-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
-              <div className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
-              <div className="absolute bottom-1 left-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
-              <div className="absolute bottom-1 right-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute top-0.5 left-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute top-0.5 right-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute bottom-0.5 left-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute bottom-0.5 right-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
 
               <div className="text-center">
-                <span className="text-[10px] font-mono font-black text-slate-400 tracking-widest uppercase">
+                <span className="text-[9px] font-mono font-black text-slate-400 tracking-widest uppercase">
                   SECTION 01-B : BATU
                 </span>
               </div>
@@ -444,7 +507,7 @@ export const TabletPage: React.FC = () => {
               </div>
 
               {/* dump batu centered below */}
-              <div className="flex justify-center items-center pb-2">
+              <div className="flex justify-center items-center pb-0.5">
                 <RoundButton
                   label="dump batu"
                   isActive={deviceStates.gateBatuHopperOpen}
@@ -455,22 +518,22 @@ export const TabletPage: React.FC = () => {
             </div>
 
             {/* 3. CLUSTER SEMEN SILO (Split Left-Right) */}
-            <div className="lg:col-span-4 bg-[#191e2b] rounded-md border-2 border-slate-700/60 p-3 h-[240px] flex flex-col justify-between relative shadow-inner">
+            <div className="lg:col-span-4 bg-[#191e2b] rounded-md border-2 border-slate-700/60 p-2 h-[170px] flex flex-col justify-between relative shadow-inner">
               {/* Corner screws for HMI feel */}
-              <div className="absolute top-1 left-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
-              <div className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
-              <div className="absolute bottom-1 left-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
-              <div className="absolute bottom-1 right-1 w-1.5 h-1.5 rounded-full bg-slate-805 border border-slate-600/35" />
+              <div className="absolute top-0.5 left-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute top-0.5 right-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute bottom-0.5 left-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute bottom-0.5 right-0.5 w-1 h-1 rounded-full bg-slate-805 border border-slate-600/35" />
 
               <div className="text-center">
-                <span className="text-[10px] font-mono font-black text-slate-400 tracking-widest uppercase">
+                <span className="text-[9px] font-mono font-black text-slate-400 tracking-widest uppercase">
                   SECTION 01-C : SILO SEMEN
                 </span>
               </div>
 
-              <div className="flex items-stretch h-full mt-1.5">
+              <div className="flex items-stretch h-full mt-1">
                 {/* Left of dotted line: silo 1, silo 2, silo 4, silo 5 */}
-                <div className="w-[66%] grid grid-cols-2 gap-y-1 gap-x-2 justify-items-center items-center pr-2">
+                <div className="w-[66%] grid grid-cols-2 gap-y-0.5 gap-x-1.5 justify-items-center items-center pr-1.5">
                   <RoundButton
                     label="silo 1"
                     isActive={getStatusOfSilo(1)}
@@ -502,10 +565,10 @@ export const TabletPage: React.FC = () => {
                 </div>
 
                 {/* Vertical Dotted Line Division */}
-                <div className="border-l-2 border-dashed border-slate-600/50 self-stretch my-2 shrink-0" />
+                <div className="border-l-2 border-dashed border-slate-600/50 self-stretch my-1.5 shrink-0" />
 
                 {/* Right of dotted line: silo 3, silo 6 */}
-                <div className="w-[33%] flex flex-col justify-around items-center pl-2">
+                <div className="w-[33%] flex flex-col justify-around items-center pl-1.5">
                   <RoundButton
                     label="silo 3"
                     isActive={getStatusOfSilo(3)}
@@ -525,15 +588,15 @@ export const TabletPage: React.FC = () => {
             </div>
 
             {/* 4. LOGISTICS TOP CLUSTER */}
-            <div className="lg:col-span-2 bg-[#191e2b] rounded-md border-2 border-slate-700/60 p-3 h-[240px] flex flex-col justify-between relative shadow-inner">
+            <div className="lg:col-span-2 bg-[#191e2b] rounded-md border-2 border-slate-700/60 p-2 h-[170px] flex flex-col justify-between relative shadow-inner">
               {/* Corner screws for HMI feel */}
-              <div className="absolute top-1 left-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
-              <div className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
-              <div className="absolute bottom-1 left-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
-              <div className="absolute bottom-1 right-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute top-0.5 left-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute top-0.5 right-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute bottom-0.5 left-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute bottom-0.5 right-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
 
               <div className="text-center">
-                <span className="text-[10px] font-mono font-black text-slate-400 tracking-widest uppercase">
+                <span className="text-[9px] font-mono font-black text-slate-400 tracking-widest uppercase">
                   SECTION 01-D : AUX TOP
                 </span>
               </div>
@@ -559,27 +622,27 @@ export const TabletPage: React.FC = () => {
         </div>
 
         {/* LOWER MIMIC PANEL GROUP (DISPATCH, MIXING & OUTPUT) */}
-        <div className="bg-[#121622] rounded-lg border border-slate-700/70 p-4 shadow-xl">
-          <div className="flex items-center justify-between mb-4 border-b border-slate-750 pb-2">
-            <div className="flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse border border-emerald-300" />
-              <span className="text-xs font-mono font-extrabold text-emerald-400 tracking-wider">PANEL KENDALI MIMIK BAWAH : PROSES ADONAN & PENGELUARAN</span>
+        <div className="bg-[#121622] rounded-lg border border-slate-700/70 p-2.5 shadow-xl">
+          <div className="flex items-center justify-between mb-2 border-b border-slate-75 pb-1.5">
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse border border-emerald-300" />
+              <span className="text-[10.5px] font-mono font-extrabold text-emerald-400 tracking-wider">PANEL KENDALI MIMIK BAWAH : PROSES ADONAN & PENGELUARAN</span>
             </div>
-            <span className="text-[9px] font-mono text-slate-500 uppercase tracking-widest">[ SEKSI 02 - PROCESS ]</span>
+            <span className="text-[8px] font-mono text-slate-500 uppercase tracking-widest">[ SEKSI 02 - PROCESS ]</span>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-2.5">
             
             {/* 5. CLUSTER ADMIX */}
-            <div className="lg:col-span-3 bg-[#191e2b] rounded-md border-2 border-slate-700/60 p-3 h-[240px] flex flex-col justify-between relative shadow-inner">
+            <div className="lg:col-span-3 bg-[#191e2b] rounded-md border-2 border-slate-700/60 p-2 h-[170px] flex flex-col justify-between relative shadow-inner">
               {/* Corner screws for HMI feel */}
-              <div className="absolute top-1 left-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
-              <div className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
-              <div className="absolute bottom-1 left-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
-              <div className="absolute bottom-1 right-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute top-0.5 left-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute top-0.5 right-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute bottom-0.5 left-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute bottom-0.5 right-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
 
               <div className="text-center">
-                <span className="text-[10px] font-mono font-black text-slate-400 tracking-widest uppercase">
+                <span className="text-[9px] font-mono font-black text-slate-400 tracking-widest uppercase">
                   SECTION 02-A : EXP ADMIX
                 </span>
               </div>
@@ -602,21 +665,21 @@ export const TabletPage: React.FC = () => {
             </div>
 
             {/* 6. CLUSTER CONVEYOR BAWAH & VIBRATOR */}
-            <div className="lg:col-span-3 bg-[#191e2b] rounded-md border-2 border-slate-700/60 p-3 h-[240px] flex flex-col justify-between relative shadow-inner">
+            <div className="lg:col-span-3 bg-[#191e2b] rounded-md border-2 border-slate-700/60 p-2 h-[170px] flex flex-col justify-between relative shadow-inner">
               {/* Corner screws for HMI feel */}
-              <div className="absolute top-1 left-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
-              <div className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-slate-805 border border-slate-600/35" />
-              <div className="absolute bottom-1 left-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
-              <div className="absolute bottom-1 right-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute top-0.5 left-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute top-0.5 right-0.5 w-1 h-1 rounded-full bg-slate-805 border border-slate-600/35" />
+              <div className="absolute bottom-0.5 left-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute bottom-0.5 right-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
 
               <div className="text-center">
-                <span className="text-[10px] font-mono font-black text-slate-400 tracking-widest uppercase">
+                <span className="text-[9px] font-mono font-black text-slate-400 tracking-widest uppercase">
                   SECTION 02-B : FEEDERS
                 </span>
               </div>
 
               {/* konveyor bawah (top), vibrator (bottom) */}
-              <div className="flex flex-col items-center justify-around h-full gap-2 py-2">
+              <div className="flex flex-col items-center justify-around h-full gap-1 py-1">
                 <RoundButton
                   label="konveyor bawah"
                   isActive={deviceStates.conveyorBottomActive}
@@ -633,22 +696,22 @@ export const TabletPage: React.FC = () => {
             </div>
 
             {/* 7. CLUSTER LIQUID SYSTEM & DUMP SEMEN (Divided Left-Right) */}
-            <div className="lg:col-span-4 bg-[#191e2b] rounded-md border-2 border-slate-700/60 p-3 h-[240px] flex flex-col justify-between relative shadow-inner">
+            <div className="lg:col-span-4 bg-[#191e2b] rounded-md border-2 border-slate-700/60 p-2 h-[170px] flex flex-col justify-between relative shadow-inner">
               {/* Corner screws for HMI feel */}
-              <div className="absolute top-1 left-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
-              <div className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
-              <div className="absolute bottom-1 left-1 w-1.5 h-1.5 rounded-full bg-slate-805 border border-slate-600/35" />
-              <div className="absolute bottom-1 right-1 w-1.5 h-1.5 rounded-full bg-slate-805 border border-slate-600/35" />
+              <div className="absolute top-0.5 left-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute top-0.5 right-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute bottom-0.5 left-0.5 w-1 h-1 rounded-full bg-slate-850 border border-slate-600/35" />
+              <div className="absolute bottom-0.5 right-0.5 w-1 h-1 rounded-full bg-slate-805 border border-slate-600/35" />
 
               <div className="text-center">
-                <span className="text-[10px] font-mono font-black text-slate-400 tracking-widest uppercase">
+                <span className="text-[9px] font-mono font-black text-slate-400 tracking-widest uppercase">
                   SECTION 02-C : AIR & DISCHARGE SEMEN
                 </span>
               </div>
 
-              <div className="flex items-stretch h-full mt-2">
+              <div className="flex items-stretch h-full mt-1">
                 {/* Left of dotted: Air timbang, dump air side-by-side */}
-                <div className="w-[66%] flex justify-around items-center pr-2">
+                <div className="w-[66%] flex justify-around items-center pr-1.5">
                   <RoundButton
                     label="Air timbang"
                     isActive={deviceStates.valveWaterActive}
@@ -664,10 +727,10 @@ export const TabletPage: React.FC = () => {
                 </div>
 
                 {/* Vertical Dotted Line Division */}
-                <div className="border-l-2 border-dashed border-slate-600/50 self-stretch my-2 shrink-0" />
+                <div className="border-l-2 border-dashed border-slate-600/50 self-stretch my-1.5 shrink-0" />
 
                 {/* Right of dotted: dump semen lower down */}
-                <div className="w-[33%] flex items-end justify-center pl-2 pb-6">
+                <div className="w-[33%] flex items-end justify-center pl-1.5 pb-2">
                   <RoundButton
                     label="dump semen"
                     isActive={deviceStates.gateSemenHopperOpen}
@@ -679,20 +742,20 @@ export const TabletPage: React.FC = () => {
             </div>
 
             {/* 8. CLUSTER MIXER CONTROL BLOCK */}
-            <div className="lg:col-span-2 bg-[#191e2b] rounded-md border-2 border-slate-700/60 p-3 h-[240px] flex flex-col justify-between relative shadow-inner">
+            <div className="lg:col-span-2 bg-[#191e2b] rounded-md border-2 border-slate-700/60 p-2 h-[170px] flex flex-col justify-between relative shadow-inner">
               {/* Corner screws for HMI feel */}
-              <div className="absolute top-1 left-1 w-1.5 h-1.5 rounded-full bg-slate-805 border border-slate-600/35" />
-              <div className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
-              <div className="absolute bottom-1 left-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
-              <div className="absolute bottom-1 right-1 w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute top-0.5 left-0.5 w-1 h-1 rounded-full bg-slate-805 border border-slate-600/35" />
+              <div className="absolute top-0.5 right-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute bottom-0.5 left-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
+              <div className="absolute bottom-0.5 right-0.5 w-1 h-1 rounded-full bg-slate-800 border border-slate-600/35" />
 
               <div className="text-center">
-                <span className="text-[10px] font-mono font-black text-slate-400 tracking-widest uppercase">
+                <span className="text-[9px] font-mono font-black text-slate-400 tracking-widest uppercase">
                   SECTION 02-D : MIX UNIT
                 </span>
               </div>
 
-              <div className="flex flex-col justify-center flex-grow py-1 space-y-1">
+              <div className="flex flex-col justify-center flex-grow py-0.5 space-y-0.5">
                 {/* Row 1: mixer normal green indicator, klakson amber warn button */}
                 <div className="flex justify-around items-center">
                   <RoundButton
@@ -801,6 +864,42 @@ export const TabletPage: React.FC = () => {
                 DEFAULT PIN SEED: 1234 atau 8888
               </span>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Connection Lost Off-Air Screen */}
+      {!isOnline && (
+        <div className="absolute inset-0 bg-[#0c0f17]/95 z-50 flex flex-col items-center justify-center p-6 text-center animate-fade-in select-none">
+          <div className="bg-rose-950/20 border-2 border-rose-600/30 p-8 rounded-2xl max-w-sm shadow-[0_0_50px_rgba(225,29,72,0.15)] flex flex-col items-center gap-5 relative overflow-hidden backdrop-blur-md">
+            {/* Glowing accents */}
+            <div className="absolute -top-12 -left-12 w-24 h-24 bg-rose-500/5 rounded-full blur-2xl" />
+            <div className="absolute -bottom-12 -right-12 w-24 h-24 bg-rose-500/5 rounded-full blur-2xl" />
+            
+            <div className="relative">
+              <div className="absolute inset-0 rounded-full bg-rose-500/10 animate-ping" />
+              <div className="p-3 bg-rose-900/20 border border-rose-500/30 rounded-full text-rose-500 relative">
+                <WifiOff size={36} className="animate-pulse" />
+              </div>
+            </div>
+            
+            <div className="space-y-1.5">
+              <h2 className="text-base font-black tracking-wider text-rose-400 font-mono uppercase">
+                Koneksi ke HMI Terputus
+              </h2>
+              <p className="text-[10px] text-slate-405 font-sans font-medium leading-relaxed max-w-xs">
+                Gagal tersambung ke Terminal Lisa Batch Plant HMI Utama. Hubungkan tablet ke jaringan Wi-Fi lokal yang sama dengan komputer server HMI.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 justify-center py-1.5 px-3 rounded bg-slate-900 border border-slate-800 text-[8.5px] font-mono text-cyan-400 font-bold tracking-wider animate-pulse">
+              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
+              MENCOBA REKONEKSI...
+            </div>
+            
+            <p className="text-[7.5px] text-slate-550 font-mono leading-none">
+              WiFi Endpoint: ws://{window.location.hostname || "localhost"}:3001
+            </p>
           </div>
         </div>
       )}

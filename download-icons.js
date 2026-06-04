@@ -127,6 +127,23 @@ async function start() {
     console.error('⚠ Error: Could not prepare PNG file. Cannot generate .ico file.');
   }
 
+  // 3. Generate PWA launcher icons inside the /public directory for Android PWA compliance
+  try {
+    const publicDir = path.join(process.cwd(), 'public');
+    if (!fs.existsSync(publicDir)) {
+      fs.mkdirSync(publicDir, { recursive: true });
+    }
+    
+    // Read the compiled build image if available, else fallback
+    const finalPngBuffer = pngExists ? fs.readFileSync(pngPath) : Buffer.from(BASE64_FALLBACK_PNG, 'base64');
+    
+    fs.writeFileSync(path.join(publicDir, 'icon-192.png'), finalPngBuffer);
+    fs.writeFileSync(path.join(publicDir, 'icon-512.png'), finalPngBuffer);
+    console.log('✓ Cloned raw binary PNG launcher icons in /public/ for professional PWA setup!');
+  } catch (err) {
+    console.error('⚠ Failed to generate PWA PNG files:', err.message);
+  }
+
   console.log('✓ HMI Launcher & Installer asset preparations complete!');
 }
 
