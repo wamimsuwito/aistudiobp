@@ -7,7 +7,8 @@ import {
   WifiOff, 
   ShieldAlert, 
   AlertTriangle,
-  Download
+  Download,
+  Cpu
 } from "lucide-react";
 
 interface RoundButtonProps {
@@ -28,7 +29,7 @@ const RoundButton: React.FC<RoundButtonProps> = ({
   let ledBgClass = "bg-[#1f2533] border-slate-700 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)] text-slate-500";
   let glowClass = "";
   
-  if (isActive && !isDisabled) {
+  if (isActive) {
     if (colorType === "green") {
       ledBgClass = "bg-[#00ff41] border-[#05ff62]";
       glowClass = "shadow-[0_0_10px_#10b981,_inset_0_2px_5px_rgba(255,255,255,0.7)] text-white";
@@ -51,7 +52,7 @@ const RoundButton: React.FC<RoundButtonProps> = ({
         onClick={onClick}
         className="relative w-11 h-11 sm:w-[48px] sm:h-[48px] rounded-full flex items-center justify-center transition-all focus:outline-none select-none active:scale-95 cursor-pointer 
           border-[3px] border-slate-700 bg-slate-850 shadow-[1px_2px_4px_rgba(0,0,0,0.5),_inset_0_-1.5px_3px_rgba(0,0,0,0.4)]
-          disabled:opacity-35 disabled:cursor-not-allowed group"
+          disabled:cursor-not-allowed group"
       >
         {/* Inner Glowing Lamp Dome */}
         <div className={`w-7.5 h-7.5 sm:w-[32px] sm:h-[32px] rounded-full transition-all duration-200 relative overflow-hidden flex items-center justify-center ${ledBgClass} ${glowClass}`}>
@@ -93,10 +94,55 @@ export const TabletPage: React.FC = () => {
     mixerShaftActive: false,
     admixInActive: false,
     admixOutActive: false,
-    isAuto: false
+    isAuto: false,
+    isRunning: false,
+    activeRecipeName: "",
+    activeVolume: 0,
+    activeMixingCount: 1,
+    productionState: "IDLE"
   });
 
+  // Job mix & batching selections states
+  const [jobMixes, setJobMixes] = useState<any[]>(() => {
+    const saved = localStorage.getItem("batching_plant_jmf_list");
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch (e) {}
+    }
+    return [
+      { id: "jmf-1", mutuBeton: "K225" },
+      { id: "jmf-2", mutuBeton: "K250" },
+      { id: "jmf-3", mutuBeton: "K300" }
+    ];
+  });
+
+  const [selectedMutu, setSelectedMutu] = useState<string>(() => {
+    return jobMixes[0]?.mutuBeton || "K225";
+  });
+  const [selectedVolume, setSelectedVolume] = useState<number>(2);
+  const [selectedJumlahMix, setSelectedJumlahMix] = useState<number>(1);
+
+  const handleRemoteStartBatch = () => {
+    if (mode !== "CONTROL") return;
+    publishCommand({
+      type: "START_BATCH",
+      recipeId: selectedMutu,
+      volume: selectedVolume,
+      mixingCycles: selectedJumlahMix
+    });
+  };
+
+  const handleRemoteStopBatch = () => {
+    if (mode !== "CONTROL") return;
+    publishCommand({
+      type: "STOP_BATCH"
+    });
+  };
+
   const [mainPlantIsAuto, setMainPlantIsAuto] = useState<boolean>(false);
+  const [mainPlantBatchingMode, setMainPlantBatchingMode] = useState<'MANUAL' | 'SEMI_AUTO' | 'AUTO'>('AUTO');
   const [mode, setMode] = useState<"MONITORING" | "CONTROL">("MONITORING");
   const [pinInput, setPinInput] = useState<string>("");
   const [showPinModal, setShowPinModal] = useState<boolean>(false);
@@ -177,6 +223,8 @@ export const TabletPage: React.FC = () => {
         const data = JSON.parse(rawMsg);
         if (data.type === 'STATE_UPDATE' && data.states) {
           setMainPlantIsAuto(!!data.states.isAuto);
+          const plantMode = data.states.batchingMode || (data.states.isAuto ? 'AUTO' : 'MANUAL');
+          setMainPlantBatchingMode(plantMode);
           const overrideStates = {
             ...data.states,
             isAuto: false
@@ -365,10 +413,20 @@ export const TabletPage: React.FC = () => {
             </button>
           )}
 
-          {mainPlantIsAuto && (
+          {mainPlantBatchingMode === 'AUTO' ? (
             <div className="bg-cyan-950/40 border border-cyan-800/80 px-2 py-0.5 rounded flex items-center gap-1 animate-pulse text-cyan-400">
-              <AlertTriangle size={11} className="text-cyan-450" />
+              <AlertTriangle size={11} className="text-cyan-400" />
               <span className="text-[7.5px] font-mono font-black uppercase">SISTEM UTAMA: AUTO MODE ACTIVE</span>
+            </div>
+          ) : mainPlantBatchingMode === 'SEMI_AUTO' ? (
+            <div className="bg-amber-950/40 border border-amber-800/80 px-2 py-0.5 rounded flex items-center gap-1 animate-pulse text-amber-500">
+              <AlertTriangle size={11} className="text-amber-500" />
+              <span className="text-[7.5px] font-mono font-black uppercase">SISTEM UTAMA: SEMI-AUTO ACTIVE</span>
+            </div>
+          ) : (
+            <div className="bg-slate-950/40 border border-slate-800 px-2 py-0.5 rounded flex items-center gap-1 text-slate-400">
+              <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
+              <span className="text-[7.5px] font-mono font-black uppercase">SISTEM UTAMA: MANUAL ACTIVE</span>
             </div>
           )}
 
@@ -422,6 +480,90 @@ export const TabletPage: React.FC = () => {
 
       {/* Main Responsive Layout for Tablet mimicking physical controls */}
       <main className="flex-grow p-2.5 sm:p-3 overflow-y-auto space-y-3">
+        
+        {/* MASTER BATCHING CONTROL MODE CARD */}
+        <div className="bg-[#111625] rounded-lg border-2 border-slate-700/85 p-3 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-3 relative">
+          <div className="absolute inset-0 bg-[#070b13]/25 rounded-md pointer-events-none" />
+
+          <div className="flex items-center gap-2.5 z-10">
+            <div className="p-1.5 rounded bg-[#1c2333] border border-slate-700 text-amber-500">
+              <Cpu size={16} />
+            </div>
+            <div>
+              <h3 className="text-[10px] font-mono font-black uppercase text-slate-300 tracking-wider">Lisa Batching HMI Controller</h3>
+              <p className="text-[8px] font-sans text-slate-500">Switch target plant production mode safely across local SCADA LAN link</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 z-10 shrink-0">
+            <span className="text-[8px] font-mono text-slate-400 font-extrabold uppercase">MAIN PLANT MODE:</span>
+            
+            <div className="bg-[#070b14] p-1 rounded-md border border-slate-800/80 flex items-center gap-1.5 shadow-inner">
+              <button
+                disabled={mode !== "CONTROL"}
+                onClick={() => {
+                  publishCommand({
+                    type: "SET_BATCHING_MODE",
+                    mode: "MANUAL"
+                  });
+                }}
+                className={`px-3 py-1 text-[9px] font-mono font-black uppercase transition-all rounded cursor-pointer ${
+                  mainPlantBatchingMode === 'MANUAL'
+                    ? "bg-slate-700 text-white border border-slate-600 shadow"
+                    : mode === "CONTROL"
+                      ? "text-slate-500 hover:text-slate-300 border border-transparent"
+                      : "text-slate-600/50 cursor-not-allowed border border-transparent"
+                }`}
+              >
+                Manual
+              </button>
+              
+              <button
+                disabled={mode !== "CONTROL"}
+                onClick={() => {
+                  publishCommand({
+                    type: "SET_BATCHING_MODE",
+                    mode: "SEMI_AUTO"
+                  });
+                }}
+                className={`px-3 py-1 text-[9px] font-mono font-black uppercase transition-all rounded cursor-pointer ${
+                  mainPlantBatchingMode === 'SEMI_AUTO'
+                    ? "bg-amber-600 text-white border border-amber-500 shadow-[0_0_10px_rgba(217,119,6,0.3)]"
+                    : mode === "CONTROL"
+                      ? "text-slate-500 hover:text-slate-300 border border-transparent"
+                      : "text-slate-600/50 cursor-not-allowed border border-transparent"
+                }`}
+              >
+                Semi Auto
+              </button>
+
+              <button
+                disabled={mode !== "CONTROL"}
+                onClick={() => {
+                  publishCommand({
+                    type: "SET_BATCHING_MODE",
+                    mode: "AUTO"
+                  });
+                }}
+                className={`px-3 py-1 text-[9px] font-mono font-black uppercase transition-all rounded cursor-pointer ${
+                  mainPlantBatchingMode === 'AUTO'
+                    ? "bg-emerald-600 text-white border border-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.3)]"
+                    : mode === "CONTROL"
+                      ? "text-slate-500 hover:text-slate-300 border border-transparent"
+                      : "text-slate-600/50 cursor-not-allowed border border-transparent"
+                }`}
+              >
+                Auto
+              </button>
+            </div>
+
+            {mode !== "CONTROL" && (
+              <span className="text-[7.5px] font-mono bg-rose-950/40 text-rose-400 border border-rose-900/60 rounded px-1.5 py-0.5" title="Buka kunci mode CONTROL untuk mengubah">
+                LOCKED
+              </span>
+            )}
+          </div>
+        </div>
         
         {/* UPPER MIMIC PANEL GROUP (MATERIAL INFEED & STORAGE) */}
         <div className="bg-[#121622] rounded-lg border border-slate-700/70 p-2.5 shadow-xl">
@@ -792,6 +934,148 @@ export const TabletPage: React.FC = () => {
               </div>
             </div>
 
+          </div>
+        </div>
+
+        {/* PANEL KENDALI OTOMATIS BATCH (AUTOMATIC BATCH WIRELESS CONTROLLER) */}
+        <div className="bg-[#121622] rounded-lg border border-slate-700/70 p-2.5 shadow-xl">
+          <div className="flex items-center justify-between mb-2 border-b border-slate-75 pb-1.5">
+            <div className="flex items-center gap-1.5">
+              <span className={`w-2 h-2 rounded-full ${deviceStates.isRunning ? "bg-emerald-400 animate-pulse border-emerald-300" : "bg-slate-500 border-slate-400"} border`} />
+              <span className="text-[10.5px] font-mono font-extrabold text-cyan-400 tracking-wider">PANEL LAUNCHER BATCH OTOMATIS : CONTROL MODULE</span>
+            </div>
+            <span className="text-[8px] font-mono text-slate-500 uppercase tracking-widest">[ AUTOMATIC REMOTE LAUNCHER ]</span>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-2.5 items-stretch">
+            {/* Left/Center side: Monitoring block / telemetry */}
+            <div className="lg:col-span-7 bg-[#0f131e] rounded-md border border-slate-800 p-2.5 flex flex-col justify-between min-h-[90px] relative shadow-inner">
+              <div className="flex justify-between items-center pb-1.5 border-b border-slate-800">
+                <span className="text-[8.5px] font-mono font-bold text-slate-400 uppercase tracking-wider">STATUS TEKNIS UTAMA</span>
+                <span className={`text-[8.5px] font-mono font-black ${deviceStates.isRunning ? "text-emerald-400 animate-pulse" : "text-slate-500"} uppercase`}>
+                  {deviceStates.isRunning ? `⚡ SEDANG JALAN (${deviceStates.productionState || "PROSES"})` : "● STANDBY / IDLE"}
+                </span>
+              </div>
+              
+              <div className="grid grid-cols-3 gap-2 py-1.5 text-center mt-1">
+                <div className="bg-[#141b29] border border-slate-800/60 p-1.5 rounded">
+                  <span className="block text-[7px] text-slate-500 font-bold uppercase tracking-wider">MUTU AKTIF</span>
+                  <span className="text-[10.5px] font-mono font-black text-cyan-400 truncate block">
+                    {deviceStates.isRunning ? (deviceStates.activeRecipeName || "FORMULA") : "-"}
+                  </span>
+                </div>
+                <div className="bg-[#141b29] border border-slate-800/60 p-1.5 rounded">
+                  <span className="block text-[7px] text-slate-500 font-bold uppercase tracking-wider">VOLUME TARGET</span>
+                  <span className="text-[10.5px] font-mono font-black text-emerald-400 block">
+                    {deviceStates.isRunning ? `${deviceStates.activeVolume || "0"} M³` : "-"}
+                  </span>
+                </div>
+                <div className="bg-[#141b29] border border-slate-800/60 p-1.5 rounded">
+                  <span className="block text-[7px] text-slate-500 font-bold uppercase tracking-wider text-center">SIKLUS MIX</span>
+                  <span className="text-[10.5px] font-mono font-black text-amber-400 block">
+                    {deviceStates.isRunning ? `${deviceStates.activeMixingCount || "1"} MIX` : "-"}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Right side: Input Control Panel — matching exactly the requested red box area! */}
+            <div className="lg:col-span-5 bg-[#191e2b] rounded-md border-2 border-slate-700/60 p-2.5 min-h-[90px] flex flex-col justify-between relative shadow-inner">
+              {/* Corner screws for physical HMI style */}
+              <div className="absolute top-0.5 left-0.5 w-1 h-1 rounded-full bg-slate-850 border border-slate-650/40" />
+              <div className="absolute top-0.5 right-0.5 w-1 h-1 rounded-full bg-slate-850 border border-slate-650/40" />
+              <div className="absolute bottom-0.5 left-0.5 w-1 h-1 rounded-full bg-slate-850 border border-slate-650/40" />
+              <div className="absolute bottom-0.5 right-0.5 w-1 h-1 rounded-full bg-slate-850 border border-slate-650/40" />
+
+              <div className="grid grid-cols-3 gap-2 flex-grow items-center">
+                {/* 1. Mutu Beton Dropdown */}
+                <div className="flex flex-col space-y-1">
+                  <label className="text-[7.5px] font-mono font-extrabold text-slate-400 uppercase tracking-widest text-center">
+                    MUTU BETON
+                  </label>
+                  <select
+                    disabled={mode !== "CONTROL" || deviceStates.isRunning}
+                    value={selectedMutu}
+                    onChange={(e) => setSelectedMutu(e.target.value)}
+                    className="bg-[#0b101c] text-xs font-mono font-extrabold text-[#00ffd0] py-1 px-1 border border-slate-700 rounded focus:border-[#00ffd0] focus:outline-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {jobMixes.map((mix) => (
+                      <option key={mix.id} value={mix.mutuBeton} className="bg-[#111622] text-slate-100 font-bold">
+                        {mix.mutuBeton}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* 2. Volume Dropdown */}
+                <div className="flex flex-col space-y-1">
+                  <label className="text-[7.5px] font-mono font-extrabold text-slate-400 uppercase tracking-widest text-center">
+                    VOLUME
+                  </label>
+                  <select
+                    disabled={mode !== "CONTROL" || deviceStates.isRunning}
+                    value={selectedVolume}
+                    onChange={(e) => setSelectedVolume(Number(e.target.value))}
+                    className="bg-[#0b101c] text-xs font-mono font-extrabold text-[#00ffd0] py-1 px-1 border border-slate-700 rounded focus:border-[#00ffd0] focus:outline-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {[1, 1.5, 2, 2.5, 3, 3.5].map((vol) => (
+                      <option key={vol} value={vol} className="bg-[#111622] text-slate-100 font-bold">
+                        {vol}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* 3. Jumlah Mix Dropdown */}
+                <div className="flex flex-col space-y-1">
+                  <label className="text-[7.5px] font-mono font-extrabold text-slate-400 uppercase tracking-widest text-center">
+                    JUMLAH MIX
+                  </label>
+                  <select
+                    disabled={mode !== "CONTROL" || deviceStates.isRunning}
+                    value={selectedJumlahMix}
+                    onChange={(e) => setSelectedJumlahMix(Number(e.target.value))}
+                    className="bg-[#0b101c] text-xs font-mono font-extrabold text-[#00ffd0] py-1 px-1 border border-slate-700 rounded focus:border-[#00ffd0] focus:outline-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {[1, 2, 3].map((cycle) => (
+                      <option key={cycle} value={cycle} className="bg-[#111622] text-slate-100 font-bold">
+                        {cycle}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Start / Stop small action buttons */}
+              <div className="flex items-center gap-2.5 mt-2.5 pt-1.5 border-t border-slate-800">
+                <button
+                  disabled={mode !== "CONTROL" || deviceStates.isRunning}
+                  onClick={handleRemoteStartBatch}
+                  className={`flex-grow py-1 rounded text-[10px] font-sans font-black uppercase tracking-widest border transition-all cursor-pointer active:scale-95 disabled:scale-100 disabled:opacity-30 disabled:cursor-not-allowed text-center flex items-center justify-center gap-1.5
+                    ${!deviceStates.isRunning && mode === "CONTROL"
+                      ? "bg-emerald-600 hover:bg-emerald-500 border-emerald-500 text-white shadow-[0_2px_4px_rgba(16,185,129,0.2)]"
+                      : "bg-[#1a202d] border-slate-800 text-slate-500"
+                    }
+                  `}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${!deviceStates.isRunning && mode === "CONTROL" ? "bg-emerald-400 animate-pulse" : "bg-slate-500"}`} />
+                  START
+                </button>
+                <button
+                  disabled={mode !== "CONTROL" || !deviceStates.isRunning}
+                  onClick={handleRemoteStopBatch}
+                  className={`flex-grow py-1 rounded text-[10px] font-sans font-black uppercase tracking-widest border transition-all cursor-pointer active:scale-95 disabled:scale-100 disabled:opacity-30 disabled:cursor-not-allowed text-center flex items-center justify-center gap-1.5
+                    ${deviceStates.isRunning && mode === "CONTROL"
+                      ? "bg-rose-600 hover:bg-rose-500 border-rose-500 text-white shadow-[0_2px_4px_rgba(239,68,68,0.2)]"
+                      : "bg-[#1a202d] border-slate-800 text-slate-500"
+                    }
+                  `}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${deviceStates.isRunning && mode === "CONTROL" ? "bg-rose-400 animate-pulse" : "bg-slate-500"}`} />
+                  STOP
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </main>

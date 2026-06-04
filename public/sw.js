@@ -35,6 +35,28 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   if (!event.request.url.startsWith('http')) return;
 
+  // SPA navigation fallback: serve cached index.html for page navigations (e.g., /tablet)
+  if (event.request.mode === 'navigate' || event.request.url.includes('/tablet')) {
+    event.respondWith(
+      caches.open(CACHE_NAME).then((cache) => {
+        return cache.match('./index.html').then((cachedResponse) => {
+          const fetchPromise = fetch(event.request)
+            .then((networkResponse) => {
+              if (networkResponse.status === 200) {
+                cache.put('./index.html', networkResponse.clone());
+              }
+              return networkResponse;
+            })
+            .catch(() => {
+              return cachedResponse;
+            });
+          return cachedResponse || fetchPromise;
+        });
+      })
+    );
+    return;
+  }
+
   event.respondWith(
     caches.open(CACHE_NAME).then((cache) => {
       return cache.match(event.request).then((cachedResponse) => {

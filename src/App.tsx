@@ -4046,6 +4046,44 @@ export default function App() {
     isAutoRef.current = isAuto;
   }, [isAuto]);
 
+  const [batchingMode, setBatchingMode] = useState<'MANUAL' | 'SEMI_AUTO' | 'AUTO'>('AUTO');
+  const batchingModeRef = useRef(batchingMode);
+  useEffect(() => {
+    batchingModeRef.current = batchingMode;
+  }, [batchingMode]);
+
+  useEffect(() => {
+    setIsAuto(batchingMode === 'AUTO');
+  }, [batchingMode]);
+
+  useEffect(() => {
+    if (isAuto && batchingMode !== 'AUTO') {
+      setBatchingMode('AUTO');
+    } else if (!isAuto && batchingMode === 'AUTO') {
+      setBatchingMode('MANUAL');
+    }
+  }, [isAuto]);
+
+  const [semiAutoDosing, setSemiAutoDosing] = useState<Record<string, boolean>>({
+    pasir1: false,
+    pasir2: false,
+    batu1: false,
+    batu2: false,
+    semen: false,
+    air: false,
+    admix: false
+  });
+  const semiAutoDosingRef = useRef(semiAutoDosing);
+  useEffect(() => {
+    semiAutoDosingRef.current = semiAutoDosing;
+  }, [semiAutoDosing]);
+
+  const [admixActual, setAdmixActual] = useState(0);
+  const admixActualRef = useRef(admixActual);
+  useEffect(() => {
+    admixActualRef.current = admixActual;
+  }, [admixActual]);
+
   const isRunningRef = useRef(isRunning);
   useEffect(() => {
     isRunningRef.current = isRunning;
@@ -4732,6 +4770,133 @@ export default function App() {
   const handleManualDeviceToggle = (deviceKey: string, valForce?: boolean) => {
     if (isAuto) return;
 
+    if (batchingModeRef.current === 'SEMI_AUTO') {
+      let targetMaterial = '';
+      if (deviceKey === 'pasir1') targetMaterial = 'pasir1';
+      else if (deviceKey === 'pasir2') targetMaterial = 'pasir2';
+      else if (deviceKey === 'batu1') targetMaterial = 'batu1';
+      else if (deviceKey === 'batu2') targetMaterial = 'batu2';
+      else if (deviceKey === 'silo1' || deviceKey === 'silo2' || deviceKey === 'silo3' || deviceKey === 'silo4' || deviceKey === 'silo5' || deviceKey === 'silo6') {
+        targetMaterial = 'semen';
+      }
+      else if (deviceKey === 'valveIsiAir') targetMaterial = 'air';
+      else if (deviceKey === 'admixIn') targetMaterial = 'admix';
+
+      if (targetMaterial) {
+        if (semiAutoDosingRef.current[targetMaterial]) {
+          setSemiAutoDosing(prev => {
+            const next = { ...prev, [targetMaterial]: false };
+            const anyRemaining = Object.values(next).some(v => v);
+            if (!anyRemaining) {
+              weighingActiveRef.current = false;
+              setIsWeighingActive(false);
+            }
+            return next;
+          });
+
+          if (targetMaterial === 'pasir1') setGatePasir1SiloOpen(false);
+          if (targetMaterial === 'pasir2') setGatePasir2SiloOpen(false);
+          if (targetMaterial === 'batu1') setGateBatu1SiloOpen(false);
+          if (targetMaterial === 'batu2') setGateBatu2SiloOpen(false);
+          if (targetMaterial === 'semen') setScrewSemenActive(false);
+          if (targetMaterial === 'air') setValveWaterActive(false);
+          if (targetMaterial === 'admix') setAdmixInActive(false);
+
+          weighingJogStatesRef.current[targetMaterial].phase = 'done';
+
+          setRelayLogs(prev => [
+            {
+              id: 'SEMI-CANCEL-' + Math.random().toString(36).substring(7).toUpperCase(),
+              timestamp: new Date(),
+              message: `[SEMI AUTO] Dosing ${targetMaterial.toUpperCase()} DIMATIKAN oleh operator!`,
+              type: 'off'
+            },
+            ...prev
+          ]);
+          return;
+        }
+
+        if (!selectedRecipe) {
+          setAlarmMessage("SEMI AUTO GAGAL: Tidak ada Job Mix formula aktif yang dipilih!");
+          return;
+        }
+
+        if (operationModeRef.current !== 'SIMULASI' && webSerialService.getStatus() === "DISCONNECTED") {
+          setAlarmMessage("SEMI AUTO GAGAL: Koneksi Serial ke panel terputus / tidak tersedia!");
+          return;
+        }
+
+        let targetValue = 0;
+        const savedJmf = selectedRecipe.jobMixDetails;
+        if (targetMaterial === 'pasir1') {
+          targetValue = savedJmf?.pasir1 || Math.round((selectedRecipe.targets.pasir || 400) * 0.7);
+        } else if (targetMaterial === 'pasir2') {
+          targetValue = savedJmf?.pasir2 || Math.round((selectedRecipe.targets.pasir || 400) * 0.3);
+        } else if (targetMaterial === 'batu1') {
+          targetValue = savedJmf?.batu1 || Math.round((selectedRecipe.targets.batu || 400) * 0.7);
+        } else if (targetMaterial === 'batu2') {
+          targetValue = savedJmf?.batu2 || Math.round((selectedRecipe.targets.batu || 400) * 0.3);
+        } else if (targetMaterial === 'semen') {
+          targetValue = selectedRecipe.targets.semen || savedJmf?.semen || 300;
+        } else if (targetMaterial === 'air') {
+          targetValue = selectedRecipe.targets.air || savedJmf?.air || 150;
+        } else if (targetMaterial === 'admix') {
+          targetValue = savedJmf?.additive || 2.0;
+        }
+
+        const tFactor = parseFloat((activeVolume / totalCyclesRef.current).toFixed(2)) || 1.0;
+        const adjustedTarget = Math.round(targetValue * tFactor);
+
+        if (adjustedTarget <= 0) {
+          setAlarmMessage(`SEMI AUTO GAGAL: Target untuk ${targetMaterial.toUpperCase()} tidak valid / bernilai 0!`);
+          return;
+        }
+
+        setRelayLogs(prev => [
+          {
+            id: 'SEMI-START-' + Math.random().toString(36).substring(7).toUpperCase(),
+            timestamp: new Date(),
+            message: `[SEMI AUTO] Memulai penimbangan ${targetMaterial.toUpperCase()}. Target JMF: ${targetValue} kg, disesuaikan volume: ${adjustedTarget} kg.`,
+            type: 'on'
+          },
+          ...prev
+        ]);
+
+        setSemiAutoDosing(prev => ({ ...prev, [targetMaterial]: true }));
+
+        setScalesSync(prev => {
+          const next = { ...prev };
+          const scaleKey = (targetMaterial === 'pasir1' || targetMaterial === 'pasir2') ? 'pasir' :
+                            (targetMaterial === 'batu1' || targetMaterial === 'batu2') ? 'batu' :
+                            targetMaterial === 'semen' ? 'semen' :
+                            targetMaterial === 'air' ? 'air' : null;
+          if (scaleKey) {
+            next[scaleKey].actual = 0;
+            next[scaleKey].target = adjustedTarget;
+            next[scaleKey].isComplete = false;
+            next[scaleKey].isActive = true;
+          }
+          return next;
+        });
+
+        if (targetMaterial === 'admix') {
+          setAdmixActual(0);
+          setAdmixInActive(true);
+        }
+
+        weighingJogStatesRef.current[targetMaterial] = { phase: 'fast', timer: 0, pulseCount: 0 };
+        Object.keys(weighingJogStatesRef.current).forEach(k => {
+          if (k !== targetMaterial) {
+            weighingJogStatesRef.current[k] = { phase: 'done', timer: 0, pulseCount: 0 };
+          }
+        });
+
+        weighingActiveRef.current = true;
+        setIsWeighingActive(true);
+        return;
+      }
+    }
+
     const createManualRelayLog = (name: string, act: boolean) => {
       const actionText = act ? 'ON' : 'OFF';
       const eventId = 'MANUAL-' + Math.random().toString(36).substring(7).toUpperCase();
@@ -5114,9 +5279,9 @@ export default function App() {
     if (operationMode !== 'SIMULASI') return;
 
     const interval = setInterval(() => {
-      // In auto mode, if isRunning is true, the automatic weighing system handles it.
-      // So we only update manually if isRunning is false, OR if it's manual mode (!isAuto).
-      if (isRunning && isAuto) return;
+      // In auto mode or semi-auto mode, if isRunning is true, the automatic weighing system handles it.
+      // So we only update manually if isRunning is false, OR if it's manual mode (!isAuto && batchingModeRef.current !== 'SEMI_AUTO').
+      if (isRunning && (isAuto || batchingModeRef.current === 'SEMI_AUTO')) return;
 
       setScalesSync(prev => {
         const next = { ...prev };
@@ -5278,10 +5443,47 @@ export default function App() {
         }
 
         if (!isAutoRef.current) {
-          handleManualProductionTick();
-          return;
+          if (batchingModeRef.current === 'SEMI_AUTO') {
+            handleManualProductionTick();
+          } else {
+            handleManualProductionTick();
+            return;
+          }
         }
         
+        // Handle Admix Semi-Auto Dosing Simulated Weight Ticker
+        if (batchingModeRef.current === 'SEMI_AUTO' && semiAutoDosingRef.current.admix) {
+          const admixTarget = (selectedRecipe as any)?.jobMixDetails?.additive || 2.0;
+          const inc = 0.1; // 0.1 liter per 100ms
+          const nextVal = parseFloat((admixActualRef.current + inc).toFixed(1));
+          
+          if (nextVal >= admixTarget) {
+            setAdmixActual(admixTarget);
+            setAdmixInActive(false);
+            setSemiAutoDosing(prev => {
+              const next = { ...prev, admix: false };
+              const anyRemaining = Object.values(next).some(v => v);
+              if (!anyRemaining) {
+                weighingActiveRef.current = false;
+                setIsWeighingActive(false);
+              }
+              return next;
+            });
+            
+            setRelayLogs(prev => [
+              {
+                id: 'SEMI-ADMIX-DONE-' + Math.random().toString(36).substring(7).toUpperCase(),
+                timestamp: new Date(),
+                message: `[SEMI AUTO] Dosing ADMIXTURE SELESAI. Actual: ${admixTarget.toFixed(1)} Liter.`,
+                type: 'done'
+              },
+              ...prev
+            ]);
+          } else {
+            setAdmixActual(nextVal);
+          }
+        }
+
         // --- 1. WEIGHING ENGINE STATE (TICKING IN REALTIME) ---
         if (weighingActiveRef.current) {
           // Dynamic currentStep state selection for sequential visual HMI tracking
@@ -6381,45 +6583,136 @@ export default function App() {
                   setValveWaterActive(false);
                 }
               }
-            }
+                     if (batchingModeRef.current === 'SEMI_AUTO') {
+              let updatedSemiAuto = { ...semiAutoDosingRef.current };
+              let changed = false;
 
-            if (allComplete || updated.pasir.isComplete) {
-              pasirWeighedRef.current = true;
-            }
-            if (allComplete || updated.batu.isComplete) {
-              batuWeighedRef.current = true;
-            }
-            if (allComplete || updated.semen.isComplete) {
-              semenWeighedRef.current = true;
-            }
-            if (allComplete || updated.air.isComplete) {
-              airWeighedRef.current = true;
-            }
+              if (semiAutoDosingRef.current.pasir1 && weighingJogStatesRef.current.pasir1.phase === 'done') {
+                updatedSemiAuto.pasir1 = false;
+                changed = true;
+                setRelayLogs(prev => [
+                  {
+                    id: 'SEMI-P1-DONE-' + Math.random().toString(36).substring(7).toUpperCase(),
+                    timestamp: new Date(),
+                    message: `[SEMI AUTO] Dosing PASIR 1 Selesai. Actual: ${updated.pasir.actual.toFixed(1)} Kg.`,
+                    type: 'done'
+                  },
+                  ...prev
+                ]);
+              }
+              if (semiAutoDosingRef.current.pasir2 && weighingJogStatesRef.current.pasir2.phase === 'done') {
+                updatedSemiAuto.pasir2 = false;
+                changed = true;
+                setRelayLogs(prev => [
+                  {
+                    id: 'SEMI-P2-DONE-' + Math.random().toString(36).substring(7).toUpperCase(),
+                    timestamp: new Date(),
+                    message: `[SEMI AUTO] Dosing PASIR 2 Selesai. Actual: ${updated.pasir.actual.toFixed(1)} Kg.`,
+                    type: 'done'
+                  },
+                  ...prev
+                ]);
+              }
+              if (semiAutoDosingRef.current.batu1 && weighingJogStatesRef.current.batu1.phase === 'done') {
+                updatedSemiAuto.batu1 = false;
+                changed = true;
+                setRelayLogs(prev => [
+                  {
+                    id: 'SEMI-B1-DONE-' + Math.random().toString(36).substring(7).toUpperCase(),
+                    timestamp: new Date(),
+                    message: `[SEMI AUTO] Dosing BATU 1 Selesai. Actual: ${updated.batu.actual.toFixed(1)} Kg.`,
+                    type: 'done'
+                  },
+                  ...prev
+                ]);
+              }
+              if (semiAutoDosingRef.current.batu2 && weighingJogStatesRef.current.batu2.phase === 'done') {
+                updatedSemiAuto.batu2 = false;
+                changed = true;
+                setRelayLogs(prev => [
+                  {
+                    id: 'SEMI-B2-DONE-' + Math.random().toString(36).substring(7).toUpperCase(),
+                    timestamp: new Date(),
+                    message: `[SEMI AUTO] Dosing BATU 2 Selesai. Actual: ${updated.batu.actual.toFixed(1)} Kg.`,
+                    type: 'done'
+                  },
+                  ...prev
+                ]);
+              }
+              if (semiAutoDosingRef.current.semen && weighingJogStatesRef.current.semen.phase === 'done') {
+                updatedSemiAuto.semen = false;
+                changed = true;
+                setRelayLogs(prev => [
+                  {
+                    id: 'SEMI-SEM-DONE-' + Math.random().toString(36).substring(7).toUpperCase(),
+                    timestamp: new Date(),
+                    message: `[SEMI AUTO] Dosing SEMEN Selesai. Actual: ${updated.semen.actual.toFixed(1)} Kg.`,
+                    type: 'done'
+                  },
+                  ...prev
+                ]);
+              }
+              if (semiAutoDosingRef.current.air && weighingJogStatesRef.current.air.phase === 'done') {
+                updatedSemiAuto.air = false;
+                changed = true;
+                setRelayLogs(prev => [
+                  {
+                    id: 'SEMI-AIR-DONE-' + Math.random().toString(36).substring(7).toUpperCase(),
+                    timestamp: new Date(),
+                    message: `[SEMI AUTO] Dosing AIR Selesai. Actual: ${updated.air.actual.toFixed(1)} Kg.`,
+                    type: 'done'
+                  },
+                  ...prev
+                ]);
+              }
 
-            const allWeighed = (pasirWeighedRef.current || updated.pasir.target === 0) &&
-                               (batuWeighedRef.current || updated.batu.target === 0) &&
-                               (semenWeighedRef.current || updated.semen.target === 0) &&
-                               (airWeighedRef.current || updated.air.target === 0);
+              if (changed) {
+                setSemiAutoDosing(updatedSemiAuto);
+                const anyActive = Object.values(updatedSemiAuto).some(v => v);
+                if (!anyActive) {
+                  weighingActiveRef.current = false;
+                  setIsWeighingActive(false);
+                }
+              }
+            } else {
+              if (allComplete || updated.pasir.isComplete) {
+                pasirWeighedRef.current = true;
+              }
+              if (allComplete || updated.batu.isComplete) {
+                batuWeighedRef.current = true;
+              }
+              if (allComplete || updated.semen.isComplete) {
+                semenWeighedRef.current = true;
+              }
+              if (allComplete || updated.air.isComplete) {
+                airWeighedRef.current = true;
+              }
 
-            const isAggWeighedNow = (pasirWeighedRef.current || updated.pasir.target === 0) &&
-                                     (batuWeighedRef.current || updated.batu.target === 0);
+              const allWeighed = (pasirWeighedRef.current || updated.pasir.target === 0) &&
+                                 (batuWeighedRef.current || updated.batu.target === 0) &&
+                                 (semenWeighedRef.current || updated.semen.target === 0) &&
+                                 (airWeighedRef.current || updated.air.target === 0);
 
-            if (isAggWeighedNow && !aggregateReadyLoggedRef.current) {
-              aggregateReadyLoggedRef.current = true;
-              setProductionState('AGGREGATE_READY');
-              setRelayLogs(l => [{
-                id: 'AGG-RDY-' + Math.random().toString(36).substring(7).toUpperCase(),
-                timestamp: new Date(),
-                message: "AGGREGATE_READY",
-                type: 'done'
-              }, ...l]);
-            }
+              const isAggWeighedNow = (pasirWeighedRef.current || updated.pasir.target === 0) &&
+                                       (batuWeighedRef.current || updated.batu.target === 0);
 
-            if (allWeighed) {
-              weighingActiveRef.current = false;
-              setIsWeighingActive(false);
-              setProductionState('AGGREGATE_READY');
-            }
+              if (isAggWeighedNow && !aggregateReadyLoggedRef.current) {
+                aggregateReadyLoggedRef.current = true;
+                setProductionState('AGGREGATE_READY');
+                setRelayLogs(l => [{
+                  id: 'AGG-RDY-' + Math.random().toString(36).substring(7).toUpperCase(),
+                  timestamp: new Date(),
+                  message: "AGGREGATE_READY",
+                  type: 'done'
+                }, ...l]);
+              }
+
+              if (allWeighed) {
+                weighingActiveRef.current = false;
+                setIsWeighingActive(false);
+                setProductionState('AGGREGATE_READY');
+              }
+            }     }
 
             // --- Declarative tracking of individual material cycles' actual weights ---
             const jStateP1 = weighingJogStatesRef.current.pasir1;
@@ -8790,7 +9083,15 @@ export default function App() {
       mixerShaftActive,
       admixInActive,
       admixOutActive,
-      isAuto
+      isAuto,
+      isRunning,
+      activeRecipeId: selectedRecipe ? selectedRecipe.id : (recipesList[0]?.id || ""),
+      activeRecipeName: selectedRecipe ? selectedRecipe.name : (recipesList[0]?.name || ""),
+      activeVolume,
+      activeMixingCount,
+      productionState,
+      batchingMode: batchingModeRef.current,
+      admixActual: admixActualRef.current
     };
 
     const msg = JSON.stringify({ type: 'STATE_UPDATE', states: currentState });
@@ -8832,6 +9133,40 @@ export default function App() {
       } else if (data.type === 'TOGGLE_DEVICE') {
         const { deviceKey, valForce } = data;
         handleManualDeviceToggle(deviceKey, valForce);
+      } else if (data.type === 'START_BATCH') {
+        const { recipeId, volume, mixingCycles } = data;
+        let matched = recipesList.find(r => r.id === recipeId);
+        if (!matched && recipeId) {
+          // Fallback fuzzy match by name or ID (e.g. "K225" matches "Beton K-225")
+          matched = recipesList.find(r => 
+            r.name.toLowerCase().replace(/\s+/g, '').includes(recipeId.toLowerCase().replace(/\s+/g, '')) ||
+            r.id.toLowerCase().replace(/\s+/g, '').includes(recipeId.toLowerCase().replace(/\s+/g, ''))
+          );
+        }
+        if (!matched) {
+          matched = selectedRecipe || recipesList[0];
+        }
+        if (matched) {
+          startBatch({
+            recipe: matched,
+            volume: Number(volume) || 1,
+            mixingCycles: Number(mixingCycles) || 1,
+            slump: "10+/-2",
+            siloSemen: "Silo 1",
+            mixingTime: 30,
+            pelanggan: "Tablet Remote Control",
+            lokasi: "Proyek Lapangan",
+            noKendaraan: "BM-1111-FP",
+            sopir: "Supir Tablet"
+          });
+        }
+      } else if (data.type === 'STOP_BATCH') {
+        stopBatch();
+      } else if (data.type === 'SET_BATCHING_MODE') {
+        const { mode } = data;
+        if (mode === 'MANUAL' || mode === 'SEMI_AUTO' || mode === 'AUTO') {
+          setBatchingMode(mode);
+        }
       }
     } catch (err) {
       console.error("Error processing sync message:", err);
@@ -10173,17 +10508,42 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* AUTOMATIC ON OFF SWITCH */}
-                <button
-                  onClick={() => setIsAuto(!isAuto)}
-                  className={`rounded-[5px] px-1 py-1 flex flex-col items-center justify-center text-center transition-all duration-150 border h-[30px] cursor-pointer shrink-0 ${
-                    isAuto
-                      ? 'bg-[#22c55e] hover:bg-[#16a34a] text-white border-[#4ade80] shadow-[0_0_8px_rgba(34,197,94,0.3)]'
-                      : 'bg-[#1e293b]/55 hover:bg-slate-700/80 text-slate-400 border-slate-800'
-                  }`}
-                >
-                  <span className="text-[7.5px] font-sans font-black tracking-wide leading-none uppercase">AUTO: {isAuto ? 'ON' : 'OFF'}</span>
-                </button>
+                {/* BATCHING PLANT MODE SELECTOR (MANUAL | SEMI AUTO | AUTO) */}
+                <div className="flex flex-col gap-1 shrink-0">
+                  <span className="text-[6.5px] font-mono text-slate-500 font-bold uppercase tracking-wider text-center">MODE BATCHING</span>
+                  <div className="bg-[#0b101c] p-0.5 rounded-[5px] border border-slate-800 flex items-center gap-0.5">
+                    <button
+                      onClick={() => setBatchingMode('MANUAL')}
+                      className={`px-1.5 [height:24px] text-[7.5px] font-sans font-black uppercase transition-all rounded-[3px] cursor-pointer ${
+                        batchingMode === 'MANUAL'
+                          ? "bg-slate-700 text-white shadow-inner font-black"
+                          : "text-slate-500 hover:text-slate-304"
+                      }`}
+                    >
+                      MAN
+                    </button>
+                    <button
+                      onClick={() => setBatchingMode('SEMI_AUTO')}
+                      className={`px-1.5 [height:24px] text-[7.5px] font-sans font-black uppercase transition-all rounded-[3px] cursor-pointer ${
+                        batchingMode === 'SEMI_AUTO'
+                          ? "bg-amber-600 text-white shadow-inner font-black"
+                          : "text-slate-500 hover:text-slate-304"
+                      }`}
+                    >
+                      SEMI
+                    </button>
+                    <button
+                      onClick={() => setBatchingMode('AUTO')}
+                      className={`px-1.5 [height:24px] text-[7.5px] font-sans font-black uppercase transition-all rounded-[3px] cursor-pointer ${
+                        batchingMode === 'AUTO'
+                          ? "bg-emerald-600 text-white shadow-inner font-black"
+                          : "text-slate-500 hover:text-slate-304"
+                      }`}
+                    >
+                      AUTO
+                    </button>
+                  </div>
+                </div>
 
               </div>
             </div>
