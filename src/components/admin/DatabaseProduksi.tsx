@@ -48,6 +48,10 @@ interface BatchLog {
   productionMode?: string;
   startTime?: string;
   endTime?: string;
+  quarryPasir1?: string;
+  quarryPasir2?: string;
+  quarryBatu1?: string;
+  quarryBatu2?: string;
 }
 
 interface DatabaseProduksiProps {
@@ -57,6 +61,16 @@ interface DatabaseProduksiProps {
 export const DatabaseProduksi: React.FC<DatabaseProduksiProps> = ({ logs }) => {
   const [searchTerm, setSearchTerm] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const qPasir1 = localStorage.getItem("quarry_pasir_1") || "";
+  const qPasir2 = localStorage.getItem("quarry_pasir_2") || "";
+  const qBatu1 = localStorage.getItem("quarry_batu_1") || "";
+  const qBatu2 = localStorage.getItem("quarry_batu_2") || "";
+
+  const labelPasir1 = qPasir1 ? `PASIR 1 / ${qPasir1.toUpperCase()}` : "PASIR 1 (SAND 1)";
+  const labelPasir2 = qPasir2 ? `PASIR 2 / ${qPasir2.toUpperCase()}` : "PASIR 2 (SAND 2)";
+  const labelBatu1 = qBatu1 ? `BATU 1 / ${qBatu1.toUpperCase()}` : "BATU 1 (STONE 1)";
+  const labelBatu2 = qBatu2 ? `BATU 2 / ${qBatu2.toUpperCase()}` : "BATU 2 (STONE 2)";
 
   // Filter logs based on search term
   const filteredLogs = logs.filter(l => {
@@ -209,6 +223,17 @@ export const DatabaseProduksi: React.FC<DatabaseProduksiProps> = ({ logs }) => {
             ) : (
               filteredLogs.map(l => {
                 const isExpanded = expandedId === l.id;
+                
+                const logPasir1 = l.quarryPasir1 !== undefined ? l.quarryPasir1 : (localStorage.getItem("quarry_pasir_1") || "");
+                const logPasir2 = l.quarryPasir2 !== undefined ? l.quarryPasir2 : (localStorage.getItem("quarry_pasir_2") || "");
+                const logBatu1 = l.quarryBatu1 !== undefined ? l.quarryBatu1 : (localStorage.getItem("quarry_batu_1") || "");
+                const logBatu2 = l.quarryBatu2 !== undefined ? l.quarryBatu2 : (localStorage.getItem("quarry_batu_2") || "");
+
+                const rowLabelPasir1 = logPasir1 ? `PASIR 1 / ${logPasir1.toUpperCase()}` : "PASIR 1 (SAND 1)";
+                const rowLabelPasir2 = logPasir2 ? `PASIR 2 / ${logPasir2.toUpperCase()}` : "PASIR 2 (SAND 2)";
+                const rowLabelBatu1 = logBatu1 ? `BATU 1 / ${logBatu1.toUpperCase()}` : "BATU 1 (STONE 1)";
+                const rowLabelBatu2 = logBatu2 ? `BATU 2 / ${logBatu2.toUpperCase()}` : "BATU 2 (STONE 2)";
+
                 return (
                   <React.Fragment key={l.id}>
                     <tr 
@@ -238,10 +263,10 @@ export const DatabaseProduksi: React.FC<DatabaseProduksiProps> = ({ logs }) => {
                       {/* Pelanggan */}
                       <td className="py-3 px-3">
                         <div className="flex flex-col gap-0.5 max-w-[200px] truncate">
-                          <span className="text-slate-200 truncate">{l.pelanggan || "PT. FARIKA BARA"}</span>
+                          <span className="text-slate-200 truncate">{l.pelanggan || "-"}</span>
                           <span className="text-[9px] text-[#00ffd0] flex items-center gap-0.5">
                             <MapPin className="w-2.5 h-2.5" />
-                            {l.lokasi || "PEKANBARU"}
+                            {l.lokasi || "-"}
                           </span>
                         </div>
                       </td>
@@ -250,11 +275,11 @@ export const DatabaseProduksi: React.FC<DatabaseProduksiProps> = ({ logs }) => {
                         <div className="flex flex-col gap-0.5">
                           <span className="text-slate-200 font-bold flex items-center gap-1">
                             <User className="w-2.5 h-2.5 text-slate-500" />
-                            {l.sopir || "Budi Santoso"}
+                            {l.sopir || "-"}
                           </span>
                           <span className="text-[9px] text-slate-400 flex items-center gap-1">
                             <Truck className="w-2.5 h-2.5 text-slate-500" />
-                            {l.noKendaraan || "BM 8989 FA"}
+                            {l.noKendaraan || "-"}
                           </span>
                         </div>
                       </td>
@@ -320,7 +345,7 @@ export const DatabaseProduksi: React.FC<DatabaseProduksiProps> = ({ logs }) => {
                                   
                                   {/* Pasir 1 */}
                                   <div className="flex justify-between items-center bg-slate-950 p-1.5 px-2 rounded-sm border border-slate-900/60">
-                                    <span className="text-slate-400 font-bold">PASIR 1 (SAND 1)</span>
+                                    <span className="text-slate-400 font-bold">{rowLabelPasir1}</span>
                                     <div className="flex items-center gap-3">
                                       <span className="text-slate-500">Tgt: {l.targets?.pasir1 ?? 0} Kg</span>
                                       <span className="text-white font-extrabold">{l.actuals?.pasir1 ?? 0} Kg</span>
@@ -334,7 +359,7 @@ export const DatabaseProduksi: React.FC<DatabaseProduksiProps> = ({ logs }) => {
 
                                   {/* Pasir 2 */}
                                   <div className="flex justify-between items-center bg-slate-950 p-1.5 px-2 rounded-sm border border-slate-900/60">
-                                    <span className="text-slate-400 font-bold">PASIR 2 (SAND 2)</span>
+                                    <span className="text-slate-400 font-bold">{rowLabelPasir2}</span>
                                     <div className="flex items-center gap-3">
                                       <span className="text-slate-500">Tgt: {l.targets?.pasir2 ?? 0} Kg</span>
                                       <span className="text-white font-extrabold">{l.actuals?.pasir2 ?? 0} Kg</span>
@@ -348,7 +373,7 @@ export const DatabaseProduksi: React.FC<DatabaseProduksiProps> = ({ logs }) => {
 
                                   {/* Batu 1 */}
                                   <div className="flex justify-between items-center bg-slate-950 p-1.5 px-2 rounded-sm border border-slate-900/60">
-                                    <span className="text-slate-400 font-bold">BATU 1 (STONE 1)</span>
+                                    <span className="text-slate-400 font-bold">{rowLabelBatu1}</span>
                                     <div className="flex items-center gap-3">
                                       <span className="text-slate-500">Tgt: {l.targets?.batu1 ?? 0} Kg</span>
                                       <span className="text-white font-extrabold">{l.actuals?.batu1 ?? 0} Kg</span>
@@ -362,7 +387,7 @@ export const DatabaseProduksi: React.FC<DatabaseProduksiProps> = ({ logs }) => {
 
                                   {/* Batu 2 */}
                                   <div className="flex justify-between items-center bg-slate-950 p-1.5 px-2 rounded-sm border border-slate-900/60">
-                                    <span className="text-slate-400 font-bold">BATU 2 (STONE 2)</span>
+                                    <span className="text-slate-400 font-bold">{rowLabelBatu2}</span>
                                     <div className="flex items-center gap-3">
                                       <span className="text-slate-500">Tgt: {l.targets?.batu2 ?? 0} Kg</span>
                                       <span className="text-white font-extrabold">{l.actuals?.batu2 ?? 0} Kg</span>

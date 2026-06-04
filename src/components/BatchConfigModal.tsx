@@ -52,7 +52,16 @@ export const BatchConfigModal: React.FC<BatchConfigModalProps> = ({
     }
   }, [siloWeights]);
 
-  const [mixingTime, setMixingTime] = useState<string>("10");
+  const [mixingTime, setMixingTime] = useState<string>(() => {
+    return localStorage.getItem('active_mixing_time') || "10";
+  });
+
+  // Save mixingTime to localStorage when changed
+  useEffect(() => {
+    if (mixingTime) {
+      localStorage.setItem('active_mixing_time', mixingTime);
+    }
+  }, [mixingTime]);
   const [pelanggan, setPelanggan] = useState<string>("");
   const [lokasi, setLokasi] = useState<string>("");
   const [noKendaraan, setNoKendaraan] = useState<string>("");

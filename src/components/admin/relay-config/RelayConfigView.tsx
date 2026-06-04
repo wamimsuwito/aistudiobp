@@ -63,45 +63,8 @@ export const RelayConfigView: React.FC<RelayConfigViewProps> = ({ activePins }) 
 
   return (
     <div className="flex-1 flex flex-col gap-3 min-h-0 overflow-hidden font-sans">
-      {/* Top Solenoid and Monitor Panels (Responsive side-by-side) */}
-      <div className="grid grid-cols-1 lg:grid-cols-[1.3fr_1.7fr] gap-3 shrink-0">
-        {/* Top Solenoid Info Panel */}
-        <InfoPanel />
-
-        {/* Real-time Output Monitor Grid */}
-        <div className="bg-[#0c1220] border border-[#1e293b] rounded-[8px] p-2.5 flex flex-col justify-between select-none text-left shadow-lg overflow-hidden max-h-[140px]">
-          <div className="flex items-center gap-2 mb-1.5 shrink-0">
-            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse shadow-[0_0_8px_#22d3ee]" />
-            <h4 className="text-[10px] font-sans font-black tracking-widest text-[#00ffd0] uppercase">
-              MONITOR REALTIME OUTPUT ARDUINO COILS
-            </h4>
-          </div>
-          <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-7 xl:grid-cols-8 gap-1 pt-0.5 overflow-y-auto max-h-[105px] pr-1 scrollbar-thin">
-            {rows.map((row) => {
-              const pinVal = row.arduinoPin;
-              if (!pinVal) return null;
-              const isPinOn = activePins ? !!activePins[pinVal] : false;
-              return (
-                <div
-                  key={row.relay}
-                  className={`py-0.5 px-1 border rounded flex flex-col items-center justify-center text-center transition-all duration-200 ${
-                    isPinOn
-                      ? "bg-emerald-950/60 border-emerald-500/50 text-[#00ffd0] shadow-[0_0_6px_rgba(16,185,129,0.15)]"
-                      : "bg-slate-900/40 border-slate-800/80 text-slate-500"
-                  }`}
-                >
-                  <span className="text-[7px] font-sans font-bold leading-tight uppercase truncate max-w-[65px]">
-                    {row.name}
-                  </span>
-                  <span className="text-[8.5px] font-mono font-black mt-0.5 whitespace-nowrap">
-                    PIN {pinVal}: {isPinOn ? "ON" : "OFF"}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
+      {/* Top Solenoid Info Panel */}
+      <InfoPanel />
 
       {/* Catatan sub-label right above the table header */}
       <div className="flex items-center justify-between px-1 select-none shrink-0">

@@ -119,6 +119,10 @@ interface BatchLog {
   productionMode?: string;
   startTime?: string;
   endTime?: string;
+  quarryPasir1?: string;
+  quarryPasir2?: string;
+  quarryBatu1?: string;
+  quarryBatu2?: string;
 }
 
 interface Recipe {
@@ -302,6 +306,11 @@ const ScadaDiagram = ({
   onMoistureClick,
   quarryAggregate,
   setQuarryAggregate,
+  onQuarryClick,
+  quarryPasir1 = "Pasir Galunggung",
+  quarryPasir2 = "Pasir Sungai",
+  quarryBatu1 = "Batu Split 1-2",
+  quarryBatu2 = "Batu Split 2-3",
   isPrint,
   setIsPrint,
   onHelpClick,
@@ -311,17 +320,17 @@ const ScadaDiagram = ({
   currentBatch = 0,
   targetBatch = 0,
   gatePasirSiloOpen = false,
-  gatePasir1SiloOpen = false,
-  gatePasir2SiloOpen = false,
+  gatePasir1SiloOpen: rawGatePasir1SiloOpen = false,
+  gatePasir2SiloOpen: rawGatePasir2SiloOpen = false,
   gateBatuSiloOpen = false,
-  gateBatu1SiloOpen = false,
-  gateBatu2SiloOpen = false,
-  screwSemenActive = false,
-  valveWaterActive = false,
-  gatePasirHopperOpen = false,
-  gateBatuHopperOpen = false,
-  gateSemenHopperOpen = false,
-  gateWaterHopperOpen = false,
+  gateBatu1SiloOpen: rawGateBatu1SiloOpen = false,
+  gateBatu2SiloOpen: rawGateBatu2SiloOpen = false,
+  screwSemenActive: rawScrewSemenActive = false,
+  valveWaterActive: rawValveWaterActive = false,
+  gatePasirHopperOpen: rawGatePasirHopperOpen = false,
+  gateBatuHopperOpen: rawGateBatuHopperOpen = false,
+  gateSemenHopperOpen: rawGateSemenHopperOpen = false,
+  gateWaterHopperOpen: rawGateWaterHopperOpen = false,
   conveyorBottomActive = false,
   conveyorUpperActive = false,
   mixerShaftActive = false,
@@ -340,7 +349,7 @@ const ScadaDiagram = ({
   batchingPlantMode = 'SYSTEM_1',
   waitingHopperEnabled = false,
   waitingHopperState = 'WAITING_HOPPER_IDLE',
-  waitingHopperGateOpen = false,
+  waitingHopperGateOpen: rawWaitingHopperGateOpen = false,
   waitingHopperWeight = 0,
   selectedRecipe = null,
   volumePerBatch = 1.0,
@@ -367,6 +376,11 @@ const ScadaDiagram = ({
   onMoistureClick?: () => void;
   quarryAggregate: boolean;
   setQuarryAggregate: (v: boolean) => void;
+  onQuarryClick?: () => void;
+  quarryPasir1?: string;
+  quarryPasir2?: string;
+  quarryBatu1?: string;
+  quarryBatu2?: string;
   isPrint: boolean;
   setIsPrint: (v: boolean) => void;
   onHelpClick: () => void;
@@ -417,6 +431,18 @@ const ScadaDiagram = ({
   vibratorActive?: boolean;
   onManualDeviceToggle?: (deviceKey: string, newValue?: boolean) => void;
 }) => {
+  const gatePasirHopperOpen = rawGatePasirHopperOpen && !isPaused;
+  const gateBatuHopperOpen = rawGateBatuHopperOpen && !isPaused;
+  const gateSemenHopperOpen = rawGateSemenHopperOpen && !isPaused;
+  const gateWaterHopperOpen = rawGateWaterHopperOpen && !isPaused;
+  const waitingHopperGateOpen = rawWaitingHopperGateOpen && !isPaused;
+  const gatePasir1SiloOpen = rawGatePasir1SiloOpen && !isPaused;
+  const gatePasir2SiloOpen = rawGatePasir2SiloOpen && !isPaused;
+  const gateBatu1SiloOpen = rawGateBatu1SiloOpen && !isPaused;
+  const gateBatu2SiloOpen = rawGateBatu2SiloOpen && !isPaused;
+  const screwSemenActive = rawScrewSemenActive && !isPaused;
+  const valveWaterActive = rawValveWaterActive && !isPaused;
+
   const theme = {
     outline: "#00e5ff",
     flow: "#00ff9c",
@@ -426,6 +452,14 @@ const ScadaDiagram = ({
     red: "#ff1744",
     accentBlue: "#2979ff",
     accentGreen: "#00e676"
+  };
+
+  const getQuarryLabel = (label: string) => {
+    if (label === "PASIR 1") return quarryPasir1 || "PASIR #1";
+    if (label === "PASIR 2") return quarryPasir2 || "PASIR #2";
+    if (label === "BATU 1") return quarryBatu1 || "BATU #1";
+    if (label === "BATU 2") return quarryBatu2 || "BATU #2";
+    return label.replace(" 1", " #1").replace(" 2", " #2");
   };
 
   const [selectedManualDevice, setSelectedManualDevice] = useState<{
@@ -535,7 +569,26 @@ const ScadaDiagram = ({
       const fillRatio = totalBatchTargetWeight > 0 ? (totalWeightInMixer / totalBatchTargetWeight) : 0;
       currentMixerVolume = fillRatio * volumePerBatch;
     } else if (mixerState === 'discharging_concrete') {
-      const dischargeProgressRatio = Math.max(0, Math.min(1, dischargeTimeSec / 30.0));
+      const relayConfigForVol = loadRelayConfig();
+      let selectedRelayId = 14;
+      if (volumePerBatch > 1.5 && volumePerBatch <= 2.5) {
+        selectedRelayId = 28;
+      } else if (volumePerBatch > 2.5) {
+        selectedRelayId = 29;
+      }
+      const row14ForVol = relayConfigForVol.find(r => r.relay === selectedRelayId) || relayConfigForVol.find(r => r.relay === 14);
+      const open1Raw = row14ForVol ? parseFloat(row14ForVol.timer1) : 2000;
+      const pause1Raw = row14ForVol ? parseFloat(row14ForVol.timer2) : 6000;
+      const open2Raw = row14ForVol ? parseFloat(row14ForVol.timer3) : 3000;
+      const pause2Raw = row14ForVol ? parseFloat(row14ForVol.timer4) : 5000;
+      const open3Raw = row14ForVol ? parseFloat(row14ForVol.timer5) : 3000;
+      const pause3Raw = row14ForVol ? parseFloat(row14ForVol.timer6) : 11000;
+
+      const finalOpen2 = open2Raw;
+      const finalOpen3 = open3Raw;
+
+      const totalDischargeMs = open1Raw + pause1Raw + finalOpen2 + pause2Raw + finalOpen3 + pause3Raw;
+      const dischargeProgressRatio = Math.max(0, Math.min(1, dischargeTimeSec / (totalDischargeMs / 1000 || 30.0)));
       currentMixerVolume = volumePerBatch * (1 - dischargeProgressRatio);
       
       w_agg = targetAggLocked * (1 - dischargeProgressRatio);
@@ -602,18 +655,14 @@ const ScadaDiagram = ({
   // Dynamic state selectors for flow pathways
   const isWaterOpen = isAuto ? isAir : valveWaterActive;
   const isAdditiveOpen = isAuto ? isAir : valveWaterActive;
-  const isMixerRotating = isAuto 
-    ? (mixerShaftActive && !isPaused)
-    : mixerShaftActive;
+  const isMixerRotating = mixerShaftActive;
 
   const isWaterDischargeOpen = isAuto ? isAir : gateWaterHopperOpen;
 
   const isBottomConvRunning = isAuto
     ? (conveyorBottomActive && !isPaused)
     : conveyorBottomActive;
-  const isUpperConvRunning = isAuto
-    ? (conveyorUpperActive && !isPaused)
-    : conveyorUpperActive;
+  const isUpperConvRunning = conveyorUpperActive;
 
   // Single-source of truth variables for concrete level
   const mixerCurrentVolume = currentMixerVolume;
@@ -976,10 +1025,10 @@ const ScadaDiagram = ({
         {/* --- AGGREGATE SECTION (LEFT) --- */}
         <g id="aggregate-bins">
           {[
-            { x: 68, label: "PASIR 1", isPasir: true, active: isAuto ? (isRunning && gatePasir1SiloOpen) : gatePasir1SiloOpen, weightText: `${(8000 - scales.pasir.actual * 0.7).toFixed(0)} kg` },
-            { x: 148, label: "PASIR 2", isPasir: true, active: isAuto ? (isRunning && gatePasir2SiloOpen) : gatePasir2SiloOpen, weightText: `${(5000 - scales.pasir.actual * 0.3).toFixed(0)} kg` },
-            { x: 228, label: "BATU 1", isPasir: false, active: isAuto ? (isRunning && gateBatu1SiloOpen) : gateBatu1SiloOpen, weightText: `${(12000 - scales.batu.actual * 0.6).toFixed(0)} kg` },
-            { x: 308, label: "BATU 2", isPasir: false, active: isAuto ? (isRunning && gateBatu2SiloOpen) : gateBatu2SiloOpen, weightText: `${(6000 - scales.batu.actual * 0.4).toFixed(0)} kg` }
+            { x: 68, label: "PASIR 1", isPasir: true, active: isAuto ? (isRunning && !isPaused && gatePasir1SiloOpen) : gatePasir1SiloOpen, weightText: `${(8000 - scales.pasir.actual * 0.7).toFixed(0)} kg` },
+            { x: 148, label: "PASIR 2", isPasir: true, active: isAuto ? (isRunning && !isPaused && gatePasir2SiloOpen) : gatePasir2SiloOpen, weightText: `${(5000 - scales.pasir.actual * 0.3).toFixed(0)} kg` },
+            { x: 228, label: "BATU 1", isPasir: false, active: isAuto ? (isRunning && !isPaused && gateBatu1SiloOpen) : gateBatu1SiloOpen, weightText: `${(12000 - scales.batu.actual * 0.6).toFixed(0)} kg` },
+            { x: 308, label: "BATU 2", isPasir: false, active: isAuto ? (isRunning && !isPaused && gateBatu2SiloOpen) : gateBatu2SiloOpen, weightText: `${(6000 - scales.batu.actual * 0.4).toFixed(0)} kg` }
           ].map((bin, i) => (
             <g 
               key={bin.label}
@@ -1001,7 +1050,16 @@ const ScadaDiagram = ({
               <rect x={bin.x} y="175" width="70" height="100" fill="#2c3e50" stroke={theme.outline} strokeWidth="1.5" />
               <path d={`M${bin.x} 275 L${bin.x + 35} 305 L${bin.x + 70} 275`} fill="#2c3e50" stroke={theme.outline} strokeWidth="1.5" />
               <text x={bin.x + 35} y="202" textAnchor="middle" fill="#94a3b8" fontSize="7" fontWeight="black" letterSpacing="1">BIN</text>
-              <text x={bin.x + 35} y="218" textAnchor="middle" fill="#00e5ff" fontSize="9" fontWeight="bold">{bin.label.replace(" 1", " #1").replace(" 2", " #2")}</text>
+              <text 
+                x={bin.x + 35} 
+                y="218" 
+                textAnchor="middle" 
+                fill="#00e5ff" 
+                fontSize={getQuarryLabel(bin.label).length > 12 ? "7px" : "9px"} 
+                fontWeight="bold"
+              >
+                {getQuarryLabel(bin.label).toUpperCase()}
+              </text>
               <text x={bin.x + 35} y="234" textAnchor="middle" fill={batchingPlantMode === 'SYSTEM_3' ? "#fbbf24" : "#888"} fontSize={batchingPlantMode === 'SYSTEM_3' ? "7.5" : "9"} fontWeight="bold">
                 {batchingPlantMode === 'SYSTEM_3' ? bin.weightText : "100%"}
               </text>
@@ -2284,7 +2342,7 @@ const ScadaDiagram = ({
                     </g>
 
                     {/* Industrial heavy slurry details & bubbles in the main mix */}
-                    {isMixerRotating && !isPaused && (
+                    {isMixerRotating && (
                       <g opacity="0.65">
                         <motion.circle cx="605" cy={surfaceY + 16} r="2.5" fill="#303541" animate={{ y: [0, -6, 0], x: [0, 3, 0] }} transition={{ repeat: Infinity, duration: 1.6 }} />
                         <motion.circle cx="635" cy={surfaceY + 10} r="1.8" fill="#505868" animate={{ y: [0, 5, 0] }} transition={{ repeat: Infinity, duration: 1.9 }} />
@@ -2352,7 +2410,7 @@ const ScadaDiagram = ({
             return (
               <g clipPath="url(#mixer-clip)">
                 {/* Wet cement slurry splashing drops popping off the surface during rotation */}
-                {isMixerRotating && !isPaused && [...Array(12)].map((_, idx) => {
+                {isMixerRotating && [...Array(12)].map((_, idx) => {
                   const splashX = 590 + idx * 16 + (idx % 2 === 0 ? 3 : -3);
                   return (
                     <motion.circle
@@ -2380,7 +2438,7 @@ const ScadaDiagram = ({
                 {/* Churning aggregates strictly submerged within the Concrete Body Mass */}
                 <g clipPath="url(#concrete-level-clip)">
                   {/* Rotating Gravel/Stone Aggregate Chunks in the Left Churn (CCW orbit) */}
-                  {isMixerRotating && !isPaused && [...Array(6)].map((_, idx) => {
+                  {isMixerRotating && [...Array(6)].map((_, idx) => {
                     const angleStart = (idx * (360 / 6)) + (idx * 15);
                     const radius = 15 + (idx % 3) * 11;
                     const size = 1.0 + (idx % 2) * 1.0; // Subtle texture dots
@@ -2413,7 +2471,7 @@ const ScadaDiagram = ({
                   })}
 
                   {/* Rotating Gravel/Stone Aggregate Chunks in the Right Churn (CW orbit) */}
-                  {isMixerRotating && !isPaused && [...Array(6)].map((_, idx) => {
+                  {isMixerRotating && [...Array(6)].map((_, idx) => {
                     const angleStart = (idx * (360 / 6)) + (idx * 21);
                     const radius = 15 + (idx % 3) * 11;
                     const size = 1.0 + (idx % 2) * 1.0; // Subtle texture dots
@@ -2457,7 +2515,7 @@ const ScadaDiagram = ({
             <circle cx="0" cy="0" r="11.5" fill="none" stroke="#2c3e50" strokeWidth="1.2" strokeDasharray="3 3.5" />
             
             {/* Spinning cooling fan blades */}
-            <g className={(isMixerRotating && !isPaused) ? "spin-cw-active" : ""}>
+            <g className={isMixerRotating ? "spin-cw-active" : ""}>
               {[...Array(5)].map((_, i) => {
                 const angle = (i * 360) / 5;
                 return (
@@ -2472,7 +2530,7 @@ const ScadaDiagram = ({
               })}
             </g>
             {/* Central hub / axle shaft status circle */}
-            <circle cx="0" cy="0" r="3.5" fill={(isMixerRotating && !isPaused) ? theme.flow : "#475569"} stroke={(isMixerRotating && !isPaused) ? "#fff" : "none"} strokeWidth="0.5" />
+            <circle cx="0" cy="0" r="3.5" fill={isMixerRotating ? theme.flow : "#475569"} stroke={isMixerRotating ? "#fff" : "none"} strokeWidth="0.5" />
           </g>
 
           {/* Industrial Discharge Chute under Mixer */}
@@ -2595,6 +2653,29 @@ const ScadaDiagram = ({
         {/* INDUSTRIAL MIXING TIMER (Moved to right of Mixer as requested) */}
         {(() => {
           const isDischargingSec = !!concreteDischargeActive;
+
+          // Dynamic calculation of discharge door sequencer time based on target volume settings
+          const targetVol = volumePerBatch || activeVolume || 3.5;
+          const relayConfig = loadRelayConfig();
+          let selectedRelayId = 14;
+          if (targetVol > 1.5 && targetVol <= 2.5) {
+            selectedRelayId = 28;
+          } else if (targetVol > 2.5) {
+            selectedRelayId = 29;
+          }
+          const row14 = relayConfig.find(r => r.relay === selectedRelayId) || relayConfig.find(r => r.relay === 14);
+
+          const open1Raw = row14 ? parseFloat(row14.timer1) : 2000;
+          const pause1Raw = row14 ? parseFloat(row14.timer2) : 6000;
+          const open2Raw = row14 ? parseFloat(row14.timer3) : 3000;
+          const pause2Raw = row14 ? parseFloat(row14.timer4) : 5000;
+          const open3Raw = row14 ? parseFloat(row14.timer5) : 3000;
+          const pause3Raw = row14 ? parseFloat(row14.timer6) : 11000;
+
+          // limit7 = open1Raw + pause1Raw + open2Raw + pause2Raw + open3Raw + pause3Raw + 5000 ms (including door closing phase)
+          const totalDischargeMs = open1Raw + pause1Raw + open2Raw + pause2Raw + open3Raw + pause3Raw + 5000;
+          const maxDoorTime = Math.max(1, totalDischargeMs / 1000);
+
           return (
             <foreignObject x="795" y="325" width="160" height="240">
               <div className="w-full h-full bg-transparent p-2 flex flex-col justify-start gap-1 items-center relative">
@@ -2661,8 +2742,7 @@ const ScadaDiagram = ({
                       const C = 2 * Math.PI * r; // ~238.76
                       
                       if (isDischargingSec) {
-                        const maxDoorTime = 35; // 35 seconds discharge sequencer
-                        const dTimeRemaining = Math.max(0, 35 - dischargeTimeSec);
+                        const dTimeRemaining = Math.max(0, maxDoorTime - dischargeTimeSec);
                         const pct = Math.min(1, Math.max(0, dTimeRemaining / maxDoorTime));
                         const offset = C - (pct * C);
                         
@@ -2721,7 +2801,7 @@ const ScadaDiagram = ({
                       className=""
                     >
                       {isDischargingSec ? (
-                        Math.max(0, Math.ceil(35 - dischargeTimeSec))
+                        Math.max(0, Math.ceil(maxDoorTime - dischargeTimeSec))
                       ) : (productionState === 'COMPLETE' || isDone) ? (
                         0
                       ) : (
@@ -2894,8 +2974,8 @@ const ScadaDiagram = ({
         </div>
       )}
 
-      {/* Print toggle and Help buttons exactly centered at the very bottom center of the SCADA panel */}
-      <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-3.5 z-10 select-none">
+      {/* Print toggle and Help buttons aligned to the right side of the SCADA panel */}
+      <div className="absolute bottom-3 right-3 flex items-center gap-3.5 z-10 select-none">
         {/* Toggle Moisture Control Button */}
         <button
           onClick={(e) => {
@@ -2914,6 +2994,20 @@ const ScadaDiagram = ({
         >
           <span className="text-[8px] tracking-wide uppercase font-black">MOISTURE</span>
           <span className="text-[8px] tracking-wide uppercase font-black">CONTROL</span>
+        </button>
+
+        {/* Quarry Aggregate Button */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            if (onQuarryClick) {
+              onQuarryClick();
+            }
+          }}
+          className="h-[38px] px-3.5 bg-[#07665C] border-2 border-[#09544d] text-slate-100 hover:text-white hover:bg-[#0d9488] rounded-[10px] flex flex-col justify-center items-center gap-0 leading-tight transition-all duration-150 active:scale-95 cursor-pointer font-sans select-none shrink-0 text-center"
+        >
+          <span className="text-[8px] tracking-wide uppercase font-black">QUARRY</span>
+          <span className="text-[8px] tracking-wide uppercase font-black">AGGREGATE</span>
         </button>
 
         {/* Toggle Print Button */}
@@ -3137,6 +3231,7 @@ export default function App() {
   const [currentBatch, setCurrentBatch] = useState<number>(0);
   const [targetBatch, setTargetBatch] = useState<number>(0);
   const [volumePerBatch, setVolumePerBatch] = useState<number>(0);
+  const volumePerBatchRef = useRef<number>(0);
   
   // Weighing controller states
   const [weighingCycle, setWeighingCycle] = useState<number>(0);
@@ -3455,6 +3550,33 @@ export default function App() {
     const configList = loadRelayConfig();
 
     const getRelayActiveState = (row: any): boolean => {
+      // If the batch process is paused (and we are in Auto mode), almost all outputs must be OFF.
+      if (isPausedRef.current && isAutoRef.current) {
+        // Keep only critical non-feeding outputs active if they already are
+        if (row.relay === 1) { // Mixer motor
+          return mixerShaftActive;
+        }
+        if (row.relay === 4) { // Compressor
+          return compressorActive;
+        }
+        if (row.relay === 16) { // Horn/Klakson
+          return klaksonActive;
+        }
+        
+        const normName = row.name.trim().toLowerCase();
+        if (normName.includes("mixer") && !normName.includes("buka") && !normName.includes("tutup")) {
+          return mixerShaftActive;
+        }
+        if (normName.includes("kompresor") || normName.includes("compressor")) {
+          return compressorActive;
+        }
+        if (normName.includes("klakson") || normName.includes("horn")) {
+          return klaksonActive;
+        }
+        
+        return false;
+      }
+
       const normName = row.name.trim().toLowerCase();
       
       // 1. Unchanging hardware Relay IDs (1 to 23)
@@ -3472,7 +3594,10 @@ export default function App() {
         case 11: return vibratorActive; // Vibrator
         case 12: return gateWaterHopperOpenRef.current; // Tuang air (Water Scale Dump Gate)
         case 13: return valveWaterActive; // Tuang additive (originally spare/water fill valve)
-        case 14: return !!(mixerDoor1OpenActive || mixerDoor2OpenActive || mixerDoor3OpenActive); // Pintu mixer buka
+        case 14:
+        case 28:
+        case 29:
+          return !!(mixerDoor1OpenActive || mixerDoor2OpenActive || mixerDoor3OpenActive); // Pintu mixer buka (1 m3, 2 m3, 3.5 m3)
         case 15: return mixerDoorClosingActive; // Pintu mixer tutup
         case 16: return klaksonActive; // Klakson
         case 17: return !!(screwSemenActive && siloNum === "1"); // Silo 1
@@ -3889,10 +4014,10 @@ export default function App() {
         mixingCycles: l.mixingCycles || 1,
         slump: l.slump || "12cm",
         siloSemen: l.siloSemen || "SILO 1",
-        pelanggan: l.pelanggan || "PT. FARIKA",
-        lokasi: l.lokasi || "PEKANBARU",
-        noKendaraan: l.noKendaraan || "BM 9999 AA",
-        sopir: l.sopir || "Budi",
+        pelanggan: l.pelanggan || "",
+        lokasi: l.lokasi || "",
+        noKendaraan: l.noKendaraan || "",
+        sopir: l.sopir || "",
         productionMode: l.productionMode || "AUTO",
         startTime: l.startTime || "",
         endTime: l.endTime || ""
@@ -4017,6 +4142,11 @@ export default function App() {
   const [batuMoisture, setBatuMoisture] = useState(0);
   const [airAdjustment, setAirAdjustment] = useState(0);
   const [isMoistureOpen, setIsMoistureOpen] = useState(false);
+  const [isQuarryOpen, setIsQuarryOpen] = useState(false);
+  const [quarryPasir1, setQuarryPasir1] = useState(() => localStorage.getItem("quarry_pasir_1") || "Pasir Galunggung");
+  const [quarryPasir2, setQuarryPasir2] = useState(() => localStorage.getItem("quarry_pasir_2") || "Pasir Sungai");
+  const [quarryBatu1, setQuarryBatu1] = useState(() => localStorage.getItem("quarry_batu_1") || "Batu Split 1-2");
+  const [quarryBatu2, setQuarryBatu2] = useState(() => localStorage.getItem("quarry_batu_2") || "Batu Split 2-3");
   const [isHmiAdminOpen, setIsHmiAdminOpen] = useState(false);
   const [isHmiAdminMenuOpen, setIsHmiAdminMenuOpen] = useState(false);
   const [hmiAdminPassword, setHmiAdminPassword] = useState("");
@@ -4025,11 +4155,48 @@ export default function App() {
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [time, setTime] = useState(new Date());
 
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setTime(new Date());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   const [isPaused, setIsPaused] = useState(false);
   const isPausedRef = useRef(false);
   useEffect(() => {
     isPausedRef.current = isPaused;
   }, [isPaused]);
+
+  // Keyboard spacebar listener to trigger pause/continue
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' || e.key === ' ') {
+        // Prevent action when typing in any input, textarea, or contenteditable fields
+        const activeEl = document.activeElement;
+        if (activeEl && (
+          activeEl.tagName === 'INPUT' || 
+          activeEl.tagName === 'TEXTAREA' || 
+          activeEl.hasAttribute('contenteditable')
+        )) {
+          return;
+        }
+
+        // Prevent page scroll
+        e.preventDefault();
+
+        // Only active during auto production run
+        if (isRunning && isAuto) {
+          setIsPaused(prev => !prev);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isRunning, isAuto]);
 
   // -- Material isolated jogging states (prioritas lokal manual) --
 
@@ -4321,10 +4488,10 @@ export default function App() {
     setActiveSlump(config.slump);
     setActiveSiloSemen(config.siloSemen);
     setActiveMixingTime(config.mixingTime);
-    setActivePelanggan(config.pelanggan || "CV. Jaya Mandiri");
-    setActiveLokasi(config.lokasi || "Bypass Tol Km 19");
-    setActiveNoKendaraan(config.noKendaraan || "BM 9012 UX");
-    setActiveSopir(config.sopir || "Supir Budi");
+    setActivePelanggan(config.pelanggan || "");
+    setActiveLokasi(config.lokasi || "");
+    setActiveNoKendaraan(config.noKendaraan || "");
+    setActiveSopir(config.sopir || "");
 
     // Compute cycle mathematics
     const totalC = config.mixingCycles || 1;
@@ -4333,6 +4500,7 @@ export default function App() {
 
     const vPerCycle = parseFloat((config.volume / totalC).toFixed(2));
     setVolumePerBatch(vPerCycle);
+    volumePerBatchRef.current = vPerCycle;
     setVolumePerCycle(vPerCycle);
 
     if (!isAuto) {
@@ -4839,7 +5007,11 @@ export default function App() {
       pelanggan: activePelanggan,
       lokasi: activeLokasi,
       noKendaraan: activeNoKendaraan,
-      sopir: activeSopir
+      sopir: activeSopir,
+      quarryPasir1,
+      quarryPasir2,
+      quarryBatu1,
+      quarryBatu2
     }, ...prev]);
   };
 
@@ -4997,17 +5169,18 @@ export default function App() {
           changed = true;
         }
 
-        // 7. Sand and Gravel discharge/dump
-        if (conveyorBottomActive || gatePasirHopperOpen || gateBatuHopperOpen) {
+        // 7. Sand and Gravel discharge/dump (Requires respective discharge gate/pintu to be ON)
+        if (gatePasirHopperOpen || gateBatuHopperOpen) {
           const decPasir = (25 + Math.random() * 15) * 0.1;
           const decBatu = (30 + Math.random() * 20) * 0.1;
-          if (conveyorBottomActive || gatePasirHopperOpen) {
+          if (gatePasirHopperOpen) {
             next.pasir.actual = parseFloat(Math.max(0, next.pasir.actual - decPasir).toFixed(1));
+            changed = true;
           }
-          if (conveyorBottomActive || gateBatuHopperOpen) {
+          if (gateBatuHopperOpen) {
             next.batu.actual = parseFloat(Math.max(0, next.batu.actual - decBatu).toFixed(1));
+            changed = true;
           }
-          changed = true;
         }
 
         return changed ? next : prev;
@@ -5106,7 +5279,7 @@ export default function App() {
 
         // Fail-safe: check if communication connection is disconnected or lost during batch
         if (webSerialService.getStatus() === "DISCONNECTED") {
-          setAlarmMessage("ALARM KESELAMATAN: Komunikasi HMI ke Board Arduino Mega terputus selama proses produksi!");
+          setAlarmMessage("ALARM KESELAMATAN: Komunikasi HMI ke panel kontrol batching plant terputus!");
         }
 
         if (!isAutoRef.current) {
@@ -6455,7 +6628,7 @@ export default function App() {
 
                 if (system1WaitingSeqRef.current === 'sand_discharging') {
                   // Only pasir door is open, stone remains closed
-                  setGatePasirHopperOpenSync(scalesRef.current.pasir.actual > 0);
+                  setGatePasirHopperOpenSync(scalesRef.current.pasir.actual > 2.0);
                   setGateBatuHopperOpenSync(false);
 
                   // Drain only pasir actual volume
@@ -6472,7 +6645,8 @@ export default function App() {
                   });
 
                   // When pasir becomes empty
-                  if (scalesRef.current.pasir.actual === 0) {
+                  if (scalesRef.current.pasir.actual <= 2.0) {
+                    setGatePasirHopperOpenSync(false);
                     system1WaitingSeqRef.current = 'sand_empty_delay';
                     system1WaitingSeqTimerRef.current = 0;
                     setRelayLogs(l => [
@@ -6485,7 +6659,7 @@ export default function App() {
                       {
                         id: 'SAND-WAIT-' + Math.random().toString(36).substring(7).toUpperCase(),
                         timestamp: new Date(),
-                        message: "WAIT 2 SECONDS",
+                        message: "WAIT 1 SECONDS",
                         type: 'info'
                       },
                       ...l
@@ -6498,7 +6672,7 @@ export default function App() {
                   setGateBatuHopperOpenSync(false);
 
                   system1WaitingSeqTimerRef.current += 100;
-                  if (system1WaitingSeqTimerRef.current >= 2000) {
+                  if (system1WaitingSeqTimerRef.current >= 1000) {
                     system1WaitingSeqRef.current = 'stone_discharging';
                     system1WaitingSeqTimerRef.current = 0;
                     setRelayLogs(l => [{
@@ -6512,7 +6686,7 @@ export default function App() {
                 else if (system1WaitingSeqRef.current === 'stone_discharging') {
                   // Only stone door is open, pasir remains closed
                   setGatePasirHopperOpenSync(false);
-                  setGateBatuHopperOpenSync(scalesRef.current.batu.actual > 0);
+                  setGateBatuHopperOpenSync(scalesRef.current.batu.actual > 2.0);
 
                   // Drain only stone actual volume
                   setScalesSync(prev => {
@@ -6528,7 +6702,8 @@ export default function App() {
                   });
 
                   // When stone becomes empty
-                  if (scalesRef.current.batu.actual === 0) {
+                  if (scalesRef.current.batu.actual <= 2.0) {
+                    setGateBatuHopperOpenSync(false);
                     system1WaitingSeqRef.current = 'done';
                     setRelayLogs(l => [{
                       id: 'STONE-EMP-' + Math.random().toString(36).substring(7).toUpperCase(),
@@ -6540,8 +6715,8 @@ export default function App() {
                 }
               } else {
                 // System 2 & 3: Keep original concurrent discharge
-                setGatePasirHopperOpenSync(scalesRef.current.pasir.actual > 0);
-                setGateBatuHopperOpenSync(scalesRef.current.batu.actual > 0);
+                setGatePasirHopperOpenSync(scalesRef.current.pasir.actual > 2.0);
+                setGateBatuHopperOpenSync(scalesRef.current.batu.actual > 2.0);
 
                 // Drain scales actual volumes
                 setScalesSync(prev => {
@@ -6563,7 +6738,7 @@ export default function App() {
               }
 
               // Once scale hoppers are completely drained
-              if (scalesRef.current.pasir.actual === 0 && scalesRef.current.batu.actual === 0) {
+              if (scalesRef.current.pasir.actual <= 2.0 && scalesRef.current.batu.actual <= 2.0) {
                 // Close scale doors
                 setGatePasirHopperOpenSync(false);
                 setGateBatuHopperOpenSync(false);
@@ -6581,7 +6756,7 @@ export default function App() {
                   {
                     id: 'POST-' + Math.random().toString(36).substring(7).toUpperCase(),
                     timestamp: new Date(),
-                    message: `BOTTOM CONVEYOR POSTRUN ${batchingPlantMode === 'SYSTEM_2' ? '2' : '5'}s`,
+                    message: `BOTTOM CONVEYOR POSTRUN ${batchingPlantMode === 'SYSTEM_1' ? '3' : (batchingPlantMode === 'SYSTEM_2' ? '2' : '5')}s`,
                     type: 'info'
                   },
                   ...l
@@ -6595,8 +6770,8 @@ export default function App() {
               setGateBatuHopperOpenSync(false);
 
               conveyorBottomTimerRef.current += 100;
-              const maxPostrunLimit = batchingPlantMode === 'SYSTEM_2' ? 2000 : 5000;
-              if (conveyorBottomTimerRef.current >= maxPostrunLimit) { // 2.0s or 5.0s postrun
+              const maxPostrunLimit = batchingPlantMode === 'SYSTEM_1' ? 3000 : (batchingPlantMode === 'SYSTEM_2' ? 2000 : 5000);
+              if (conveyorBottomTimerRef.current >= maxPostrunLimit) { // 3.0s, 2.0s or 5.0s postrun
                 // Turn off bottom conveyor
                 setConveyorBottomActiveSync(false);
                 setConveyorBottomPhaseSync('STANDBY');
@@ -6773,8 +6948,8 @@ export default function App() {
           } else if (conveyorBottomPhaseRef.current === 'POSTRUN') {
             conveyorBottomTimerRef.current += 100;
             setConveyorBottomActiveSync(true); // force it to stay on during POSTRUN
-            const maxPostrunLimit = batchingPlantMode === 'SYSTEM_2' ? 2000 : 5000;
-            if (conveyorBottomTimerRef.current >= maxPostrunLimit) { // 2.0s or 5.0s postrun
+            const maxPostrunLimit = batchingPlantMode === 'SYSTEM_1' ? 3000 : (batchingPlantMode === 'SYSTEM_2' ? 2000 : 5000);
+            if (conveyorBottomTimerRef.current >= maxPostrunLimit) { // 3.0s, 2.0s or 5.0s postrun
               setConveyorBottomActiveSync(false);
               setConveyorBottomPhaseSync('STANDBY');
               conveyorBottomTimerRef.current = 0;
@@ -6876,7 +7051,7 @@ export default function App() {
                 aggregateTransitQueueRef.current.push({ amount: pDrained, ticksNeeded: 45 });
               }
 
-              if (nextScales.pasir.actual === 0) {
+              if (nextScales.pasir.actual <= 2.0) {
                 if (batchingPlantMode === 'SYSTEM_2') {
                   setGatePasirHopperOpenSync(false);
                   pState.phase = 'done';
@@ -6948,7 +7123,7 @@ export default function App() {
                 nextScales.air.actual = Math.max(0, nextScales.air.actual - drain);
               }
 
-              if (nextScales.air.actual === 0) {
+              if (nextScales.air.actual <= 1.0) {
                 if (batchingPlantMode === 'SYSTEM_2') {
                   setGateWaterHopperOpenSync(false);
                   aState.phase = 'done';
@@ -6996,7 +7171,7 @@ export default function App() {
                 nextScales.semen.actual = Math.max(0, nextScales.semen.actual - drain);
               }
 
-              if (nextScales.semen.actual === 0) {
+              if (nextScales.semen.actual <= 2.0) {
                 if (batchingPlantMode === 'SYSTEM_2') {
                   setGateSemenHopperOpenSync(false);
                   cState.phase = 'done';
@@ -7052,8 +7227,8 @@ export default function App() {
                 aggregateTransitQueueRef.current.push({ amount: bDrained, ticksNeeded: 32 });
               }
 
-              if (nextScales.batu.actual === 0) {
-                if (batchingPlantMode === 'SYSTEM_2') {
+              if (nextScales.batu.actual <= 2.0) {
+                if (batchingPlantMode === 'SYSTEM_2' || batchingPlantMode === 'SYSTEM_1') {
                   setGateBatuHopperOpenSync(false);
                   bState.phase = 'done';
                   bState.timer = 0;
@@ -7080,8 +7255,10 @@ export default function App() {
             }
 
             if (conveyorBottomPhaseRef.current === 'TRANSFER') {
-              const isPasirDone = nextScales.pasir.target === 0 || nextScales.pasir.actual === 0;
-              const isBatuDone = nextScales.batu.target === 0 || nextScales.batu.actual === 0;
+              const isPasirDone = nextScales.pasir.target === 0 || 
+                                  (batchingPlantMode === 'SYSTEM_1' ? pState.phase === 'done' : nextScales.pasir.actual <= 2.0);
+              const isBatuDone = nextScales.batu.target === 0 || 
+                                 (batchingPlantMode === 'SYSTEM_1' ? bState.phase === 'done' : nextScales.batu.actual <= 2.0);
               
               if (isPasirDone && isBatuDone) {
                 setConveyorBottomPhaseSync('POSTRUN');
@@ -7096,7 +7273,7 @@ export default function App() {
                   {
                     id: 'POST-' + Math.random().toString(36).substring(7).toUpperCase(),
                     timestamp: new Date(),
-                    message: `BOTTOM CONVEYOR POSTRUN ${batchingPlantMode === 'SYSTEM_2' ? '2' : '5'}s`,
+                    message: `BOTTOM CONVEYOR POSTRUN ${batchingPlantMode === 'SYSTEM_1' ? '3' : (batchingPlantMode === 'SYSTEM_2' ? '2' : '5')}s`,
                     type: 'info'
                   },
                   ...l
@@ -7261,6 +7438,24 @@ export default function App() {
             doorTimerMsRef.current = 0;
             setProductionState('DISCHARGING CONCRETE');
             setConcreteDischargeActive(true);
+
+            // Smart logic selection log
+            const targetVol = volumePerBatchRef.current || volumePerBatch || 3.5;
+            let doorPresetName = "1 m³";
+            let activatedRelayId = 14;
+            if (targetVol > 1.5 && targetVol <= 2.5) {
+              doorPresetName = "2 m³";
+              activatedRelayId = 28;
+            } else if (targetVol > 2.5) {
+              doorPresetName = "3.5 m³";
+              activatedRelayId = 29;
+            }
+            setRelayLogs(l => [{
+              id: 'MIXER-AUTO-PINTU-' + Math.random().toString(36).substring(7).toUpperCase(),
+              timestamp: new Date(),
+              message: `[MIXER] Volume: ${targetVol.toFixed(1)} m³ -> Otomatis menerapkan Setting Pintu Mixer ${doorPresetName} (Relay #${activatedRelayId})`,
+              type: 'info'
+            }, ...l]);
           }
         }
 
@@ -7268,7 +7463,43 @@ export default function App() {
         else if (currentState === 'discharging_concrete') {
           doorTimerMsRef.current += 100;
           const dTimeTotal = doorTimerMsRef.current;
-          const dSecElapsed = Math.min(35.0, dTimeTotal / 1000);
+
+          // Load timing values from Relay 14 settings
+          const relayConfig = loadRelayConfig();
+          const targetVol = volumePerBatchRef.current || volumePerBatch || 3.5;
+          let selectedRelayId = 14;
+          if (targetVol > 1.5 && targetVol <= 2.5) {
+            selectedRelayId = 28;
+          } else if (targetVol > 2.5) {
+            selectedRelayId = 29;
+          }
+          const row14 = relayConfig.find(r => r.relay === selectedRelayId) || relayConfig.find(r => r.relay === 14);
+
+          // Get raw settings with original hardcoded defaults as fallback:
+          const open1Raw = row14 ? parseFloat(row14.timer1) : 2000;
+          const pause1Raw = row14 ? parseFloat(row14.timer2) : 6000;
+          const open2Raw = row14 ? parseFloat(row14.timer3) : 3000;
+          const pause2Raw = row14 ? parseFloat(row14.timer4) : 5000;
+          const open3Raw = row14 ? parseFloat(row14.timer5) : 3000;
+          const pause3Raw = row14 ? parseFloat(row14.timer6) : 11000;
+
+          const finalOpen1 = open1Raw;
+          const finalPause1 = pause1Raw;
+          const finalOpen2 = open2Raw;
+          const finalPause2 = pause2Raw;
+          const finalOpen3 = open3Raw;
+          const finalPause3 = pause3Raw;
+
+          const limit1 = finalOpen1;
+          const limit2 = limit1 + finalPause1;
+          const limit3 = limit2 + finalOpen2;
+          const limit4 = limit3 + finalPause2;
+          const limit5 = limit4 + finalOpen3;
+          const limit6 = limit5 + finalPause3;
+          const limit7 = limit6 + 5000; // Close door (5 seconds)
+
+          const totalDischargeSec = limit7 / 1000;
+          const dSecElapsed = Math.min(totalDischargeSec, dTimeTotal / 1000);
           
           setDischargeTimeSec(dSecElapsed);
 
@@ -7277,17 +7508,17 @@ export default function App() {
           const totD = targetBatchRef.current || 1;
           const baseProgressD = ((curD - 1) / totD) * 100;
           const mixWeightD = 45; // mixing portion completed
-          const stepPercentD = (dSecElapsed / 35.0) * 100 * (1 / totD) * 0.55;
+          const stepPercentD = (dSecElapsed / totalDischargeSec) * 100 * (1 / totD) * 0.55;
           setBatchProgress(Math.min(100, Math.round(baseProgressD + mixWeightD * (1/totD) + stepPercentD)));
 
           // Determine step and apply states based on continuous time:
 
-          // Phase 1 (Buka 2 detik, Target 20%)
-          if (dTimeTotal <= 2000) {
+          // Phase 1 (Buka 1, Target 20%)
+          if (dTimeTotal <= limit1) {
             doorStepRef.current = 1;
             setMixerStatusText('DOOR SOLENOID ACTIVE (RELAY #14)');
             setMixerDoorStateText('PHASE 1: BUKA (7cm)');
-            const pct = Math.min(20, (dTimeTotal / 2000) * 20); // gradual open
+            const pct = Math.min(20, (dTimeTotal / finalOpen1) * 20); // gradual open
             setMixerDoorPercent(pct);
             setMixerDoor1OpenActive(true);
             setMixerDoor2OpenActive(false);
@@ -7295,8 +7526,8 @@ export default function App() {
             setMixerDoorClosingActive(false);
           }
 
-          // Phase 2 (Diam 6 detik, Stay 20%)
-          else if (dTimeTotal <= 8000) {
+          // Phase 2 (Diam 1, Stay 20%)
+          else if (dTimeTotal <= limit2) {
             doorStepRef.current = 2;
             setMixerStatusText('DOOR STATIONARY (7cm)');
             setMixerDoorStateText('PHASE 2: DIAM (7cm)');
@@ -7307,13 +7538,13 @@ export default function App() {
             setMixerDoorClosingActive(false);
           }
 
-          // Phase 3 (Buka 3 detik, Target 65%)
-          else if (dTimeTotal <= 11000) {
+          // Phase 3 (Buka 2, Target 65%)
+          else if (dTimeTotal <= limit3) {
             doorStepRef.current = 3;
             setMixerStatusText('DOOR SOLENOID ACTIVE (RELAY #14)');
             setMixerDoorStateText('PHASE 3: BUKA (24cm)');
-            const elapsedInStep = dTimeTotal - 8000;
-            const pct = Math.min(65, 20 + (elapsedInStep / 3000) * 45);
+            const elapsedInStep = dTimeTotal - limit2;
+            const pct = Math.min(65, 20 + (elapsedInStep / finalOpen2) * 45);
             setMixerDoorPercent(pct);
             setMixerDoor1OpenActive(false);
             setMixerDoor2OpenActive(true);
@@ -7321,8 +7552,8 @@ export default function App() {
             setMixerDoorClosingActive(false);
           }
 
-          // Phase 4 (Diam 5 dtk, Stay 65%)
-          else if (dTimeTotal <= 16000) {
+          // Phase 4 (Diam 2, Stay 65%)
+          else if (dTimeTotal <= limit4) {
             doorStepRef.current = 4;
             setMixerStatusText('DOOR STATIONARY (24cm)');
             setMixerDoorStateText('PHASE 4: DIAM (24cm)');
@@ -7333,13 +7564,13 @@ export default function App() {
             setMixerDoorClosingActive(false);
           }
 
-          // Phase 5 (Buka 3 detik, Target 100%)
-          else if (dTimeTotal <= 19000) {
+          // Phase 5 (Buka 3, Target 100%)
+          else if (dTimeTotal <= limit5) {
             doorStepRef.current = 5;
             setMixerStatusText('DOOR SOLENOID ACTIVE (RELAY #14)');
             setMixerDoorStateText('PHASE 5: BUKA LENGKAP (30cm)');
-            const elapsedInStep = dTimeTotal - 16000;
-            const pct = Math.min(100, 65 + (elapsedInStep / 3000) * 35);
+            const elapsedInStep = dTimeTotal - limit4;
+            const pct = Math.min(100, 65 + (elapsedInStep / finalOpen3) * 35);
             setMixerDoorPercent(pct);
             setMixerDoor1OpenActive(false);
             setMixerDoor2OpenActive(false);
@@ -7347,8 +7578,8 @@ export default function App() {
             setMixerDoorClosingActive(false);
           }
 
-          // Phase 6 (Diam 11 dtk, Stay 100%)
-          else if (dTimeTotal <= 30000) {
+          // Phase 6 (Diam 3, Stay 100%)
+          else if (dTimeTotal <= limit6) {
             doorStepRef.current = 6;
             setMixerStatusText('MIXER EMPTY CHUTE FULL FLOOD');
             setMixerDoorStateText('PHASE 6: PENGOSONGAN');
@@ -7360,11 +7591,11 @@ export default function App() {
           }
 
           // Phase 7 (Tutup Pintu 5 detik, Target 0%)
-          else if (dTimeTotal <= 35000) {
+          else if (dTimeTotal <= limit7) {
             doorStepRef.current = 7;
             setMixerStatusText('CLOSE SOLENOID ACTIVE (RELAY #15)');
             setMixerDoorStateText('PHASE 7: MENUTUP PINTU');
-            const elapsedInStep = dTimeTotal - 30000;
+            const elapsedInStep = dTimeTotal - limit6;
             const pct = Math.max(0, 100 - (elapsedInStep / 5000) * 100); // gradual close
             setMixerDoorPercent(pct);
             setMixerDoor1OpenActive(false);
@@ -7525,7 +7756,7 @@ export default function App() {
     const peakAir = Math.round(manualPeakAirRef.current);
 
     const completedBatch = Math.max(1, currentBatchRef.current);
-    const volPerMix = volumePerBatch || 0.1;
+    const volPerMix = volumePerBatchRef.current || volumePerBatch || 0.1;
     const totalVolumeProduksi = parseFloat((completedBatch * volPerMix).toFixed(2));
 
     const recP1 = (selectedRecipe as any).pasir1 !== undefined ? (selectedRecipe as any).pasir1 : Math.round((selectedRecipe?.targets.pasir ?? 400) * 0.7);
@@ -7675,7 +7906,11 @@ export default function App() {
       sopir: activeSopir,
       productionMode: 'MANUAL',
       startTime: startStr,
-      endTime: endStr
+      endTime: endStr,
+      quarryPasir1,
+      quarryPasir2,
+      quarryBatu1,
+      quarryBatu2
     };
 
     setLogs(prev => [manualLog, ...prev].slice(0, 50));
@@ -7767,7 +8002,11 @@ export default function App() {
       sopir: activeSopir,
       productionMode: 'AUTO',
       startTime: autoStartTime || new Date(Date.now() - (activeMixingTime * 1000)).toLocaleTimeString('id-ID'),
-      endTime: new Date().toLocaleTimeString('id-ID')
+      endTime: new Date().toLocaleTimeString('id-ID'),
+      quarryPasir1,
+      quarryPasir2,
+      quarryBatu1,
+      quarryBatu2
     };
 
     setLogs(prev => [newLog, ...prev].slice(0, 50));
@@ -7784,6 +8023,16 @@ export default function App() {
 
     const targets = log.targets || defaultTargets;
     const actuals = log.actuals || defaultActuals;
+
+    const qPasir1 = log.quarryPasir1 !== undefined ? log.quarryPasir1 : (localStorage.getItem("quarry_pasir_1") || "");
+    const qPasir2 = log.quarryPasir2 !== undefined ? log.quarryPasir2 : (localStorage.getItem("quarry_pasir_2") || "");
+    const qBatu1 = log.quarryBatu1 !== undefined ? log.quarryBatu1 : (localStorage.getItem("quarry_batu_1") || "");
+    const qBatu2 = log.quarryBatu2 !== undefined ? log.quarryBatu2 : (localStorage.getItem("quarry_batu_2") || "");
+
+    const labelPasir1 = qPasir1 ? `Pasir 1 / ${qPasir1}` : "Pasir 1";
+    const labelPasir2 = qPasir2 ? `Pasir 2 / ${qPasir2}` : "Pasir 2";
+    const labelBatu1 = qBatu1 ? `Batu 1 / ${qBatu1}` : "Batu 1";
+    const labelBatu2 = qBatu2 ? `Batu 2 / ${qBatu2}` : "Batu 2";
 
     const computeDev = (act: number, tgt: number) => {
       if (tgt === 0 && act === 0) return 0;
@@ -7932,12 +8181,7 @@ export default function App() {
                   <span className="font-bold text-slate-900">{dateStr}</span>
                 </div>
                 <div className="flex">
-                  <span className="w-24 text-slate-500 font-medium">Nama</span>
-                  <span className="mr-2">:</span>
-                  <span className="font-bold text-slate-900">-</span>
-                </div>
-                <div className="flex">
-                  <span className="w-24 text-slate-500 font-medium">Pelanggan</span>
+                  <span className="w-24 text-slate-500 font-medium">Nama Pelanggan</span>
                   <span className="mr-2">:</span>
                   <span className="font-semibold text-slate-800 uppercase">{log.pelanggan || '-'}</span>
                 </div>
@@ -8002,25 +8246,25 @@ export default function App() {
                 </thead>
                 <tbody>
                   <tr className="border-b border-slate-400">
-                    <td className="border-r border-slate-400 p-1.5 font-bold text-left">Pasir 1</td>
+                    <td className="border-r border-slate-400 p-1.5 font-bold text-left">{labelPasir1}</td>
                     <td className="border-r border-slate-400 p-1.5 font-mono text-center">{targets.pasir1}</td>
                     <td className="border-r border-slate-400 p-1.5 font-mono text-center">{actuals.pasir1}</td>
                     <td className={`p-1.5 font-mono font-bold text-center ${devPasir1 !== 0 ? 'text-red-500' : ''}`}>{formatDev(devPasir1)}</td>
                   </tr>
                   <tr className="border-b border-slate-400">
-                    <td className="border-r border-slate-400 p-1.5 font-bold text-left">Pasir 2</td>
+                    <td className="border-r border-slate-400 p-1.5 font-bold text-left">{labelPasir2}</td>
                     <td className="border-r border-slate-400 p-1.5 font-mono text-center">{targets.pasir2}</td>
                     <td className="border-r border-slate-400 p-1.5 font-mono text-center">{actuals.pasir2}</td>
                     <td className={`p-1.5 font-mono font-bold text-center ${devPasir2 !== 0 ? 'text-red-500' : ''}`}>{formatDev(devPasir2)}</td>
                   </tr>
                   <tr className="border-b border-slate-400">
-                    <td className="border-r border-slate-400 p-1.5 font-bold text-left">Batu 1</td>
+                    <td className="border-r border-slate-400 p-1.5 font-bold text-left">{labelBatu1}</td>
                     <td className="border-r border-slate-400 p-1.5 font-mono text-center">{targets.batu1}</td>
                     <td className="border-r border-slate-400 p-1.5 font-mono text-center">{actuals.batu1}</td>
                     <td className={`p-1.5 font-mono font-bold text-center ${devBatu1 !== 0 ? 'text-red-500' : ''}`}>{formatDev(devBatu1)}</td>
                   </tr>
                   <tr className="border-b border-slate-400">
-                    <td className="border-r border-slate-400 p-1.5 font-bold text-left">Batu 2</td>
+                    <td className="border-r border-slate-400 p-1.5 font-bold text-left">{labelBatu2}</td>
                     <td className="border-r border-slate-400 p-1.5 font-mono text-center">{targets.batu2}</td>
                     <td className="border-r border-slate-400 p-1.5 font-mono text-center">{actuals.batu2}</td>
                     <td className={`p-1.5 font-mono font-bold text-center ${devBatu2 !== 0 ? 'text-red-500' : ''}`}>{formatDev(devBatu2)}</td>
@@ -8278,6 +8522,140 @@ export default function App() {
     );
   };
 
+  const QuarryAggregateModal = ({
+    isOpen,
+    onClose,
+    onSave,
+    currentPasir1,
+    currentPasir2,
+    currentBatu1,
+    currentBatu2,
+  }: {
+    isOpen: boolean;
+    onClose: () => void;
+    onSave: (p1: string, p2: string, b1: string, b2: string) => void;
+    currentPasir1: string;
+    currentPasir2: string;
+    currentBatu1: string;
+    currentBatu2: string;
+  }) => {
+    const [localPasir1, setLocalPasir1] = useState(currentPasir1);
+    const [localPasir2, setLocalPasir2] = useState(currentPasir2);
+    const [localBatu1, setLocalBatu1] = useState(currentBatu1);
+    const [localBatu2, setLocalBatu2] = useState(currentBatu2);
+
+    useEffect(() => {
+      if (isOpen) {
+        setLocalPasir1(currentPasir1);
+        setLocalPasir2(currentPasir2);
+        setLocalBatu1(currentBatu1);
+        setLocalBatu2(currentBatu2);
+      }
+    }, [isOpen, currentPasir1, currentPasir2, currentBatu1, currentBatu2]);
+
+    if (!isOpen) return null;
+
+    return (
+      <div 
+        className="fixed inset-0 z-[1000] flex items-center justify-center p-2 bg-slate-950/85 backdrop-blur-xs select-none"
+        onClick={onClose}
+      >
+        <div 
+          className="bg-[#0c101d] border border-slate-700/60 p-5 rounded-[12px] shadow-[0_20px_50px_rgba(0,0,0,0.85)] flex flex-col gap-4 w-full max-w-sm max-h-[95vh] overflow-y-auto select-none text-left"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+            <h3 className="text-[15px] font-black uppercase text-white tracking-wide">QUARRY AGGREGATE</h3>
+            <button 
+              onClick={onClose}
+              className="text-slate-400 hover:text-white transition-colors cursor-pointer"
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          {/* Form */}
+          <div className="flex flex-col gap-3.5 text-slate-200">
+            {/* Pasir 1 */}
+            <div className="flex flex-col gap-1.5 font-sans">
+              <label className="text-[12.5px] font-extrabold text-[#00ffd0]">Pasir 1 / Pasir #1</label>
+              <div className="relative flex items-center bg-[#070b13] border border-slate-800 focus-within:border-cyan-400 rounded-[8px] focus-within:shadow-[0_0_8px_rgba(34,211,238,0.25)] h-[38px] px-2.5 transition-all">
+                <input
+                  type="text"
+                  value={localPasir1}
+                  onChange={(e) => setLocalPasir1(e.target.value)}
+                  className="w-full bg-transparent border-none text-white text-[13px] font-semibold focus:outline-none placeholder:text-slate-600 outline-none"
+                  placeholder="e.g., Pasir Galunggung"
+                />
+              </div>
+            </div>
+
+            {/* Pasir 2 */}
+            <div className="flex flex-col gap-1.5 font-sans">
+              <label className="text-[12.5px] font-extrabold text-[#00ffd0]">Pasir 2 / Pasir #2</label>
+              <div className="relative flex items-center bg-[#070b13] border border-slate-800 focus-within:border-cyan-400 rounded-[8px] focus-within:shadow-[0_0_8px_rgba(34,211,238,0.25)] h-[38px] px-2.5 transition-all">
+                <input
+                  type="text"
+                  value={localPasir2}
+                  onChange={(e) => setLocalPasir2(e.target.value)}
+                  className="w-full bg-transparent border-none text-white text-[13px] font-semibold focus:outline-none placeholder:text-slate-600 outline-none"
+                  placeholder="e.g., Pasir Sungai"
+                />
+              </div>
+            </div>
+
+            {/* Batu 1 */}
+            <div className="flex flex-col gap-1.5 font-sans">
+              <label className="text-[12.5px] font-extrabold text-[#00ffd0]">Batu 1 / Batu #1</label>
+              <div className="relative flex items-center bg-[#070b13] border border-slate-800 focus-within:border-cyan-400 rounded-[8px] focus-within:shadow-[0_0_8px_rgba(34,211,238,0.25)] h-[38px] px-2.5 transition-all">
+                <input
+                  type="text"
+                  value={localBatu1}
+                  onChange={(e) => setLocalBatu1(e.target.value)}
+                  className="w-full bg-transparent border-none text-white text-[13px] font-semibold focus:outline-none placeholder:text-slate-600 outline-none"
+                  placeholder="e.g., Batu Split 1-2"
+                />
+              </div>
+            </div>
+
+            {/* Batu 2 */}
+            <div className="flex flex-col gap-1.5 font-sans">
+              <label className="text-[12.5px] font-extrabold text-[#00ffd0]">Batu 2 / Batu #2</label>
+              <div className="relative flex items-center bg-[#070b13] border border-slate-800 focus-within:border-cyan-400 rounded-[8px] focus-within:shadow-[0_0_8px_rgba(34,211,238,0.25)] h-[38px] px-2.5 transition-all">
+                <input
+                  type="text"
+                  value={localBatu2}
+                  onChange={(e) => setLocalBatu2(e.target.value)}
+                  className="w-full bg-transparent border-none text-white text-[13px] font-semibold focus:outline-none placeholder:text-slate-600 outline-none"
+                  placeholder="e.g., Batu Split 2-3"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Buttons */}
+          <div className="flex items-center justify-end gap-2 mt-2 pt-3 border-t border-slate-800/60 font-sans">
+            <button
+              onClick={onClose}
+              className="px-4 py-1.5 bg-[#0c1220]/80 hover:bg-slate-850 border border-slate-800 text-slate-500 hover:text-white rounded-[6px] text-[11.5px] font-bold transition-all active:scale-95 cursor-pointer"
+            >
+              Batal
+            </button>
+            <button
+              onClick={() => {
+                onSave(localPasir1, localPasir2, localBatu1, localBatu2);
+              }}
+              className="px-4.5 py-1.5 bg-[#00e5ff] hover:bg-[#00ffd0] text-black rounded-[6px] text-[12px] font-extrabold transition-all active:scale-95 cursor-pointer shadow-md"
+            >
+              Simpan
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // Compact Company Header
   const TopCompanyHeader = () => {
     return (
@@ -8309,9 +8687,9 @@ export default function App() {
           <div className={`flex items-center gap-1.5 font-mono text-[9px] font-bold px-3 py-1 rounded-full border uppercase select-none leading-none h-7 flex-nowrap ${
             operationMode === 'PRODUKSI'
               ? 'bg-emerald-950/85 text-emerald-400 border-emerald-500/20 shadow-[0_0_8px_rgba(16,185,129,0.1)]'
-              : 'bg-amber-950/85 text-amber-400 border-amber-500/20 font-black animate-pulse'
+              : 'bg-amber-950/85 text-amber-400 border-amber-500/20 font-black'
           }`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${operationMode === 'PRODUKSI' ? 'bg-emerald-400' : 'bg-amber-500 animate-ping'}`} />
+            <span className={`w-1.5 h-1.5 rounded-full ${operationMode === 'PRODUKSI' ? 'bg-emerald-400' : 'bg-amber-500'}`} />
             <span>MODE: {operationMode === 'PRODUKSI' ? 'PRODUKSI NYATA' : 'SIMULASI'}</span>
           </div>
           
@@ -8466,9 +8844,9 @@ export default function App() {
           )}
         </AnimatePresence>
 
-        {/* Success Overlay */}
+        {/* Success Overlay - Disabled as requested */}
         <AnimatePresence>
-          {isDone && (
+          {false && isDone && (
             <motion.div 
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
@@ -8614,6 +8992,27 @@ export default function App() {
           recipes={recipesList}
           selectedRecipe={selectedRecipe}
           onRecipeChange={setSelectedRecipe}
+        />
+
+        {/* Quarry Aggregate Modal Overlay */}
+        <QuarryAggregateModal
+          isOpen={isQuarryOpen}
+          onClose={() => setIsQuarryOpen(false)}
+          onSave={(p1, p2, b1, b2) => {
+            localStorage.setItem("quarry_pasir_1", p1);
+            localStorage.setItem("quarry_pasir_2", p2);
+            localStorage.setItem("quarry_batu_1", b1);
+            localStorage.setItem("quarry_batu_2", b2);
+            setQuarryPasir1(p1);
+            setQuarryPasir2(p2);
+            setQuarryBatu1(b1);
+            setQuarryBatu2(b2);
+            setIsQuarryOpen(false);
+          }}
+          currentPasir1={quarryPasir1}
+          currentPasir2={quarryPasir2}
+          currentBatu1={quarryBatu1}
+          currentBatu2={quarryBatu2}
         />
 
         {/* HMI Admin Password Verification Modal */}
@@ -9085,148 +9484,204 @@ export default function App() {
                       {/* Manual JOG Buttons merged for desktop ergonomics */}
                       {itemConf.isCombined ? (
                         <div className="flex gap-1 shrink-0">
-                          <button
-                            onMouseDown={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir1(true); }}
-                            onMouseUp={() => setJoggingPasir1(false)}
-                            onMouseLeave={() => setJoggingPasir1(false)}
-                            onTouchStart={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir1(true); }}
-                            onTouchEnd={() => setJoggingPasir1(false)}
-                            disabled={!isRunning || scales.pasir.isComplete}
-                            className={`py-1 px-1.5 flex items-center justify-center text-[7.5px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
-                              ${joggingPasir1
-                                ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
-                                : scales.pasir.isComplete || !isRunning
-                                  ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
-                                  : 'bg-[#121c32] text-amber-500 border-amber-500/25 cursor-pointer hover:bg-amber-500/10'
-                              }`}
-                          >
-                            PS1
-                          </button>
-                          <button
-                            onMouseDown={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir2(true); }}
-                            onMouseUp={() => setJoggingPasir2(false)}
-                            onMouseLeave={() => setJoggingPasir2(false)}
-                            onTouchStart={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir2(true); }}
-                            onTouchEnd={() => setJoggingPasir2(false)}
-                            disabled={!isRunning || scales.pasir.isComplete}
-                            className={`py-1 px-1.5 flex items-center justify-center text-[8px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
-                              ${joggingPasir2
-                                ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
-                                : scales.pasir.isComplete || !isRunning
-                                  ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
-                                  : 'bg-[#121c32] text-amber-500 border-amber-500/25 cursor-pointer hover:bg-amber-500/10'
-                              }`}
-                          >
-                            PS2
-                          </button>
-                          <button
-                            onMouseDown={() => { if (isRunning && !scales.batu.isComplete) setJoggingBatu1(true); }}
-                            onMouseUp={() => setJoggingBatu1(false)}
-                            onMouseLeave={() => setJoggingBatu1(false)}
-                            onTouchStart={() => { if (isRunning && !scales.batu.isComplete) setJoggingBatu1(true); }}
-                            onTouchEnd={() => setJoggingBatu1(false)}
-                            disabled={!isRunning || scales.batu.isComplete}
-                            className={`py-1 px-1.5 flex items-center justify-center text-[7.5px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
-                              ${joggingBatu1
-                                ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
-                                : scales.batu.isComplete || !isRunning
-                                  ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
-                                  : 'bg-[#121c32] text-amber-500 border-amber-500/25 cursor-pointer hover:bg-amber-500/10'
-                              }`}
-                          >
-                            BT1
-                          </button>
-                          <button
-                            onMouseDown={() => { if (isRunning && !scales.batu.isComplete) setJoggingBatu2(true); }}
-                            onMouseUp={() => setJoggingBatu2(false)}
-                            onMouseLeave={() => setJoggingBatu2(false)}
-                            onTouchStart={() => { if (isRunning && !scales.batu.isComplete) setJoggingBatu2(true); }}
-                            onTouchEnd={() => setJoggingBatu2(false)}
-                            disabled={!isRunning || scales.batu.isComplete}
-                            className={`py-1 px-1.5 flex items-center justify-center text-[7.5px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
-                              ${joggingBatu2
-                                ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
-                                : scales.batu.isComplete || !isRunning
-                                  ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
-                                  : 'bg-[#121c32] text-amber-500 border-amber-500/25 cursor-pointer hover:bg-amber-500/10'
-                              }`}
-                          >
-                            BT2
-                          </button>
+                          <div className="flex flex-col items-center">
+                            <button
+                              onMouseDown={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir1(true); }}
+                              onMouseUp={() => setJoggingPasir1(false)}
+                              onMouseLeave={() => setJoggingPasir1(false)}
+                              onTouchStart={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir1(true); }}
+                              onTouchEnd={() => setJoggingPasir1(false)}
+                              disabled={!isRunning || scales.pasir.isComplete}
+                              className={`py-1 px-1.5 flex items-center justify-center text-[7.5px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
+                                ${joggingPasir1
+                                  ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
+                                  : scales.pasir.isComplete || !isRunning
+                                    ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
+                                    : 'bg-[#121c32] text-amber-500 border-amber-500/25 cursor-pointer hover:bg-amber-500/10'
+                                }`}
+                            >
+                              PS1
+                            </button>
+                            <span className={`w-2 h-2 rounded-full mt-1.5 transition-all duration-150 ${
+                              gatePasir1SiloOpen
+                                ? 'bg-[#00ff9c] shadow-[0_0_6px_rgba(0,255,156,0.8)] animate-blink-fast'
+                                : 'bg-[#ef4444] shadow-[0_0_4px_rgba(239,68,68,0.6)]'
+                            }`} />
+                          </div>
+                          <div className="flex flex-col items-center">
+                            <button
+                              onMouseDown={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir2(true); }}
+                              onMouseUp={() => setJoggingPasir2(false)}
+                              onMouseLeave={() => setJoggingPasir2(false)}
+                              onTouchStart={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir2(true); }}
+                              onTouchEnd={() => setJoggingPasir2(false)}
+                              disabled={!isRunning || scales.pasir.isComplete}
+                              className={`py-1 px-1.5 flex items-center justify-center text-[8px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
+                                ${joggingPasir2
+                                  ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
+                                  : scales.pasir.isComplete || !isRunning
+                                    ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
+                                    : 'bg-[#121c32] text-amber-500 border-amber-500/25 cursor-pointer hover:bg-amber-500/10'
+                                }`}
+                            >
+                              PS2
+                            </button>
+                            <span className={`w-2 h-2 rounded-full mt-1.5 transition-all duration-150 ${
+                              gatePasir2SiloOpen
+                                ? 'bg-[#00ff9c] shadow-[0_0_6px_rgba(0,255,156,0.8)] animate-blink-fast'
+                                : 'bg-[#ef4444] shadow-[0_0_4px_rgba(239,68,68,0.6)]'
+                            }`} />
+                          </div>
+                          <div className="flex flex-col items-center">
+                            <button
+                              onMouseDown={() => { if (isRunning && !scales.batu.isComplete) setJoggingBatu1(true); }}
+                              onMouseUp={() => setJoggingBatu1(false)}
+                              onMouseLeave={() => setJoggingBatu1(false)}
+                              onTouchStart={() => { if (isRunning && !scales.batu.isComplete) setJoggingBatu1(true); }}
+                              onTouchEnd={() => setJoggingBatu1(false)}
+                              disabled={!isRunning || scales.batu.isComplete}
+                              className={`py-1 px-1.5 flex items-center justify-center text-[7.5px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
+                                ${joggingBatu1
+                                  ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
+                                  : scales.batu.isComplete || !isRunning
+                                    ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
+                                    : 'bg-[#121c32] text-amber-500 border-amber-500/25 cursor-pointer hover:bg-amber-500/10'
+                                }`}
+                            >
+                              BT1
+                            </button>
+                            <span className={`w-2 h-2 rounded-full mt-1.5 transition-all duration-150 ${
+                              gateBatu1SiloOpen
+                                ? 'bg-[#00ff9c] shadow-[0_0_6px_rgba(0,255,156,0.8)] animate-blink-fast'
+                                : 'bg-[#ef4444] shadow-[0_0_4px_rgba(239,68,68,0.6)]'
+                            }`} />
+                          </div>
+                          <div className="flex flex-col items-center">
+                            <button
+                              onMouseDown={() => { if (isRunning && !scales.batu.isComplete) setJoggingBatu2(true); }}
+                              onMouseUp={() => setJoggingBatu2(false)}
+                              onMouseLeave={() => setJoggingBatu2(false)}
+                              onTouchStart={() => { if (isRunning && !scales.batu.isComplete) setJoggingBatu2(true); }}
+                              onTouchEnd={() => setJoggingBatu2(false)}
+                              disabled={!isRunning || scales.batu.isComplete}
+                              className={`py-1 px-1.5 flex items-center justify-center text-[7.5px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
+                                ${joggingBatu2
+                                  ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
+                                  : scales.batu.isComplete || !isRunning
+                                    ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
+                                    : 'bg-[#121c32] text-amber-500 border-amber-500/25 cursor-pointer hover:bg-amber-500/10'
+                                }`}
+                            >
+                              BT2
+                            </button>
+                            <span className={`w-2 h-2 rounded-full mt-1.5 transition-all duration-150 ${
+                              gateBatu2SiloOpen
+                                ? 'bg-[#00ff9c] shadow-[0_0_6px_rgba(0,255,156,0.8)] animate-blink-fast'
+                                : 'bg-[#ef4444] shadow-[0_0_4px_rgba(239,68,68,0.6)]'
+                            }`} />
+                          </div>
                         </div>
                       ) : key === 'pasir' ? (
                         <div className="flex gap-1.5 shrink-0">
-                          <button
-                            onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingPasir1(true); }}
-                            onMouseUp={() => setJoggingPasir1(false)}
-                            onMouseLeave={() => setJoggingPasir1(false)}
-                            onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingPasir1(true); }}
-                            onTouchEnd={() => setJoggingPasir1(false)}
-                            disabled={!isRunning || item.isComplete}
-                            className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
-                              ${joggingPasir1
-                                ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
-                                : item.isComplete || !isRunning
-                                  ? 'bg-slate-900 border-slate-950 text-slate-600 cursor-not-allowed font-medium'
-                                  : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
-                              }`}
-                          >
-                            {joggingPasir1 ? 'JOG 1' : 'PASIR 1'}
-                          </button>
-                          <button
-                            onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingPasir2(true); }}
-                            onMouseUp={() => setJoggingPasir2(false)}
-                            onMouseLeave={() => setJoggingPasir2(false)}
-                            onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingPasir2(true); }}
-                            onTouchEnd={() => setJoggingPasir2(false)}
-                            disabled={!isRunning || item.isComplete}
-                            className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
-                              ${joggingPasir2
-                                ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
-                                : item.isComplete || !isRunning
-                                  ? 'bg-slate-900 border-slate-950 text-slate-600 cursor-not-allowed font-medium'
-                                  : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
-                              }`}
-                          >
-                            {joggingPasir2 ? 'JOG 2' : 'PASIR 2'}
-                          </button>
+                          <div className="flex flex-col items-center">
+                            <button
+                              onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingPasir1(true); }}
+                              onMouseUp={() => setJoggingPasir1(false)}
+                              onMouseLeave={() => setJoggingPasir1(false)}
+                              onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingPasir1(true); }}
+                              onTouchEnd={() => setJoggingPasir1(false)}
+                              disabled={!isRunning || item.isComplete}
+                              className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
+                                ${joggingPasir1
+                                  ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
+                                  : item.isComplete || !isRunning
+                                    ? 'bg-slate-900 border-slate-950 text-slate-600 cursor-not-allowed font-medium'
+                                    : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
+                                }`}
+                            >
+                              {joggingPasir1 ? 'JOG 1' : 'PASIR 1'}
+                            </button>
+                            <span className={`w-2 h-2 rounded-full mt-1.5 transition-all duration-150 ${
+                              gatePasir1SiloOpen
+                                ? 'bg-[#00ff9c] shadow-[0_0_6px_rgba(0,255,156,0.8)] animate-blink-fast'
+                                : 'bg-[#ef4444] shadow-[0_0_4px_rgba(239,68,68,0.6)]'
+                            }`} />
+                          </div>
+                          <div className="flex flex-col items-center">
+                            <button
+                              onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingPasir2(true); }}
+                              onMouseUp={() => setJoggingPasir2(false)}
+                              onMouseLeave={() => setJoggingPasir2(false)}
+                              onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingPasir2(true); }}
+                              onTouchEnd={() => setJoggingPasir2(false)}
+                              disabled={!isRunning || item.isComplete}
+                              className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
+                                ${joggingPasir2
+                                  ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
+                                  : item.isComplete || !isRunning
+                                    ? 'bg-slate-900 border-slate-950 text-slate-600 cursor-not-allowed font-medium'
+                                    : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
+                                }`}
+                            >
+                              {joggingPasir2 ? 'JOG 2' : 'PASIR 2'}
+                            </button>
+                            <span className={`w-2 h-2 rounded-full mt-1.5 transition-all duration-150 ${
+                              gatePasir2SiloOpen
+                                ? 'bg-[#00ff9c] shadow-[0_0_6px_rgba(0,255,156,0.8)] animate-blink-fast'
+                                : 'bg-[#ef4444] shadow-[0_0_4px_rgba(239,68,68,0.6)]'
+                            }`} />
+                          </div>
                         </div>
                       ) : key === 'batu' ? (
                         <div className="flex gap-1.5 shrink-0">
-                          <button
-                            onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingBatu1(true); }}
-                            onMouseUp={() => setJoggingBatu1(false)}
-                            onMouseLeave={() => setJoggingBatu1(false)}
-                            onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingBatu1(true); }}
-                            onTouchEnd={() => setJoggingBatu1(false)}
-                            disabled={!isRunning || item.isComplete}
-                            className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
-                              ${joggingBatu1
-                                ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
-                                : item.isComplete || !isRunning
-                                  ? 'bg-slate-900 border-slate-950 text-slate-600 cursor-not-allowed font-medium'
-                                  : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
-                              }`}
-                          >
-                            {joggingBatu1 ? 'JOG 1' : 'BATU 1'}
-                          </button>
-                          <button
-                            onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingBatu2(true); }}
-                            onMouseUp={() => setJoggingBatu2(false)}
-                            onMouseLeave={() => setJoggingBatu2(false)}
-                            onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingBatu2(true); }}
-                            onTouchEnd={() => setJoggingBatu2(false)}
-                            disabled={!isRunning || item.isComplete}
-                            className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
-                              ${joggingBatu2
-                                ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
-                                : item.isComplete || !isRunning
-                                  ? 'bg-slate-900 border-slate-950 text-slate-600 cursor-not-allowed font-medium'
-                                  : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
-                              }`}
-                          >
-                            {joggingBatu2 ? 'JOG 2' : 'BATU 2'}
-                          </button>
+                          <div className="flex flex-col items-center">
+                            <button
+                              onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingBatu1(true); }}
+                              onMouseUp={() => setJoggingBatu1(false)}
+                              onMouseLeave={() => setJoggingBatu1(false)}
+                              onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingBatu1(true); }}
+                              onTouchEnd={() => setJoggingBatu1(false)}
+                              disabled={!isRunning || item.isComplete}
+                              className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
+                                ${joggingBatu1
+                                  ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
+                                  : item.isComplete || !isRunning
+                                    ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
+                                    : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
+                                }`}
+                            >
+                              {joggingBatu1 ? 'JOG 1' : 'BATU 1'}
+                            </button>
+                            <span className={`w-2 h-2 rounded-full mt-1.5 transition-all duration-150 ${
+                              gateBatu1SiloOpen
+                                ? 'bg-[#00ff9c] shadow-[0_0_6px_rgba(0,255,156,0.8)] animate-blink-fast'
+                                : 'bg-[#ef4444] shadow-[0_0_4px_rgba(239,68,68,0.6)]'
+                            }`} />
+                          </div>
+                          <div className="flex flex-col items-center">
+                            <button
+                              onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingBatu2(true); }}
+                              onMouseUp={() => setJoggingBatu2(false)}
+                              onMouseLeave={() => setJoggingBatu2(false)}
+                              onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingBatu2(true); }}
+                              onTouchEnd={() => setJoggingBatu2(false)}
+                              disabled={!isRunning || item.isComplete}
+                              className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
+                                ${joggingBatu2
+                                  ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
+                                  : item.isComplete || !isRunning
+                                    ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
+                                    : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
+                                }`}
+                            >
+                              {joggingBatu2 ? 'JOG 2' : 'BATU 2'}
+                            </button>
+                            <span className={`w-2 h-2 rounded-full mt-1.5 transition-all duration-150 ${
+                              gateBatu2SiloOpen
+                                ? 'bg-[#00ff9c] shadow-[0_0_6px_rgba(0,255,156,0.8)] animate-blink-fast'
+                                : 'bg-[#ef4444] shadow-[0_0_4px_rgba(239,68,68,0.6)]'
+                            }`} />
+                          </div>
                         </div>
                       ) : (
                         <button
@@ -9304,6 +9759,11 @@ export default function App() {
                 onMoistureClick={() => setIsMoistureOpen(true)}
                 quarryAggregate={quarryAggregate}
                 setQuarryAggregate={setQuarryAggregate}
+                onQuarryClick={() => setIsQuarryOpen(true)}
+                quarryPasir1={quarryPasir1}
+                quarryPasir2={quarryPasir2}
+                quarryBatu1={quarryBatu1}
+                quarryBatu2={quarryBatu2}
                 isPrint={isPrint}
                 setIsPrint={setIsPrint}
                 onHelpClick={() => setIsHelpOpen(true)}

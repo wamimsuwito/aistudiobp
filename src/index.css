@@ -70,8 +70,23 @@
     transform: rotate(0deg);
   }
   to {
-    transform: rotate(-360deg);
+    transform: rotate(-365deg);
   }
+}
+
+@keyframes led-blink-fast {
+  0%, 49% {
+    opacity: 1;
+    filter: drop-shadow(0 0 6px rgba(0, 255, 156, 0.85));
+  }
+  50%, 100% {
+    opacity: 0.18;
+    filter: none;
+  }
+}
+
+.animate-blink-fast {
+  animation: led-blink-fast 0.22s steps(1, end) infinite;
 }
 
 .spin-cw-active {

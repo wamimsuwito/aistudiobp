@@ -27,7 +27,9 @@ export const DEFAULT_RELAY_DATA: RelayRow[] = [
   { name: "Vibrator", relay: 11, modbusCoil: "10", arduinoPin: "42", timer1: "0", timer2: "", timer3: "", timer4: "", timer5: "", timer6: "" },
   { name: "Tuang air", relay: 12, modbusCoil: "11", arduinoPin: "44", timer1: "0", timer2: "", timer3: "", timer4: "", timer5: "", timer6: "" },
   { name: "Tuang additive", relay: 13, modbusCoil: "12", arduinoPin: "48", timer1: "0", timer2: "", timer3: "", timer4: "", timer5: "", timer6: "" },
-  { name: "Pintu mixer buka", relay: 14, modbusCoil: "13", arduinoPin: "50", timer1: "2000", timer2: "5000", timer3: "2000", timer4: "5000", timer5: "2000", timer6: "5000" },
+  { name: "Pintu mixer buka 1 m³", relay: 14, modbusCoil: "13", arduinoPin: "50", timer1: "2000", timer2: "5000", timer3: "2000", timer4: "5000", timer5: "2000", timer6: "5000" },
+  { name: "Pintu mixer buka 2 m³", relay: 28, modbusCoil: "13", arduinoPin: "50", timer1: "2000", timer2: "5000", timer3: "2000", timer4: "5000", timer5: "2000", timer6: "5000" },
+  { name: "Pintu mixer buka 3.5 m³", relay: 29, modbusCoil: "13", arduinoPin: "50", timer1: "2000", timer2: "5000", timer3: "2000", timer4: "5000", timer5: "2000", timer6: "5000" },
   { name: "Pintu mixer tutup", relay: 15, modbusCoil: "14", arduinoPin: "52", timer1: "4000", timer2: "", timer3: "", timer4: "", timer5: "", timer6: "" },
   { name: "Klakson", relay: 16, modbusCoil: "15", arduinoPin: "33", timer1: "0", timer2: "", timer3: "", timer4: "", timer5: "", timer6: "" },
   { name: "Silo 1", relay: 17, modbusCoil: "16", arduinoPin: "31", timer1: "0", timer2: "", timer3: "", timer4: "", timer5: "", timer6: "" },
@@ -54,6 +56,7 @@ export const loadRelayConfig = (): RelayRow[] => {
           return {
             ...def,
             ...matching,
+            name: def.name,
             arduinoPin: matching.arduinoPin !== undefined ? matching.arduinoPin : def.arduinoPin
           };
         }

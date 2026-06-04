@@ -11,6 +11,7 @@ import { SlumpCalibration } from "./SlumpCalibration";
 import { JobMixFormula } from "./JobMixFormula";
 import { UserManagement } from "./UserManagement";
 import { DatabaseProduksi } from "./DatabaseProduksi";
+import { PrintTiket } from "./PrintTiket";
 import {
   BookOpen,
   Layout,
@@ -872,6 +873,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       case "Database Produksi":
         return (
           <DatabaseProduksi logs={logs} />
+        );
+
+      case "Print Tiket":
+        return (
+          <PrintTiket
+            logs={logs}
+            companyName={companyName}
+            companyTagline={companyTagline}
+            companyLogo={companyLogo}
+          />
         );
 
       case "Kalibrasi Slump":

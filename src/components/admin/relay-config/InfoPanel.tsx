@@ -13,7 +13,7 @@ export const InfoPanel: React.FC = () => {
 
       <ul className="mt-1 space-y-1 pl-4 list-disc text-[9.5px] leading-tight text-slate-700 flex-1">
         <li>
-          <strong className="text-slate-850">Buka (Relay #14):</strong> Buka Bertahap
+          <strong className="text-slate-850">Buka (Relay #14, #28, #29):</strong> Buka Bertahap (1 m³, 2 m³, 3.5 m³)
           <div className="pl-3 text-[9px] text-slate-600 leading-normal">
             <strong>Timer 1, 3, 5:</strong> Buka ON (ms) / <strong>Timer 2, 4, 6:</strong> Diam (ms)
             <div className="text-[#b45309] font-semibold">Sequence: 7cm → diam → 24cm → diam → 30cm → diam</div>
