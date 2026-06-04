@@ -14,7 +14,8 @@ import {
   Gauge,
   BellRing,
   Building,
-  LogOut
+  LogOut,
+  Tablet
 } from "lucide-react";
 
 interface SidebarProps {
@@ -42,7 +43,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: "Print Tiket", label: "Print Tiket", icon: Printer },
     { id: "Kalibrasi Slump", label: "Kalibrasi Slump", icon: Gauge },
     { id: "Pengaturan Alert", label: "Pengaturan Alert", icon: BellRing },
-    { id: "Pengaturan Perusahaan", label: "Pengaturan Perusahaan", icon: Building }
+    { id: "Pengaturan Perusahaan", label: "Pengaturan Perusahaan", icon: Building },
+    { id: "Remote Tablet", label: "Remote Tablet", icon: Tablet }
   ];
 
   return (

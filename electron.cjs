@@ -1,5 +1,78 @@
 const { app, BrowserWindow, Menu, ipcMain } = require('electron');
 const path = require('path');
+const express = require('express');
+const http = require('http');
+const WebSocket = require('ws');
+
+// Setup Local Express and WebSocket Hub server on port 3001
+const localApp = express();
+const localServer = http.createServer(localApp);
+const localWss = new WebSocket.Server({ server: localServer });
+
+let localClients = [];
+
+localWss.on('connection', (ws) => {
+  localClients.push(ws);
+  
+  localClients.forEach(c => {
+    if (c !== ws && c.readyState === WebSocket.OPEN) {
+      c.send(JSON.stringify({ type: 'REQUEST_STATE' }));
+    }
+  });
+
+  ws.on('message', (message) => {
+    try {
+      const data = JSON.parse(message);
+      localClients.forEach(c => {
+        if (c !== ws && c.readyState === WebSocket.OPEN) {
+          c.send(JSON.stringify(data));
+        }
+      });
+    } catch (err) {
+      console.error("Local Server WS message err:", err);
+    }
+  });
+
+  ws.on('close', () => {
+    localClients = localClients.filter(c => c !== ws);
+  });
+  
+  ws.on('error', () => {});
+});
+
+const builtDistPath = path.join(__dirname, 'dist');
+localApp.use(express.static(builtDistPath));
+
+localApp.get('/api/local-ip', (req, res) => {
+  const os = require('os');
+  const interfaces = os.networkInterfaces();
+  const addresses = [];
+  try {
+    for (const k in interfaces) {
+      for (const k2 in interfaces[k]) {
+        const address = interfaces[k][k2];
+        if (address.family === 'IPv4' && !address.internal) {
+          addresses.push(address.address);
+        }
+      }
+    }
+  } catch (e) {
+    console.error("Failed to get local IPs:", e);
+  }
+  res.json({ ips: addresses });
+});
+
+localApp.get('/tablet', (req, res) => {
+  res.sendFile(path.join(builtDistPath, 'index.html'));
+});
+
+localApp.get('*', (req, res) => {
+  res.sendFile(path.join(builtDistPath, 'index.html'));
+});
+
+localServer.listen(3001, '0.0.0.0', () => {
+  console.log('[Remote Tablet Server] Local LAN access running on http://localhost:3001');
+});
 
 let mainWindow;
 

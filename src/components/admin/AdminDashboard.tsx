@@ -12,6 +12,7 @@ import { JobMixFormula } from "./JobMixFormula";
 import { UserManagement } from "./UserManagement";
 import { DatabaseProduksi } from "./DatabaseProduksi";
 import { PrintTiket } from "./PrintTiket";
+import { RemoteTablet } from "./RemoteTablet";
 import {
   BookOpen,
   Layout,
@@ -1044,6 +1045,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <span>SINKRONISASI AMAN SECARA LOKAL</span>
             </div>
           </div>
+        );
+
+      case "Remote Tablet":
+        return (
+          <RemoteTablet />
         );
 
       default:

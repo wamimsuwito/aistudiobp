@@ -33,6 +33,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { LoginModal } from "./components/admin/LoginModal";
 import { AdminDashboard } from "./components/admin/AdminDashboard";
+import { TabletPage } from "./components/admin/TabletPage";
 import { MixingSequence } from "./components/admin/MixingSequenceConfig";
 import { BatchConfigModal } from "./components/BatchConfigModal";
 import { webSerialService } from "./lib/webSerial";
@@ -359,6 +360,9 @@ const ScadaDiagram = ({
   activeVolume = 0,
   compressorActive = false,
   vibratorActive = false,
+  klaksonActive = false,
+  admixInActive = false,
+  admixOutActive = false,
   onManualDeviceToggle
 }: { 
   isRunning: boolean; 
@@ -404,6 +408,9 @@ const ScadaDiagram = ({
   conveyorBottomActive?: boolean;
   conveyorUpperActive?: boolean;
   mixerShaftActive?: boolean;
+  klaksonActive?: boolean;
+  admixInActive?: boolean;
+  admixOutActive?: boolean;
   mixerDoorPercent?: number;
   mixerDoorStateText?: string;
   concreteDischargeActive?: boolean;
@@ -490,15 +497,69 @@ const ScadaDiagram = ({
       case 'valveIsiAir': return !!valveWaterActive;
       case 'dischargeAir': return !!gateWaterHopperOpen;
       case 'dischargeSemen': return !!gateSemenHopperOpen;
+      case 'dischargePasir': return !!gatePasirHopperOpen;
+      case 'dischargeBatu': return !!gateBatuHopperOpen;
+      case 'admixIn': return !!admixInActive;
+      case 'admixOut': return !!admixOutActive;
+      case 'mixer': return !!mixerShaftActive;
       case 'conveyorBottom': return !!conveyorBottomActive;
       case 'conveyorUpper': return !!conveyorUpperActive;
       case 'waitingHopperGate': return !!waitingHopperGateOpen;
       case 'mixerDischargeGate': return mixerDoorPercent > 0;
       case 'compressor': return !!compressorActive;
       case 'vibrator': return !!vibratorActive;
-      case 'klakson': return !!activePins["Relay #16"] || false; // Or from prop, but we'll handle key
+      case 'klakson': return !!klaksonActive || !!activePins["Relay #16"];
       default: return false;
     }
+  };
+
+  const getDeviceHandlers = (id: string, selectSiloIdx?: number) => {
+    if (isAuto) return {};
+
+    const isToggle = id === 'conveyorBottom' || id === 'conveyorUpper' || id === 'compressor';
+
+    if (isToggle) {
+      return {
+        onPointerDown: (e: React.PointerEvent) => {
+          if (e.button !== 0 && e.pointerType === 'mouse') return;
+          e.stopPropagation();
+          const currentStatus = getDeviceStatus(id);
+          if (onManualDeviceToggle) {
+            onManualDeviceToggle(id, !currentStatus);
+          }
+        },
+        style: { cursor: 'pointer' }
+      };
+    }
+
+    // Momentary item: ON when pointer is down, OFF when pointer is up, leaves, or cancels
+    const turnOn = (e: React.PointerEvent) => {
+      if (e.button !== 0 && e.pointerType === 'mouse') return;
+      e.stopPropagation();
+      e.preventDefault();
+      if (onManualDeviceToggle) {
+        if (selectSiloIdx !== undefined) {
+          onManualDeviceToggle('selectSilo', selectSiloIdx as any);
+        }
+        onManualDeviceToggle(id, true);
+      }
+    };
+
+    const turnOff = (e: React.PointerEvent) => {
+      e.stopPropagation();
+      e.preventDefault();
+      if (onManualDeviceToggle) {
+        onManualDeviceToggle(id, false);
+      }
+    };
+
+    return {
+      onPointerDown: turnOn,
+      onPointerUp: turnOff,
+      onPointerLeave: turnOff,
+      onPointerCancel: turnOff,
+      style: { cursor: 'pointer' }
+    };
   };
 
   // Lock-in and remember targets of the currently processing batch
@@ -1029,77 +1090,70 @@ const ScadaDiagram = ({
             { x: 148, label: "PASIR 2", isPasir: true, active: isAuto ? (isRunning && !isPaused && gatePasir2SiloOpen) : gatePasir2SiloOpen, weightText: `${(5000 - scales.pasir.actual * 0.3).toFixed(0)} kg` },
             { x: 228, label: "BATU 1", isPasir: false, active: isAuto ? (isRunning && !isPaused && gateBatu1SiloOpen) : gateBatu1SiloOpen, weightText: `${(12000 - scales.batu.actual * 0.6).toFixed(0)} kg` },
             { x: 308, label: "BATU 2", isPasir: false, active: isAuto ? (isRunning && !isPaused && gateBatu2SiloOpen) : gateBatu2SiloOpen, weightText: `${(6000 - scales.batu.actual * 0.4).toFixed(0)} kg` }
-          ].map((bin, i) => (
-            <g 
-              key={bin.label}
-              className={!isAuto ? "cursor-pointer select-none" : ""}
-              onClick={(e) => {
-                if (!isAuto) {
-                  e.stopPropagation();
-                  setSelectedManualDevice({
-                    id: bin.label.toLowerCase().includes("pasir") 
-                      ? (bin.label.includes("1") ? "pasir1" : "pasir2")
-                      : (bin.label.includes("1") ? "batu1" : "batu2"),
-                    name: bin.label,
-                    x: bin.x + 35,
-                    y: 220
-                  });
-                }
-              }}
-            >
-              <rect x={bin.x} y="175" width="70" height="100" fill="#2c3e50" stroke={theme.outline} strokeWidth="1.5" />
-              <path d={`M${bin.x} 275 L${bin.x + 35} 305 L${bin.x + 70} 275`} fill="#2c3e50" stroke={theme.outline} strokeWidth="1.5" />
-              <text x={bin.x + 35} y="202" textAnchor="middle" fill="#94a3b8" fontSize="7" fontWeight="black" letterSpacing="1">BIN</text>
-              <text 
-                x={bin.x + 35} 
-                y="218" 
-                textAnchor="middle" 
-                fill="#00e5ff" 
-                fontSize={getQuarryLabel(bin.label).length > 12 ? "7px" : "9px"} 
-                fontWeight="bold"
+          ].map((bin, i) => {
+            const binId = bin.label.toLowerCase().includes("pasir") 
+              ? (bin.label.includes("1") ? "pasir1" : "pasir2")
+              : (bin.label.includes("1") ? "batu1" : "batu2");
+            return (
+              <g 
+                key={bin.label}
+                className={!isAuto ? "cursor-pointer select-none" : ""}
+                {...getDeviceHandlers(binId)}
               >
-                {getQuarryLabel(bin.label).toUpperCase()}
-              </text>
-              <text x={bin.x + 35} y="234" textAnchor="middle" fill={batchingPlantMode === 'SYSTEM_3' ? "#fbbf24" : "#888"} fontSize={batchingPlantMode === 'SYSTEM_3' ? "7.5" : "9"} fontWeight="bold">
-                {batchingPlantMode === 'SYSTEM_3' ? bin.weightText : "100%"}
-              </text>
-              {batchingPlantMode === 'SYSTEM_3' && (
-                <text x={bin.x + 35} y="246" textAnchor="middle" fill="#f43f5e" fontSize="6.5" fontWeight="black" letterSpacing="0.2">LOSS-IN-WEIGHT</text>
-              )}
-              {/* Gate Valve: Blinks when active flow is open */}
-              <rect 
-                x={bin.x + 25} 
-                y="305" 
-                width="20" 
-                height="6" 
-                fill={bin.active ? theme.flow : theme.red} 
-                stroke="#000" 
-                className={bin.active ? "animate-pulse" : ""}
-              />
-              
-              {/* Particle Stream falling from silo/bin gate down to scales hopper when bin gate is active */}
-              {bin.active && (
-                <g>
-                  {[...Array(6)].map((_, idx) => (
-                     <motion.circle
-                      key={idx}
-                      cx={bin.x + 35 + (Math.sin(idx) * 2.5)}
-                      cy={311}
-                      r={bin.isPasir ? 1.5 : 2.5}
-                      fill={bin.isPasir ? "#d2b48c" : "#808080"}
-                      animate={{ cy: [311, batchingPlantMode === 'SYSTEM_3' ? 415 : 335], opacity: [1, 1, 0] }}
-                      transition={{ 
-                        duration: batchingPlantMode === 'SYSTEM_3' ? 0.4 + Math.random() * 0.2 : 0.25 + Math.random() * 0.15, 
-                        repeat: Infinity, 
-                        delay: idx * 0.04, 
-                        ease: "linear" 
-                      }}
-                    />
-                  ))}
-                </g>
-              )}
-            </g>
-          ))}
+                <rect x={bin.x} y="175" width="70" height="100" fill="#2c3e50" stroke={theme.outline} strokeWidth="1.5" />
+                <path d={`M${bin.x} 275 L${bin.x + 35} 305 L${bin.x + 70} 275`} fill="#2c3e50" stroke={theme.outline} strokeWidth="1.5" />
+                <text x={bin.x + 35} y="202" textAnchor="middle" fill="#94a3b8" fontSize="7" fontWeight="black" letterSpacing="1">BIN</text>
+                <text 
+                  x={bin.x + 35} 
+                  y="218" 
+                  textAnchor="middle" 
+                  fill="#00e5ff" 
+                  fontSize={getQuarryLabel(bin.label).length > 12 ? "7px" : "9px"} 
+                  fontWeight="bold"
+                >
+                  {getQuarryLabel(bin.label).toUpperCase()}
+                </text>
+                <text x={bin.x + 35} y="234" textAnchor="middle" fill={batchingPlantMode === 'SYSTEM_3' ? "#fbbf24" : "#888"} fontSize={batchingPlantMode === 'SYSTEM_3' ? "7.5" : "9"} fontWeight="bold">
+                  {batchingPlantMode === 'SYSTEM_3' ? bin.weightText : "100%"}
+                </text>
+                {batchingPlantMode === 'SYSTEM_3' && (
+                  <text x={bin.x + 35} y="246" textAnchor="middle" fill="#f43f5e" fontSize="6.5" fontWeight="black" letterSpacing="0.2">LOSS-IN-WEIGHT</text>
+                )}
+                {/* Gate Valve: Blinks when active flow is open */}
+                <rect 
+                  x={bin.x + 25} 
+                  y="305" 
+                  width="20" 
+                  height="6" 
+                  fill={bin.active ? theme.flow : theme.red} 
+                  stroke="#000" 
+                  className={bin.active ? "animate-pulse" : ""}
+                />
+                
+                {/* Particle Stream falling from silo/bin gate down to scales hopper when bin gate is active */}
+                {bin.active && (
+                  <g>
+                    {[...Array(6)].map((_, idx) => (
+                       <motion.circle
+                        key={idx}
+                        cx={bin.x + 35 + (Math.sin(idx) * 2.5)}
+                        cy={311}
+                        r={bin.isPasir ? 1.5 : 2.5}
+                        fill={bin.isPasir ? "#d2b48c" : "#808080"}
+                        animate={{ cy: [311, batchingPlantMode === 'SYSTEM_3' ? 415 : 335], opacity: [1, 1, 0] }}
+                        transition={{ 
+                          duration: batchingPlantMode === 'SYSTEM_3' ? 0.4 + Math.random() * 0.2 : 0.25 + Math.random() * 0.15, 
+                          repeat: Infinity, 
+                          delay: idx * 0.04, 
+                          ease: "linear" 
+                        }}
+                      />
+                    ))}
+                  </g>
+                )}
+              </g>
+            );
+          })}
         </g>
 
         {/* Aggregate Hoppers with Sliding Gates */}
@@ -1226,17 +1280,7 @@ const ScadaDiagram = ({
                 <g 
                   key={h.label}
                   className={!isAuto ? "cursor-pointer select-none" : ""}
-                  onClick={(e) => {
-                    if (!isAuto) {
-                      e.stopPropagation();
-                      setSelectedManualDevice({
-                        id: h.isPasir ? "dischargePasir" : "dischargeBatu",
-                        name: h.isPasir ? "PINTU BUANGAN PASIR" : "PINTU BUANGAN BATU",
-                        x: h.cx,
-                        y: 385
-                      });
-                    }
-                  }}
+                  {...getDeviceHandlers(h.isPasir ? "dischargePasir" : "dischargeBatu")}
                 >
                   {/* Hopper Body Background */}
                   <path d={`M${h.x} 335 L${h.x + 150} 335 L${h.x + 100} 385 L${h.x + 50} 385 Z`} fill="#0f131a" stroke={theme.outline} strokeWidth="1.5" />
@@ -1317,17 +1361,7 @@ const ScadaDiagram = ({
         <g 
           id="conveyor"
           className={!isAuto ? "cursor-pointer select-none" : ""}
-          onClick={(e) => {
-            if (!isAuto) {
-              e.stopPropagation();
-              setSelectedManualDevice({
-                id: "conveyorBottom",
-                name: "CONVEYOR BAWAH",
-                x: 232,
-                y: 415
-              });
-            }
-          }}
+          {...getDeviceHandlers('conveyorBottom')}
         >
           <rect x="68" y="415" width="325" height="15" fill="#111" stroke={theme.outline} strokeWidth="1" />
           
@@ -1369,17 +1403,7 @@ const ScadaDiagram = ({
         <g 
           id="feeder-conveyor"
           className={!isAuto ? "cursor-pointer select-none" : ""}
-          onClick={(e) => {
-            if (!isAuto) {
-              e.stopPropagation();
-              setSelectedManualDevice({
-                id: "conveyorUpper",
-                name: "CONVEYOR ATAS",
-                x: 506,
-                y: 370
-              });
-            }
-          }}
+          {...getDeviceHandlers('conveyorUpper')}
         >
           {/* Solid Body with Outline - Shifted up corresponding to aggregate conveyor */}
           <line x1="400" y1="450" x2="612.5" y2="290" stroke={theme.outline} strokeWidth="17" strokeLinecap="round" />
@@ -1503,20 +1527,7 @@ const ScadaDiagram = ({
               <g 
                 key={i}
                 className={!isAuto ? "cursor-pointer select-none" : ""}
-                onClick={(e) => {
-                  if (!isAuto) {
-                    e.stopPropagation();
-                    if (onManualDeviceToggle) {
-                      onManualDeviceToggle('selectSilo', i + 1 as any);
-                    }
-                    setSelectedManualDevice({
-                      id: `silo${i + 1}`,
-                      name: `SEMEN SILO ${i + 1}`,
-                      x: 550 + i * 45 + 15,
-                      y: 70
-                    });
-                  }
-                }}
+                {...getDeviceHandlers(`silo${i + 1}`, i + 1)}
               >
                 {/* Cylinder background */}
                 <rect 
@@ -1684,17 +1695,7 @@ const ScadaDiagram = ({
           
           <g 
             className={!isAuto ? "cursor-pointer select-none" : ""}
-            onClick={(e) => {
-              if (!isAuto) {
-                e.stopPropagation();
-                setSelectedManualDevice({
-                  id: "dischargeSemen",
-                  name: "VALVE DISCHARGE SEMEN",
-                  x: 672.5,
-                  y: 292
-                });
-              }
-            }}
+            {...getDeviceHandlers('dischargeSemen')}
           >
             <circle cx="672.5" cy="292" r="8" fill="#0a0f14" stroke={theme.outline} strokeWidth="1" />
             <circle cx="672.5" cy="292" r="5" fill={gateSemenHopperOpen ? theme.flow : theme.red} />
@@ -1751,17 +1752,7 @@ const ScadaDiagram = ({
               <g 
                 key={t.label}
                 className={(!isAuto && isTankAir) ? "cursor-pointer select-none" : ""}
-                onClick={(e) => {
-                  if (!isAuto && isTankAir) {
-                    e.stopPropagation();
-                    setSelectedManualDevice({
-                      id: "valveIsiAir",
-                      name: "VALVE WATER INLET",
-                      x: t.x + 20,
-                      y: 80
-                    });
-                  }
-                }}
+                {...(isTankAir ? getDeviceHandlers('valveIsiAir') : {})}
               >
                 <ellipse cx={t.x + 20} cy="40" rx="20" ry="8" fill="#2c3e50" stroke={theme.outline} />
                 <rect x={t.x} y="40" width="40" height="60" fill="#2c3e50" stroke={theme.outline} />
@@ -1855,17 +1846,7 @@ const ScadaDiagram = ({
           
           <g 
             className={!isAuto ? "cursor-pointer select-none" : ""}
-            onClick={(e) => {
-              if (!isAuto) {
-                e.stopPropagation();
-                setSelectedManualDevice({
-                  id: "dischargeAir",
-                  name: "VALVE DISCHARGE AIR",
-                  x: 800,
-                  y: 278
-                });
-              }
-            }}
+            {...getDeviceHandlers('dischargeAir')}
           >
             <circle cx="800" cy="278" r="7" fill="#0a0f14" stroke={theme.outline} strokeWidth="1" />
             <circle cx="800" cy="278" r="4" fill={isWaterDischargeOpen ? theme.flow : theme.red} className={isWaterDischargeOpen ? "animate-pulse" : ""} />
@@ -1925,17 +1906,7 @@ const ScadaDiagram = ({
           {/* Double Pneumatic Hinged Gate Flapper animation */}
           <g 
             className={!isAuto ? "cursor-pointer select-none" : ""}
-            onClick={(e) => {
-              if (!isAuto) {
-                e.stopPropagation();
-                setSelectedManualDevice({
-                  id: "waitingHopperGate",
-                  name: "WAITING HOPPER GATE",
-                  x: 677.5,
-                  y: 350
-                });
-              }
-            }}
+            {...getDeviceHandlers('waitingHopperGate')}
           >
             <motion.line 
               x1="637.5" y1="350" 
@@ -2538,17 +2509,7 @@ const ScadaDiagram = ({
             id="discharge-chute" 
             transform="translate(677.5, 450)"
             className={!isAuto ? "cursor-pointer select-none" : ""}
-            onClick={(e) => {
-              if (!isAuto) {
-                e.stopPropagation();
-                setSelectedManualDevice({
-                  id: "mixerDischargeGate",
-                  name: "PINTU MIXER DISCHARGE",
-                  x: 677.5,
-                  y: 450
-                });
-              }
-            }}
+            {...getDeviceHandlers('mixerDischargeGate')}
           >
             {/* Chute funnel outline */}
             <polygon 
@@ -2852,15 +2813,7 @@ const ScadaDiagram = ({
                 ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/55 font-bold' 
                 : 'bg-slate-800/40 text-slate-400 border border-slate-700/40 hover:bg-slate-800/80 font-medium'
             }`}
-            onClick={(e) => {
-              e.stopPropagation();
-              setSelectedManualDevice({
-                id: "compressor",
-                name: "KOMPRESOR ANGIN",
-                x: -30,
-                y: 360
-              });
-            }}
+            {...getDeviceHandlers('compressor')}
           >
             <span className="font-mono text-[10px]">KOMPRESOR</span>
             <span className={`w-2 h-2 rounded-full ${compressorActive ? 'bg-emerald-500 animate-pulse' : 'bg-slate-600'}`} />
@@ -2874,15 +2827,7 @@ const ScadaDiagram = ({
                 ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/55 font-bold' 
                 : 'bg-slate-800/40 text-slate-400 border border-slate-700/40 hover:bg-slate-800/80 font-medium'
             }`}
-            onClick={(e) => {
-              e.stopPropagation();
-              setSelectedManualDevice({
-                id: "vibrator",
-                name: "VIBRATOR HOPPER",
-                x: -30,
-                y: 410
-              });
-            }}
+            {...getDeviceHandlers('vibrator')}
           >
             <span className="font-mono text-[10px]">VIBRATOR</span>
             <span className={`w-2 h-2 rounded-full ${vibratorActive ? 'bg-emerald-500 animate-pulse' : 'bg-slate-600'}`} />
@@ -2896,15 +2841,7 @@ const ScadaDiagram = ({
                 ? 'bg-amber-600/20 text-amber-400 border border-amber-500/55 font-bold' 
                 : 'bg-slate-800/40 text-slate-400 border border-slate-700/40 hover:bg-slate-800/80 font-medium'
             }`}
-            onClick={(e) => {
-              e.stopPropagation();
-              setSelectedManualDevice({
-                id: "klakson",
-                name: "KLAKSON WARNING",
-                x: -30,
-                y: 460
-              });
-            }}
+            {...getDeviceHandlers('klakson')}
           >
             <span className="font-mono text-[10px]">KLAKSON</span>
             <span className={`w-2 h-2 rounded-full ${getDeviceStatus('klakson') ? 'bg-amber-500 animate-pulse' : 'bg-slate-600'}`} />
@@ -3410,6 +3347,10 @@ export default function App() {
     } else {
       conveyorBottomActiveRef.current = val;
       setConveyorBottomActive(val);
+      if (batchingPlantMode === 'SYSTEM_2' && !isAuto) {
+        setGatePasirHopperOpenSync(val);
+        setGateBatuHopperOpenSync(val);
+      }
     }
   };
   const setConveyorUpperActiveSync = (val: boolean) => {
@@ -3438,6 +3379,8 @@ export default function App() {
   const [dischargeTimeSec, setDischargeTimeSec] = useState(0);
   const [batchId, setBatchId] = useState("");
   const [klaksonActive, setKlaksonActive] = useState(false);
+  const [admixInActive, setAdmixInActive] = useState(false);
+  const [admixOutActive, setAdmixOutActive] = useState(false);
   const [batchProgress, setBatchProgress] = useState(0);
   const [activePins, setActivePins] = useState<Record<string, boolean>>({});
   const [alarmMessage, setAlarmMessage] = useState<string | null>(null);
@@ -3950,7 +3893,16 @@ export default function App() {
   }, [isDone]);
 
   // Admin Login and Session state
-  const [currentView, setCurrentView] = useState<'hmi' | 'admin-login' | 'admin-dashboard'>(() => {
+  const [currentView, setCurrentView] = useState<'hmi' | 'admin-login' | 'admin-dashboard' | 'tablet'>(() => {
+    const isTabletPath = 
+      window.location.pathname.includes('/tablet') || 
+      window.location.hash.includes('tablet') || 
+      window.location.search.includes('view=tablet') ||
+      window.location.port === '3001';
+      
+    if (isTabletPath) {
+      return 'tablet';
+    }
     const session = localStorage.getItem('admin_session');
     return session === 'true' ? 'admin-dashboard' : 'hmi';
   });
@@ -4795,24 +4747,28 @@ export default function App() {
     switch (deviceKey) {
       case 'pasir1': {
         const nextVal = valForce !== undefined ? valForce : !gatePasir1SiloOpen;
+        if (nextVal === gatePasir1SiloOpen) break;
         setGatePasir1SiloOpen(nextVal);
         createManualRelayLog('Pintu Pasir 1', nextVal);
         break;
       }
       case 'pasir2': {
         const nextVal = valForce !== undefined ? valForce : !gatePasir2SiloOpen;
+        if (nextVal === gatePasir2SiloOpen) break;
         setGatePasir2SiloOpen(nextVal);
         createManualRelayLog('Pintu Pasir 2', nextVal);
         break;
       }
       case 'batu1': {
         const nextVal = valForce !== undefined ? valForce : !gateBatu1SiloOpen;
+        if (nextVal === gateBatu1SiloOpen) break;
         setGateBatu1SiloOpen(nextVal);
         createManualRelayLog('Pintu Batu 1', nextVal);
         break;
       }
       case 'batu2': {
         const nextVal = valForce !== undefined ? valForce : !gateBatu2SiloOpen;
+        if (nextVal === gateBatu2SiloOpen) break;
         setGateBatu2SiloOpen(nextVal);
         createManualRelayLog('Pintu Batu 2', nextVal);
         break;
@@ -4824,13 +4780,16 @@ export default function App() {
       case 'silo5':
       case 'silo6': {
         const nextVal = valForce !== undefined ? valForce : !screwSemenActive;
+        if (nextVal === screwSemenActive) break;
         setScrewSemenActive(nextVal);
         createManualRelayLog(`Screw Semen (${activeSiloSemen})`, nextVal);
         break;
       }
       case 'selectSilo': {
         const num = valForce as any;
-        setActiveSiloSemen(`Silo ${num}`);
+        const targetSiloName = `Silo ${num}`;
+        if (activeSiloSemen === targetSiloName) break;
+        setActiveSiloSemen(targetSiloName);
         const eventId = 'MANUAL-SILO-' + Math.random().toString(36).substring(7).toUpperCase();
         setRelayLogs(prev => [
           {
@@ -4845,54 +4804,64 @@ export default function App() {
       }
       case 'valveIsiAir': {
         const nextVal = valForce !== undefined ? valForce : !valveWaterActive;
+        if (nextVal === valveWaterActive) break;
         setValveWaterActive(nextVal);
         createManualRelayLog('Valve Water Inlet', nextVal);
         break;
       }
       case 'dischargeAir': {
         const nextVal = valForce !== undefined ? valForce : !gateWaterHopperOpen;
+        if (nextVal === gateWaterHopperOpen) break;
         setGateWaterHopperOpenSync(nextVal);
         createManualRelayLog('Valve Discharge Air', nextVal);
         break;
       }
       case 'dischargeSemen': {
         const nextVal = valForce !== undefined ? valForce : !gateSemenHopperOpen;
+        if (nextVal === gateSemenHopperOpen) break;
         setGateSemenHopperOpenSync(nextVal);
         createManualRelayLog('Valve Discharge Semen', nextVal);
         break;
       }
       case 'dischargePasir': {
         const nextVal = valForce !== undefined ? valForce : !gatePasirHopperOpen;
+        if (nextVal === gatePasirHopperOpen) break;
         setGatePasirHopperOpenSync(nextVal);
         createManualRelayLog('Pintu Buangan Pasir', nextVal);
         break;
       }
       case 'dischargeBatu': {
         const nextVal = valForce !== undefined ? valForce : !gateBatuHopperOpen;
+        if (nextVal === gateBatuHopperOpen) break;
         setGateBatuHopperOpenSync(nextVal);
         createManualRelayLog('Pintu Buangan Batu', nextVal);
         break;
       }
       case 'conveyorBottom': {
         const nextVal = valForce !== undefined ? valForce : !conveyorBottomActive;
+        if (nextVal === conveyorBottomActive) break;
         setConveyorBottomActiveSync(nextVal);
         createManualRelayLog('Feeder Conveyor Bawah', nextVal);
         break;
       }
       case 'conveyorUpper': {
         const nextVal = valForce !== undefined ? valForce : !conveyorUpperActive;
+        if (nextVal === conveyorUpperActive) break;
         setConveyorUpperActiveSync(nextVal);
         createManualRelayLog('Inclined Conveyor Atas', nextVal);
         break;
       }
       case 'waitingHopperGate': {
         const nextVal = valForce !== undefined ? valForce : !waitingHopperGateOpen;
+        if (nextVal === waitingHopperGateOpen) break;
         setWaitingHopperGateOpenSync(nextVal);
         createManualRelayLog('Waiting Hopper Gate', nextVal);
         break;
       }
       case 'mixerDischargeGate': {
         const nextVal = valForce !== undefined ? valForce : !(mixerDoorPercent > 0);
+        const isCurrentlyOpen = mixerDoorPercent > 0;
+        if (nextVal === isCurrentlyOpen) break;
         if (nextVal) {
           setMixerDoorPercent(100);
           setMixerDoorStateText("OPENED");
@@ -4918,20 +4887,44 @@ export default function App() {
       }
       case 'compressor': {
         const nextVal = valForce !== undefined ? valForce : !compressorActive;
+        if (nextVal === compressorActive) break;
         setCompressorActive(nextVal);
         createManualRelayLog('Kompresor Angin', nextVal);
         break;
       }
       case 'vibrator': {
         const nextVal = valForce !== undefined ? valForce : !vibratorActive;
+        if (nextVal === vibratorActive) break;
         setVibratorActive(nextVal);
         createManualRelayLog('Vibrator Hopper', nextVal);
         break;
       }
       case 'klakson': {
         const nextVal = valForce !== undefined ? valForce : !klaksonActive;
+        if (nextVal === klaksonActive) break;
         setKlaksonActive(nextVal);
         createManualRelayLog('Klakson Warning', nextVal);
+        break;
+      }
+      case 'mixer': {
+        const nextVal = valForce !== undefined ? valForce : !mixerShaftActive;
+        if (nextVal === mixerShaftActive) break;
+        setMixerShaftActive(nextVal);
+        createManualRelayLog('Motor Mixer', nextVal);
+        break;
+      }
+      case 'admixIn': {
+        const nextVal = valForce !== undefined ? valForce : !admixInActive;
+        if (nextVal === admixInActive) break;
+        setAdmixInActive(nextVal);
+        createManualRelayLog('Admix In Let', nextVal);
+        break;
+      }
+      case 'admixOut': {
+        const nextVal = valForce !== undefined ? valForce : !admixOutActive;
+        if (nextVal === admixOutActive) break;
+        setAdmixOutActive(nextVal);
+        createManualRelayLog('Admix Out Let', nextVal);
         break;
       }
     }
@@ -8765,6 +8758,131 @@ export default function App() {
     );
   };
 
+  // REMOTE TABLET REALTIME SYNCHRONIZATION (HYBRID BROADCAST CHANNEL & WEBSOCKET)
+  useEffect(() => {
+    const channel = new BroadcastChannel('remote_tablet_sync');
+    let ws: WebSocket | null = null;
+    let reconnectTimeout: any = null;
+    
+    const currentState = {
+      gatePasir1SiloOpen,
+      gatePasir2SiloOpen,
+      gatePasirHopperOpen,
+      gateBatu1SiloOpen,
+      gateBatu2SiloOpen,
+      gateBatuHopperOpen,
+      activeSiloSemen,
+      screwSemenActive,
+      gateSemenHopperOpen,
+      valveWaterActive,
+      gateWaterHopperOpen,
+      conveyorBottomActive,
+      conveyorUpperActive,
+      waitingHopperGateOpen,
+      mixerDoorPercent,
+      mixerDoorStateText,
+      compressorActive,
+      vibratorActive,
+      klaksonActive,
+      mixerShaftActive,
+      admixInActive,
+      admixOutActive,
+      isAuto
+    };
+
+    const sendStateToAll = (statesObj: typeof currentState) => {
+      const msg = JSON.stringify({ type: 'STATE_UPDATE', states: statesObj });
+      try {
+        channel.postMessage(msg);
+      } catch (e) {}
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(msg);
+        } catch (e) {}
+      }
+    };
+
+    const handleIncomingMessage = (rawMsg: string) => {
+      try {
+        const data = JSON.parse(rawMsg);
+        if (data.type === 'REQUEST_STATE') {
+          sendStateToAll(currentState);
+        } else if (data.type === 'TOGGLE_DEVICE') {
+          const { deviceKey, valForce } = data;
+          handleManualDeviceToggle(deviceKey, valForce);
+        }
+      } catch (err) {
+        console.error("Error processing sync message:", err);
+      }
+    };
+
+    channel.onmessage = (event) => {
+      handleIncomingMessage(event.data);
+    };
+
+    const connectWS = () => {
+      try {
+        const host = window.location.hostname || 'localhost';
+        ws = new WebSocket(`ws://${host}:3001`);
+        
+        ws.onopen = () => {
+          ws?.send(JSON.stringify({ type: 'STATE_UPDATE', states: currentState }));
+        };
+
+        ws.onmessage = (event) => {
+          handleIncomingMessage(event.data);
+        };
+
+        ws.onclose = () => {
+          ws = null;
+          reconnectTimeout = setTimeout(connectWS, 3000);
+        };
+
+        ws.onerror = () => {
+          ws?.close();
+        };
+      } catch (err) {
+        reconnectTimeout = setTimeout(connectWS, 5000);
+      }
+    };
+
+    connectWS();
+
+    setTimeout(() => {
+      sendStateToAll(currentState);
+    }, 100);
+
+    return () => {
+      channel.close();
+      if (ws) ws.close();
+      clearTimeout(reconnectTimeout);
+    };
+  }, [
+    gatePasir1SiloOpen,
+    gatePasir2SiloOpen,
+    gatePasirHopperOpen,
+    gateBatu1SiloOpen,
+    gateBatu2SiloOpen,
+    gateBatuHopperOpen,
+    activeSiloSemen,
+    screwSemenActive,
+    gateSemenHopperOpen,
+    valveWaterActive,
+    gateWaterHopperOpen,
+    conveyorBottomActive,
+    conveyorUpperActive,
+    waitingHopperGateOpen,
+    mixerDoorPercent,
+    mixerDoorStateText,
+    compressorActive,
+    vibratorActive,
+    klaksonActive,
+    mixerShaftActive,
+    admixInActive,
+    admixOutActive,
+    isAuto
+  ]);
+
   if (currentView === 'admin-dashboard') {
     return (
       <>
@@ -8806,6 +8924,10 @@ export default function App() {
         {activePrintLog && <PrintTicketModal log={activePrintLog} onClose={() => setActivePrintLog(null)} />}
       </>
     );
+  }
+
+  if (currentView === 'tablet') {
+    return <TabletPage />;
   }
 
   return (
@@ -9812,6 +9934,9 @@ export default function App() {
                 aggregateInMixer={aggregateInMixerRef.current}
                 compressorActive={compressorActive}
                 vibratorActive={vibratorActive}
+                klaksonActive={klaksonActive}
+                admixInActive={admixInActive}
+                admixOutActive={admixOutActive}
                 onManualDeviceToggle={handleManualDeviceToggle}
               />
             </div>
