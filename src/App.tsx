@@ -4871,9 +4871,19 @@ export default function App() {
                             targetMaterial === 'semen' ? 'semen' :
                             targetMaterial === 'air' ? 'air' : null;
           if (scaleKey) {
-            next[scaleKey].actual = 0;
-            next[scaleKey].target = adjustedTarget;
-            next[scaleKey].isComplete = false;
+            const currentActual = next[scaleKey].actual || 0;
+            let scaleTarget = adjustedTarget;
+            if (scaleKey === 'pasir') {
+              const recPasirTotal = (selectedRecipe.targets.pasir || 400);
+              scaleTarget = Math.round(recPasirTotal * tFactor);
+            } else if (scaleKey === 'batu') {
+              const recBatuTotal = (selectedRecipe.targets.batu || 400);
+              scaleTarget = Math.round(recBatuTotal * tFactor);
+            }
+
+            next[scaleKey].actual = currentActual >= scaleTarget ? 0 : currentActual;
+            next[scaleKey].target = scaleTarget;
+            next[scaleKey].isComplete = next[scaleKey].actual >= scaleTarget;
             next[scaleKey].isActive = true;
           }
           return next;
@@ -4885,11 +4895,6 @@ export default function App() {
         }
 
         weighingJogStatesRef.current[targetMaterial] = { phase: 'fast', timer: 0, pulseCount: 0 };
-        Object.keys(weighingJogStatesRef.current).forEach(k => {
-          if (k !== targetMaterial) {
-            weighingJogStatesRef.current[k] = { phase: 'done', timer: 0, pulseCount: 0 };
-          }
-        });
 
         weighingActiveRef.current = true;
         setIsWeighingActive(true);
@@ -5952,7 +5957,7 @@ export default function App() {
                 // Else, automatic batching:
                 else if (isAuto || (batchingModeRef.current === 'SEMI_AUTO' && (semiAutoDosingRef.current.batu1 || semiAutoDosingRef.current.batu2))) {
                   const isSandBatchFinished = (updated.pasir.target === 0 || (jogState_pasir1.phase === 'done' && jogState_pasir2.phase === 'done'));
-                  const shouldWeighStone = (batchingPlantMode !== 'SYSTEM_2') || isSandBatchFinished;
+                  const shouldWeighStone = (batchingModeRef.current === 'SEMI_AUTO') || (batchingPlantMode !== 'SYSTEM_2') || isSandBatchFinished;
 
                   if (shouldWeighStone) {
                     if (jogState_batu1.phase !== 'done') {
