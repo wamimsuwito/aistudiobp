@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { 
   Tablet, 
   Lock, 
@@ -105,6 +105,8 @@ export const TabletPage: React.FC = () => {
   const [isOnline, setIsOnline] = useState<boolean>(true);
   const [lastSyncTime, setLastSyncTime] = useState<string>("Menghubungkan...");
   
+  const tabletWsRef = useRef<WebSocket | null>(null);
+
   // Setup BroadcastChannel and WebSocket for local communication
   useEffect(() => {
     const channel = new BroadcastChannel('remote_tablet_sync');
@@ -147,6 +149,7 @@ export const TabletPage: React.FC = () => {
       try {
         const host = window.location.hostname || 'localhost';
         ws = new WebSocket(`ws://${host}:3001`);
+        tabletWsRef.current = ws;
         
         ws.onopen = () => {
           setIsOnline(true);
@@ -160,6 +163,7 @@ export const TabletPage: React.FC = () => {
 
         ws.onclose = () => {
           ws = null;
+          tabletWsRef.current = null;
           // Only set online to false if we haven't received a BroadcastChannel or WS update in 6 seconds
           if (Date.now() - lastActiveTime > 6000) {
             setIsOnline(false);
@@ -187,10 +191,38 @@ export const TabletPage: React.FC = () => {
     return () => {
       channel.close();
       if (ws) ws.close();
+      tabletWsRef.current = null;
       clearTimeout(reconnectTimeout);
       clearInterval(stateInterval);
     };
   }, []);
+
+  // Publish command universally over BroadcastChannel and persistent WebSocket
+  const publishCommand = (commandObj: any) => {
+    const commandStr = JSON.stringify(commandObj);
+
+    // 1. Broadcast locally to other tabs in same browser
+    const channel = new BroadcastChannel('remote_tablet_sync');
+    try {
+      channel.postMessage(commandStr);
+    } catch (e) {}
+    channel.close();
+
+    // 2. Deliver via active persistent WebSocket connection over local LAN
+    try {
+      if (tabletWsRef.current && tabletWsRef.current.readyState === WebSocket.OPEN) {
+        tabletWsRef.current.send(commandStr);
+      } else {
+        // Fallback for immediate delivery if connection has dropped
+        const host = window.location.hostname || 'localhost';
+        const tempWs = new WebSocket(`ws://${host}:3001`);
+        tempWs.onopen = () => {
+          tempWs.send(commandStr);
+          setTimeout(() => tempWs.close(), 100);
+        };
+      }
+    } catch (e) {}
+  };
 
   // Send a toggle device request to the main HMI master
   const sendToggleCommand = (deviceKey: string, valForce?: boolean) => {
@@ -200,27 +232,11 @@ export const TabletPage: React.FC = () => {
       return;
     }
 
-    const command = JSON.stringify({
+    publishCommand({
       type: "TOGGLE_DEVICE",
       deviceKey,
       valForce
     });
-
-    const channel = new BroadcastChannel('remote_tablet_sync');
-    try {
-      channel.postMessage(command);
-    } catch (e) {}
-    channel.close();
-
-    // Also try connecting to WS if we can
-    try {
-      const host = window.location.hostname || 'localhost';
-      const tempWs = new WebSocket(`ws://${host}:3001`);
-      tempWs.onopen = () => {
-        tempWs.send(command);
-        setTimeout(() => tempWs.close(), 100);
-      };
-    } catch (e) {}
   };
 
   const handleSiloPress = (num: number) => {
@@ -232,27 +248,18 @@ export const TabletPage: React.FC = () => {
       sendToggleCommand(`silo${num}`, false);
     } else {
       // First select silo on the master HMI, then turn screw on
-      const selectMsg = JSON.stringify({
+      publishCommand({
         type: "TOGGLE_DEVICE",
         deviceKey: "selectSilo",
         valForce: num
       });
-      const triggerMsg = JSON.stringify({
-        type: "TOGGLE_DEVICE",
-        deviceKey: `silo${num}`,
-        valForce: true
-      });
-
-      const channel = new BroadcastChannel('remote_tablet_sync');
-      try {
-        channel.postMessage(selectMsg);
-        setTimeout(() => {
-          channel.postMessage(triggerMsg);
-          channel.close();
-        }, 80);
-      } catch (e) {
-        channel.close();
-      }
+      setTimeout(() => {
+        publishCommand({
+          type: "TOGGLE_DEVICE",
+          deviceKey: `silo${num}`,
+          valForce: true
+        });
+      }, 120);
     }
   };
 

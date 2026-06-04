@@ -8758,12 +8758,12 @@ export default function App() {
     );
   };
 
-  // REMOTE TABLET REALTIME SYNCHRONIZATION (HYBRID BROADCAST CHANNEL & WEBSOCKET)
-  useEffect(() => {
-    const channel = new BroadcastChannel('remote_tablet_sync');
-    let ws: WebSocket | null = null;
-    let reconnectTimeout: any = null;
-    
+  // REMOTE TABLET REALTIME SYNCHRONIZATION (HYBRID BROADCAST CHANNEL & PERSISTENT WEBSOCKET)
+  const tabletChannelRef = useRef<BroadcastChannel | null>(null);
+  const tabletWsRef = useRef<WebSocket | null>(null);
+  const incomingMessageHandlerRef = useRef<(rawMsg: string) => void>(() => {});
+
+  const sendRealtimeStateSync = () => {
     const currentState = {
       gatePasir1SiloOpen,
       gatePasir2SiloOpen,
@@ -8790,51 +8790,67 @@ export default function App() {
       isAuto
     };
 
-    const sendStateToAll = (statesObj: typeof currentState) => {
-      const msg = JSON.stringify({ type: 'STATE_UPDATE', states: statesObj });
-      try {
-        channel.postMessage(msg);
-      } catch (e) {}
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        try {
-          ws.send(msg);
-        } catch (e) {}
+    const msg = JSON.stringify({ type: 'STATE_UPDATE', states: currentState });
+    
+    // Broadcast locally to other tabs
+    try {
+      if (tabletChannelRef.current) {
+        tabletChannelRef.current.postMessage(msg);
       }
-    };
+    } catch (e) {}
 
-    const handleIncomingMessage = (rawMsg: string) => {
-      try {
-        const data = JSON.parse(rawMsg);
-        if (data.type === 'REQUEST_STATE') {
-          sendStateToAll(currentState);
-        } else if (data.type === 'TOGGLE_DEVICE') {
-          const { deviceKey, valForce } = data;
-          handleManualDeviceToggle(deviceKey, valForce);
-        }
-      } catch (err) {
-        console.error("Error processing sync message:", err);
+    // Transmit via persistent WebSocket to operator tablet over local LAN
+    try {
+      if (tabletWsRef.current && tabletWsRef.current.readyState === WebSocket.OPEN) {
+        tabletWsRef.current.send(msg);
       }
-    };
+    } catch (e) {}
+  };
+
+  // Keep incoming message handler updated on every render to ensure it has the latest React scope
+  incomingMessageHandlerRef.current = (rawMsg: string) => {
+    try {
+      const data = JSON.parse(rawMsg);
+      if (data.type === 'REQUEST_STATE') {
+        sendRealtimeStateSync();
+      } else if (data.type === 'TOGGLE_DEVICE') {
+        const { deviceKey, valForce } = data;
+        handleManualDeviceToggle(deviceKey, valForce);
+      }
+    } catch (err) {
+      console.error("Error processing sync message:", err);
+    }
+  };
+
+  // 1. Connection Manager (Setup once on mount, keep persistently alive)
+  useEffect(() => {
+    const channel = new BroadcastChannel('remote_tablet_sync');
+    tabletChannelRef.current = channel;
 
     channel.onmessage = (event) => {
-      handleIncomingMessage(event.data);
+      incomingMessageHandlerRef.current(event.data);
     };
+
+    let ws: WebSocket | null = null;
+    let reconnectTimeout: any = null;
 
     const connectWS = () => {
       try {
         const host = window.location.hostname || 'localhost';
         ws = new WebSocket(`ws://${host}:3001`);
+        tabletWsRef.current = ws;
         
         ws.onopen = () => {
-          ws?.send(JSON.stringify({ type: 'STATE_UPDATE', states: currentState }));
+          sendRealtimeStateSync();
         };
 
         ws.onmessage = (event) => {
-          handleIncomingMessage(event.data);
+          incomingMessageHandlerRef.current(event.data);
         };
 
         ws.onclose = () => {
           ws = null;
+          tabletWsRef.current = null;
           reconnectTimeout = setTimeout(connectWS, 3000);
         };
 
@@ -8849,14 +8865,23 @@ export default function App() {
     connectWS();
 
     setTimeout(() => {
-      sendStateToAll(currentState);
-    }, 100);
+      sendRealtimeStateSync();
+    }, 150);
 
     return () => {
       channel.close();
-      if (ws) ws.close();
+      tabletChannelRef.current = null;
+      if (ws) {
+        ws.close();
+      }
+      tabletWsRef.current = null;
       clearTimeout(reconnectTimeout);
     };
+  }, []); // Strictly run once on mount!
+
+  // 2. Realtime Broadcaster (Fires lightweight transmissions on device/sensor status updates)
+  useEffect(() => {
+    sendRealtimeStateSync();
   }, [
     gatePasir1SiloOpen,
     gatePasir2SiloOpen,
