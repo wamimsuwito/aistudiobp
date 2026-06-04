@@ -4495,7 +4495,7 @@ export default function App() {
     volumePerBatchRef.current = vPerCycle;
     setVolumePerCycle(vPerCycle);
 
-    if (!isAuto) {
+    if (batchingMode === 'MANUAL') {
       // Manual Production Recording Module Isolation
       setIsRunning(true);
       setIsDone(false);
@@ -5590,7 +5590,7 @@ export default function App() {
                   setGatePasir2SiloOpen(false);
                 }
                 // Else, automatic batching:
-                else if (isAuto) {
+                else if (isAuto || (batchingModeRef.current === 'SEMI_AUTO' && (semiAutoDosingRef.current.pasir1 || semiAutoDosingRef.current.pasir2))) {
                   if (jogState_pasir1.phase !== 'done') {
                     allComplete = false;
                     updated.pasir.isActive = true;
@@ -5950,7 +5950,7 @@ export default function App() {
                   setGateBatu2SiloOpen(false);
                 }
                 // Else, automatic batching:
-                else if (isAuto) {
+                else if (isAuto || (batchingModeRef.current === 'SEMI_AUTO' && (semiAutoDosingRef.current.batu1 || semiAutoDosingRef.current.batu2))) {
                   const isSandBatchFinished = (updated.pasir.target === 0 || (jogState_pasir1.phase === 'done' && jogState_pasir2.phase === 'done'));
                   const shouldWeighStone = (batchingPlantMode !== 'SYSTEM_2') || isSandBatchFinished;
 
@@ -6304,7 +6304,7 @@ export default function App() {
                   setScrewSemenActive(false);
                 }
                 // Else, automatic batching:
-                else if (isAuto) {
+                else if (isAuto || (batchingModeRef.current === 'SEMI_AUTO' && semiAutoDosingRef.current.semen)) {
                   if (jogState_semen.phase !== 'done') {
                     allComplete = false;
                     updated.semen.isActive = true;
@@ -6474,7 +6474,7 @@ export default function App() {
                   setValveWaterActive(false);
                 }
                 // Else, automatic batching:
-                else if (isAuto) {
+                else if (isAuto || (batchingModeRef.current === 'SEMI_AUTO' && semiAutoDosingRef.current.air)) {
                   if (jogState_air.phase !== 'done') {
                     allComplete = false;
                     updated.air.isActive = true;
@@ -6688,51 +6688,48 @@ export default function App() {
 
               if (changed) {
                 setSemiAutoDosing(updatedSemiAuto);
-                const anyActive = Object.values(updatedSemiAuto).some(v => v);
-                if (!anyActive) {
-                  weighingActiveRef.current = false;
-                  setIsWeighingActive(false);
-                }
               }
-            } else {
-              if (allComplete || updated.pasir.isComplete) {
-                pasirWeighedRef.current = true;
-              }
-              if (allComplete || updated.batu.isComplete) {
-                batuWeighedRef.current = true;
-              }
-              if (allComplete || updated.semen.isComplete) {
-                semenWeighedRef.current = true;
-              }
-              if (allComplete || updated.air.isComplete) {
-                airWeighedRef.current = true;
-              }
+            }
 
-              const allWeighed = (pasirWeighedRef.current || updated.pasir.target === 0) &&
-                                 (batuWeighedRef.current || updated.batu.target === 0) &&
-                                 (semenWeighedRef.current || updated.semen.target === 0) &&
-                                 (airWeighedRef.current || updated.air.target === 0);
+            const isSemi = batchingModeRef.current === 'SEMI_AUTO';
+            if ((allComplete && !isSemi) || updated.pasir.isComplete) {
+              pasirWeighedRef.current = true;
+            }
+            if ((allComplete && !isSemi) || updated.batu.isComplete) {
+              batuWeighedRef.current = true;
+            }
+            if ((allComplete && !isSemi) || updated.semen.isComplete) {
+              semenWeighedRef.current = true;
+            }
+            if ((allComplete && !isSemi) || updated.air.isComplete) {
+              airWeighedRef.current = true;
+            }
 
-              const isAggWeighedNow = (pasirWeighedRef.current || updated.pasir.target === 0) &&
-                                       (batuWeighedRef.current || updated.batu.target === 0);
+            const allWeighed = (pasirWeighedRef.current || updated.pasir.target === 0) &&
+                               (batuWeighedRef.current || updated.batu.target === 0) &&
+                               (semenWeighedRef.current || updated.semen.target === 0) &&
+                               (airWeighedRef.current || updated.air.target === 0);
 
-              if (isAggWeighedNow && !aggregateReadyLoggedRef.current) {
-                aggregateReadyLoggedRef.current = true;
-                setProductionState('AGGREGATE_READY');
-                setRelayLogs(l => [{
-                  id: 'AGG-RDY-' + Math.random().toString(36).substring(7).toUpperCase(),
-                  timestamp: new Date(),
-                  message: "AGGREGATE_READY",
-                  type: 'done'
-                }, ...l]);
-              }
+            const isAggWeighedNow = (pasirWeighedRef.current || updated.pasir.target === 0) &&
+                                     (batuWeighedRef.current || updated.batu.target === 0);
 
-              if (allWeighed) {
-                weighingActiveRef.current = false;
-                setIsWeighingActive(false);
-                setProductionState('AGGREGATE_READY');
-              }
-            }     }
+            if (isAggWeighedNow && !aggregateReadyLoggedRef.current) {
+              aggregateReadyLoggedRef.current = true;
+              setProductionState('AGGREGATE_READY');
+              setRelayLogs(l => [{
+                id: 'AGG-RDY-' + Math.random().toString(36).substring(7).toUpperCase(),
+                timestamp: new Date(),
+                message: "AGGREGATE_READY",
+                type: 'done'
+              }, ...l]);
+            }
+
+            if (allWeighed) {
+              weighingActiveRef.current = false;
+              setIsWeighingActive(false);
+              setProductionState('AGGREGATE_READY');
+            }
+          }
 
             // --- Declarative tracking of individual material cycles' actual weights ---
             const jStateP1 = weighingJogStatesRef.current.pasir1;

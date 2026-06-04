@@ -381,7 +381,7 @@ export const TabletPage: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#111622] text-slate-100 flex flex-col font-sans select-none overflow-hidden">
+    <div className="h-screen max-h-screen h-[100dvh] w-screen bg-[#111622] text-slate-100 flex flex-col font-sans select-none overflow-hidden">
       
       {/* Top Header Bar */}
       <header className="h-[48px] bg-[#1a2235] border-b border-slate-800 flex items-center justify-between px-6 shrink-0 shadow-md">
@@ -479,7 +479,7 @@ export const TabletPage: React.FC = () => {
       </header>
 
       {/* Main Responsive Layout for Tablet mimicking physical controls */}
-      <main className="flex-grow p-2.5 sm:p-3 overflow-y-auto space-y-3">
+      <main className="flex-grow p-2.5 sm:p-3 overflow-y-auto overscroll-contain touch-pan-y scrollbar-thin space-y-3" style={{ WebkitOverflowScrolling: "touch" }}>
         
         {/* MASTER BATCHING CONTROL MODE CARD */}
         <div className="bg-[#111625] rounded-lg border-2 border-slate-700/85 p-3 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-3 relative">
