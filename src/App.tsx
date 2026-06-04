@@ -3405,6 +3405,7 @@ export default function App() {
   // REAL LOADCELL TELEMETRY DIRECT BINDING (SINGLE SOURCE OF TRUTH)
   // ----------------------------------------------------
   useEffect(() => {
+    if (currentView === 'tablet') return;
     const getTelemetryValue = (data: any, keys: string[]): number | null => {
       if (!data) return null;
       for (const k of keys) {
@@ -3486,6 +3487,7 @@ export default function App() {
 
   // Real-time Arduino Serial relay state transmission hook
   useEffect(() => {
+    if (currentView === 'tablet') return;
     // Extract Cement Silo ID from activeSiloSemen selection
     const match = activeSiloSemen.match(/Silo\s*(\d+)/i);
     const siloNum = match ? match[1] : "1";
@@ -8838,6 +8840,7 @@ export default function App() {
 
   // 1. Connection Manager (Setup once on mount, keep persistently alive)
   useEffect(() => {
+    if (currentView === 'tablet') return;
     const channel = new BroadcastChannel('remote_tablet_sync');
     tabletChannelRef.current = channel;
 
@@ -8895,6 +8898,7 @@ export default function App() {
 
   // 2. Realtime Broadcaster (Fires lightweight transmissions on device/sensor status updates)
   useEffect(() => {
+    if (currentView === 'tablet') return;
     const isElectronApp = !!(window as any).electronAPI;
     const isForegroundTab = !document.hidden;
     const isPrimaryHmi = isElectronApp || isForegroundTab;

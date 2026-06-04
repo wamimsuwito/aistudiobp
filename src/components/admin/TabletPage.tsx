@@ -95,6 +95,7 @@ export const TabletPage: React.FC = () => {
     isAuto: false
   });
 
+  const [mainPlantIsAuto, setMainPlantIsAuto] = useState<boolean>(false);
   const [mode, setMode] = useState<"MONITORING" | "CONTROL">("MONITORING");
   const [pinInput, setPinInput] = useState<string>("");
   const [showPinModal, setShowPinModal] = useState<boolean>(false);
@@ -130,7 +131,12 @@ export const TabletPage: React.FC = () => {
       try {
         const data = JSON.parse(rawMsg);
         if (data.type === 'STATE_UPDATE' && data.states) {
-          setDeviceStates(data.states);
+          setMainPlantIsAuto(!!data.states.isAuto);
+          const overrideStates = {
+            ...data.states,
+            isAuto: false
+          };
+          setDeviceStates(overrideStates);
           const now = new Date();
           setLastSyncTime(now.toLocaleTimeString("id-ID"));
           setIsOnline(true);
@@ -227,10 +233,6 @@ export const TabletPage: React.FC = () => {
   // Send a toggle device request to the main HMI master
   const sendToggleCommand = (deviceKey: string, valForce?: boolean) => {
     if (mode !== "CONTROL") return;
-    if (deviceStates.isAuto) {
-      alert("HMI UTAMA SEDANG DALAM MODE OTOMATIS! Matikan sistem auto untuk kontrol nirkabel.");
-      return;
-    }
 
     publishCommand({
       type: "TOGGLE_DEVICE",
@@ -300,10 +302,10 @@ export const TabletPage: React.FC = () => {
 
         {/* Realtime Status Alerts */}
         <div className="flex items-center gap-4">
-          {deviceStates.isAuto && (
-            <div className="bg-amber-950/40 border border-amber-800/80 px-2.5 py-1 rounded flex items-center gap-1.5 animate-pulse">
-              <AlertTriangle size={13} className="text-amber-500" />
-              <span className="text-[8.5px] font-mono font-black text-amber-400 uppercase">HMI AUTO MODE BLOCK ACTIVE</span>
+          {mainPlantIsAuto && (
+            <div className="bg-cyan-950/40 border border-cyan-800/80 px-2.5 py-1 rounded flex items-center gap-1.5 animate-pulse text-cyan-400">
+              <AlertTriangle size={13} className="text-cyan-450" />
+              <span className="text-[8.5px] font-mono font-black uppercase">SISTEM UTAMA: AUTO MODE ACTIVE</span>
             </div>
           )}
 
