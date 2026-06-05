@@ -495,10 +495,17 @@ export const TabletPage: React.FC = () => {
             </div>
           </div>
 
-          <div className="flex items-center gap-2 z-10 shrink-0">
-            <span className="text-[8px] font-mono text-slate-400 font-extrabold uppercase">MAIN PLANT MODE:</span>
+          <div className="flex flex-col sm:flex-row items-center gap-3 z-10 shrink-0 w-full sm:w-auto justify-center">
+            <div className="flex items-center gap-1.5 justify-center sm:justify-start w-full sm:w-auto">
+              <span className="text-[9px] font-mono text-slate-400 font-extrabold uppercase shrink-0">MAIN PLANT MODE:</span>
+              {mode !== "CONTROL" && (
+                <span className="text-[7.5px] font-mono bg-rose-950/40 text-rose-400 border border-rose-900/60 rounded px-1.5 py-0.5" title="Buka kunci mode CONTROL untuk mengubah">
+                  LOCKED
+                </span>
+              )}
+            </div>
             
-            <div className="bg-[#070b14] p-1 rounded-md border border-slate-800/80 flex items-center gap-1.5 shadow-inner">
+            <div className="bg-[#070b14] p-1.5 rounded-lg border border-slate-800 flex items-center justify-center gap-2 shadow-inner w-full sm:w-auto max-w-[340px] mx-auto">
               <button
                 disabled={mode !== "CONTROL"}
                 onClick={() => {
@@ -507,12 +514,12 @@ export const TabletPage: React.FC = () => {
                     mode: "MANUAL"
                   });
                 }}
-                className={`px-3 py-1 text-[9px] font-mono font-black uppercase transition-all rounded cursor-pointer ${
+                className={`flex-1 sm:flex-none py-3 px-5 text-[10.5px] font-sans font-black uppercase transition-all rounded-md cursor-pointer text-center min-w-[85px] leading-none ${
                   mainPlantBatchingMode === 'MANUAL'
-                    ? "bg-slate-700 text-white border border-slate-600 shadow"
+                    ? "bg-slate-700 text-white border border-slate-650 shadow-[0_2px_4px_rgba(0,0,0,0.5)]"
                     : mode === "CONTROL"
                       ? "text-slate-500 hover:text-slate-300 border border-transparent"
-                      : "text-slate-600/50 cursor-not-allowed border border-transparent"
+                      : "text-slate-600/30 cursor-not-allowed border border-transparent"
                 }`}
               >
                 Manual
@@ -526,12 +533,12 @@ export const TabletPage: React.FC = () => {
                     mode: "SEMI_AUTO"
                   });
                 }}
-                className={`px-3 py-1 text-[9px] font-mono font-black uppercase transition-all rounded cursor-pointer ${
+                className={`flex-1 sm:flex-none py-3 px-5 text-[10.5px] font-sans font-black uppercase transition-all rounded-md cursor-pointer text-center min-w-[85px] leading-none ${
                   mainPlantBatchingMode === 'SEMI_AUTO'
-                    ? "bg-amber-600 text-white border border-amber-500 shadow-[0_0_10px_rgba(217,119,6,0.3)]"
+                    ? "bg-amber-600 text-white border border-amber-500 shadow-[0_2px_4px_rgba(217,119,6,0.4)]"
                     : mode === "CONTROL"
                       ? "text-slate-500 hover:text-slate-300 border border-transparent"
-                      : "text-slate-600/50 cursor-not-allowed border border-transparent"
+                      : "text-slate-600/30 cursor-not-allowed border border-transparent"
                 }`}
               >
                 Semi Auto
@@ -545,23 +552,17 @@ export const TabletPage: React.FC = () => {
                     mode: "AUTO"
                   });
                 }}
-                className={`px-3 py-1 text-[9px] font-mono font-black uppercase transition-all rounded cursor-pointer ${
+                className={`flex-1 sm:flex-none py-3 px-5 text-[10.5px] font-sans font-black uppercase transition-all rounded-md cursor-pointer text-center min-w-[85px] leading-none ${
                   mainPlantBatchingMode === 'AUTO'
-                    ? "bg-emerald-600 text-white border border-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.3)]"
+                    ? "bg-emerald-600 text-white border border-emerald-500 shadow-[0_2px_4px_rgba(16,185,129,0.4)]"
                     : mode === "CONTROL"
                       ? "text-slate-500 hover:text-slate-300 border border-transparent"
-                      : "text-slate-600/50 cursor-not-allowed border border-transparent"
+                      : "text-slate-600/30 cursor-not-allowed border border-transparent"
                 }`}
               >
                 Auto
               </button>
             </div>
-
-            {mode !== "CONTROL" && (
-              <span className="text-[7.5px] font-mono bg-rose-950/40 text-rose-400 border border-rose-900/60 rounded px-1.5 py-0.5" title="Buka kunci mode CONTROL untuk mengubah">
-                LOCKED
-              </span>
-            )}
           </div>
         </div>
         

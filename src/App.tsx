@@ -469,6 +469,39 @@ const ScadaDiagram = ({
     return label.replace(" 1", " #1").replace(" 2", " #2");
   };
 
+  const [airPressure, setAirPressure] = useState<number>(() => {
+    return compressorActive ? 85.0 : 0.0;
+  });
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setAirPressure(prev => {
+        let target = compressorActive ? 88.5 : 0.0;
+        const hasPneumaticDischarge = 
+          gatePasirHopperOpen || 
+          gateBatuHopperOpen || 
+          gateSemenHopperOpen || 
+          gateWaterHopperOpen || 
+          waitingHopperGateOpen || 
+          (mixerDoorPercent > 0);
+
+        let delta = target - prev;
+        let rate = compressorActive ? 1.5 : 0.08;
+        let consumption = 0;
+        if (hasPneumaticDischarge) {
+          consumption = compressorActive ? 0.3 : 1.2;
+        }
+
+        let nextPressure = prev + delta * rate * 0.1 - consumption;
+        if (nextPressure < 0) nextPressure = 0;
+        if (nextPressure > 110) nextPressure = 110;
+        
+        return parseFloat(nextPressure.toFixed(1));
+      });
+    }, 200);
+    return () => clearInterval(interval);
+  }, [compressorActive, gatePasirHopperOpen, gateBatuHopperOpen, gateSemenHopperOpen, gateWaterHopperOpen, waitingHopperGateOpen, mixerDoorPercent]);
+
   const [selectedManualDevice, setSelectedManualDevice] = useState<{
     id: string;
     name: string;
@@ -1077,6 +1110,22 @@ const ScadaDiagram = ({
           <linearGradient id="concrete-bg-gradient" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor={mixerColor_bg} />
             <stop offset="100%" stopColor="#080c14" />
+          </linearGradient>
+          <linearGradient id="compressorTankGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#2563eb" />
+            <stop offset="25%" stopColor="#60a5fa" />
+            <stop offset="65%" stopColor="#1d4ed8" />
+            <stop offset="100%" stopColor="#172554" />
+          </linearGradient>
+          <linearGradient id="gaugeRim" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#cbd5e1" />
+            <stop offset="50%" stopColor="#475569" />
+            <stop offset="100%" stopColor="#0f172a" />
+          </linearGradient>
+          <linearGradient id="finGrad" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor="#334155" />
+            <stop offset="50%" stopColor="#64748b" />
+            <stop offset="100%" stopColor="#1e293b" />
           </linearGradient>
         </defs>
 
@@ -10535,35 +10584,35 @@ export default function App() {
                 </div>
 
                 {/* BATCHING PLANT MODE SELECTOR (MANUAL | SEMI AUTO | AUTO) */}
-                <div className="flex flex-col gap-1 shrink-0">
-                  <span className="text-[6.5px] font-mono text-slate-500 font-bold uppercase tracking-wider text-center">MODE BATCHING</span>
-                  <div className="bg-[#0b101c] p-0.5 rounded-[5px] border border-slate-800 flex items-center gap-0.5">
+                <div className="flex flex-col gap-1.5 shrink-0 w-full px-2">
+                  <span className="text-[7.5px] font-mono text-slate-500 font-bold uppercase tracking-wider text-center">MODE BATCHING</span>
+                  <div className="bg-[#0b101c] p-1 rounded-[6px] border border-slate-800 flex items-center justify-center gap-1 w-full max-w-[240px] mx-auto">
                     <button
                       onClick={() => setBatchingMode('MANUAL')}
-                      className={`px-1.5 [height:24px] text-[7.5px] font-sans font-black uppercase transition-all rounded-[3px] cursor-pointer ${
+                      className={`flex-1 py-2.5 px-3 text-[10px] font-sans font-black uppercase transition-all rounded-[4px] cursor-pointer text-center ${
                         batchingMode === 'MANUAL'
                           ? "bg-slate-700 text-white shadow-inner font-black"
-                          : "text-slate-500 hover:text-slate-304"
+                          : "text-slate-500 hover:text-slate-300"
                       }`}
                     >
                       MAN
                     </button>
                     <button
                       onClick={() => setBatchingMode('SEMI_AUTO')}
-                      className={`px-1.5 [height:24px] text-[7.5px] font-sans font-black uppercase transition-all rounded-[3px] cursor-pointer ${
+                      className={`flex-1 py-2.5 px-3 text-[10px] font-sans font-black uppercase transition-all rounded-[4px] cursor-pointer text-center ${
                         batchingMode === 'SEMI_AUTO'
                           ? "bg-amber-600 text-white shadow-inner font-black"
-                          : "text-slate-500 hover:text-slate-304"
+                          : "text-slate-500 hover:text-slate-300"
                       }`}
                     >
                       SEMI
                     </button>
                     <button
                       onClick={() => setBatchingMode('AUTO')}
-                      className={`px-1.5 [height:24px] text-[7.5px] font-sans font-black uppercase transition-all rounded-[3px] cursor-pointer ${
+                      className={`flex-1 py-2.5 px-3 text-[10px] font-sans font-black uppercase transition-all rounded-[4px] cursor-pointer text-center ${
                         batchingMode === 'AUTO'
                           ? "bg-emerald-600 text-white shadow-inner font-black"
-                          : "text-slate-500 hover:text-slate-304"
+                          : "text-slate-500 hover:text-slate-300"
                       }`}
                     >
                       AUTO
