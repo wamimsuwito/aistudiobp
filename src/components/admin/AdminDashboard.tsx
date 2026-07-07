@@ -13,6 +13,9 @@ import { UserManagement } from "./UserManagement";
 import { DatabaseProduksi } from "./DatabaseProduksi";
 import { PrintTiket } from "./PrintTiket";
 import { RemoteTablet } from "./RemoteTablet";
+import { DirectorDashboard } from "../director/DirectorDashboard";
+import { TanpaOperator } from "./TanpaOperator";
+import { getSyncStats, savePlantIdentity, getPlantIdentity, queueForCloudSync } from "../../lib/syncService";
 import {
   BookOpen,
   Layout,
@@ -26,7 +29,11 @@ import {
   Clock,
   Wrench,
   Compass,
-  Database
+  Database,
+  Globe,
+  Cloud,
+  Laptop,
+  Building2
 } from "lucide-react";
 
 interface BatchLog {
@@ -96,6 +103,23 @@ interface AdminDashboardProps {
   setCompanyTagline: (tagline: string) => void;
   companyLogo: string;
   setCompanyLogo: (logo: string) => void;
+  jumlahSilo?: number;
+  setJumlahSilo?: (num: number) => void;
+  tanpaOperator?: boolean;
+  setTanpaOperator?: (val: boolean) => void;
+  truckPresenceRequired?: boolean;
+  setTruckPresenceRequired?: (val: boolean) => void;
+  driverDischargeRequired?: boolean;
+  setDriverDischargeRequired?: (val: boolean) => void;
+  minAirPressure?: number;
+  setMinAirPressure?: (val: number) => void;
+  pressureLimitEnabled?: boolean;
+  setPressureLimitEnabled?: (val: boolean) => void;
+  isTruckPresent?: boolean;
+  setIsTruckPresent?: React.Dispatch<React.SetStateAction<boolean>>;
+  driverBtnPressed?: boolean;
+  setDriverBtnPressed?: React.Dispatch<React.SetStateAction<boolean>>;
+  airPressure?: number;
 }
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
@@ -127,10 +151,51 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   companyTagline,
   setCompanyTagline,
   companyLogo,
-  setCompanyLogo
+  setCompanyLogo,
+  jumlahSilo = 6,
+  setJumlahSilo,
+  tanpaOperator = false,
+  setTanpaOperator,
+  truckPresenceRequired = false,
+  setTruckPresenceRequired,
+  driverDischargeRequired = false,
+  setDriverDischargeRequired,
+  minAirPressure = 80.0,
+  setMinAirPressure,
+  pressureLimitEnabled = false,
+  setPressureLimitEnabled,
+  isTruckPresent = false,
+  setIsTruckPresent,
+  driverBtnPressed = false,
+  setDriverBtnPressed,
+  airPressure = 0.0
 }) => {
-  const [activeMenu, setActiveMenu] = useState("Dashboard");
+  const [activeMenu, setActiveMenu] = useState(() => {
+    const saved = localStorage.getItem("batching_plant_active_user");
+    if (saved) {
+      try {
+        const u = JSON.parse(saved);
+        if (u.jabatan?.toUpperCase() === "DIREKTUR") {
+          return "Dashboard Direktur";
+        }
+      } catch (err) {}
+    }
+    return "Dashboard";
+  });
   const [settingTab, setSettingTab] = useState<'system' | 'capacity'>('system');
+
+  // Local plant identity form states linked to syncService
+  const [plantIdState, setPlantIdState] = useState(() => localStorage.getItem("plant_id") || "PKU01");
+  const [plantNameState, setPlantNameState] = useState(() => localStorage.getItem("plant_name") || "Pekanbaru");
+  const [plantCompanyState, setPlantCompanyState] = useState(() => localStorage.getItem("plant_company") || "PT Farika Riau Perkasa");
+  const [plantAddressState, setPlantAddressState] = useState(() => localStorage.getItem("plant_address") || "");
+  const [isSyncingSimulated, setIsSyncingSimulated] = useState(false);
+  const [syncHistoryLogs, setSyncHistoryLogs] = useState<string[]>(() => {
+    return [
+      `[${new Date().toLocaleTimeString()}] SISTEM INS-INITIALIZED. Menunggu sinkronisasi data pertama.`,
+      `[${new Date().toLocaleTimeString()}] DATABASE LOKAL AKTIF: Mengantre data offline.`
+    ];
+  });
 
   const [currentUser, setCurrentUser] = useState<any>(() => {
     const saved = localStorage.getItem("batching_plant_active_user");
@@ -167,7 +232,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     "Urutan Mixing",
     "Penamaan BP",
     "Pengaturan Perusahaan",
-    "Kalibrasi Slump"
+    "Kalibrasi Slump",
+    "Pengaturan Plant",
+    "Tanpa Operator"
   ];
 
   // Helper to render Access Denied SCADA block
@@ -216,14 +283,79 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const totalBatch = logs.length;
   const totalVolume = logs.reduce((acc, curr) => acc + curr.volume, 0);
 
+  // Helper for role based access validation
+  const hasMenuAccess = (role: string, menuName: string): boolean => {
+    const isUAdmin = role === "Admin" || role === "ADMIN";
+    if (isUAdmin) return true; // ADMIN gets 100% full access
+
+    if (role === "DIREKTUR") {
+      return [
+        "Dashboard Direktur", 
+        "Monitoring Plant", 
+        "Database Produksi", 
+        "Monitoring Stok", 
+        "Monitoring Armada", 
+        "Alert Center"
+      ].includes(menuName);
+    }
+    if (role === "SUPERVISOR") {
+      return ["Dashboard", "Database Produksi", "Print Tiket", "Pengaturan Alert"].includes(menuName);
+    }
+    if (role === "LOGISTIK") {
+      return ["Dashboard", "Database Produksi", "Setting", "Joging Material"].includes(menuName);
+    }
+    if (role === "OPERATOR" || role === "Operator") {
+      return !RESTRICTED_ADMIN_MENUS.includes(menuName);
+    }
+    return false; // Restrict by default
+  };
+
   // Helper to render dynamic view based on sidebar selection
   const renderContent = () => {
     // Check access restriction
-    if (currentUser?.jabatan === "Operator" && RESTRICTED_ADMIN_MENUS.includes(activeMenu)) {
+    const uRole = currentUser?.jabatan || "Operator";
+    if (!hasMenuAccess(uRole, activeMenu)) {
       return renderAccessDenied(activeMenu);
     }
 
     switch (activeMenu) {
+      case "Tanpa Operator":
+        return (
+          <TanpaOperator
+            tanpaOperator={tanpaOperator}
+            setTanpaOperator={setTanpaOperator || (() => {})}
+            truckPresenceRequired={truckPresenceRequired}
+            setTruckPresenceRequired={setTruckPresenceRequired || (() => {})}
+            driverDischargeRequired={driverDischargeRequired}
+            setDriverDischargeRequired={setDriverDischargeRequired || (() => {})}
+            minAirPressure={minAirPressure}
+            setMinAirPressure={setMinAirPressure || (() => {})}
+            pressureLimitEnabled={pressureLimitEnabled}
+            setPressureLimitEnabled={setPressureLimitEnabled || (() => {})}
+            isTruckPresent={isTruckPresent}
+            setIsTruckPresent={setIsTruckPresent || (() => {})}
+            driverBtnPressed={driverBtnPressed}
+            setDriverBtnPressed={setDriverBtnPressed || (() => {})}
+            airPressure={airPressure}
+            operationMode={operationMode}
+          />
+        );
+
+      case "Dashboard Direktur":
+        return <DirectorDashboard logs={logs} defaultTab="dashboard" />;
+
+      case "Monitoring Plant":
+        return <DirectorDashboard logs={logs} defaultTab="plants" />;
+
+      case "Monitoring Stok":
+        return <DirectorDashboard logs={logs} defaultTab="inventory" />;
+
+      case "Monitoring Armada":
+        return <DirectorDashboard logs={logs} defaultTab="fleets" />;
+
+      case "Alert Center":
+        return <DirectorDashboard logs={logs} defaultTab="alarms" />;
+
       case "Dashboard":
         return (
           <div className="flex-1 flex flex-col gap-4 min-h-0 overflow-hidden">
@@ -637,7 +769,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </div>
                 </div>
 
-                <div className="p-3 bg-slate-900/30 border border-slate-850/55 rounded text-[10px] font-mono uppercase space-y-1.5 leading-relaxed">
+                 <div className="p-3 bg-slate-900/30 border border-slate-850/55 rounded text-[10px] font-mono uppercase space-y-1.5 leading-relaxed">
                   <span className="text-cyan-400 font-bold col-span-full">DESKRIPSI SUMBER DATA OPERASIONAL:</span>
                   {operationMode === 'SIMULASI' ? (
                     <p className="text-slate-400 normal-case leading-normal mt-1">
@@ -648,6 +780,45 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       Sistem membaca berat aktual dan status level langsung dari Sensor Loadcell yang dikomunikasikan oleh modul Arduino Mega via port serial secara realtime. Animasi timbangan mengikuti pergerakan angka sensor nyata secara presisi.
                     </p>
                   )}
+                </div>
+              </div>
+
+              {/* PENGATURAN JUMLAH SILO BATCHING PLANT */}
+              <div id="setting-jumlah-silo" className="bg-[#060a12]/80 border border-slate-800/80 rounded-[5px] p-4 space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-2 flex-wrap gap-2">
+                  <div className="flex flex-col">
+                    <span className="text-[10px] font-sans font-black text-[#00ffd0] uppercase tracking-wider">
+                      KONFIGURASI JUMLAH SILO SEMEN
+                    </span>
+                    <span className="text-[8.5px] font-mono text-slate-500 uppercase">
+                      TENTUKAN JUMLAH SILO AKTIF PADA BATCHING PLANT (1 S/D 8). SILO AKAN DISELARASKAN POSISINYA SEJAJAR DI TENGAH TIMBANGAN SEMEN (CENTER ALIGN).
+                    </span>
+                  </div>
+                  
+                  <div className="flex items-center gap-2">
+                    <button 
+                      type="button"
+                      onClick={() => setJumlahSilo?.(Math.max(1, (jumlahSilo ?? 6) - 1))}
+                      className="w-6 h-6 bg-slate-800 hover:bg-slate-700 rounded flex items-center justify-center font-extrabold text-white text-sm select-none cursor-pointer"
+                    >-</button>
+                    
+                    <span className="text-[#00ffd0] font-mono font-black text-xs px-2 w-16 text-center border border-slate-800 bg-slate-950 py-1 rounded">
+                      {jumlahSilo} SILO
+                    </span>
+                    
+                    <button 
+                      type="button"
+                      onClick={() => setJumlahSilo?.(Math.min(8, (jumlahSilo ?? 6) + 1))}
+                      className="w-6 h-6 bg-slate-800 hover:bg-slate-700 rounded flex items-center justify-center font-extrabold text-white text-sm select-none cursor-pointer"
+                    >+</button>
+                  </div>
+                </div>
+
+                <div className="p-3 bg-slate-900/30 border border-slate-850/55 rounded text-[10px] font-mono uppercase space-y-1.5 leading-relaxed">
+                  <span className="text-cyan-400 font-bold col-span-full">VISUALISASI AKUMULATIF SILO:</span>
+                  <p className="text-slate-400 normal-case leading-normal mt-1">
+                    Posisi silo semen akan diatur secara otomatis agar senantiasa simetris dan terpusat di atas timbangan semen. Jumlah pilihan silo pada form pendaftaran batch juga akan menyesuaikan dengan pengaturan ini secara dinamis.
+                  </p>
                 </div>
               </div>
             </>
@@ -1047,6 +1218,219 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
         );
 
+      case "Pengaturan Plant":
+        return (
+          <div className="flex-1 bg-[#0b1329]/80 border border-[#1e293b]/70 rounded-[6px] p-6 flex flex-col justify-between overflow-y-auto scrollbar-thin">
+            <div className="space-y-6">
+              {/* Header Title */}
+              <div className="flex items-center gap-2.5 text-[#00ffd0]">
+                <Globe size={20} className="animate-pulse" />
+                <h4 className="text-sm font-sans font-black tracking-widest uppercase">
+                  PENGATURAN PLANT IDENTITY & CLOUD MONITORING
+                </h4>
+              </div>
+              <p className="text-[10px] font-mono text-slate-400 uppercase leading-relaxed max-w-4xl">
+                Tentukan identitas unik untuk komputer HMI ini (tidak menggunakan nama device Windows bawaan). Data produksi, sisa stok harian, alarm, serta aktivitas operator akan dibungkus dengan ID unik ini sebelum diantrekan secara offline untuk disinkronkan ke cloud secara aman.
+              </p>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 pt-2">
+                {/* Kolom Kiri: Form Identitas */}
+                <div className="bg-[#05080e]/90 border border-slate-800 rounded p-5 space-y-4 shadow-lg">
+                  <span className="text-[10px] font-sans font-black text-[#00ffd0] tracking-wider uppercase border-b border-slate-800 pb-2 block">
+                    1. IDENTITAS LOKAL BATCHING PLANT
+                  </span>
+
+                  <div className="space-y-4">
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[9px] font-sans font-black text-slate-400 uppercase">Perusahaan Induk</label>
+                      <input
+                        type="text"
+                        value={plantCompanyState}
+                        onChange={(e) => setPlantCompanyState(e.target.value)}
+                        className="bg-[#0b1220] border border-slate-800 focus:border-[#00ffd0] hover:border-slate-700 text-slate-200 p-2.5 rounded-[4px] text-xs font-mono font-bold uppercase transition-all outline-none"
+                        placeholder="Contoh: PT Farika Riau Perkasa"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="flex flex-col gap-1.5">
+                        <label className="text-[9px] font-sans font-black text-amber-500 uppercase">KODE / ID PLANT (UNIK)</label>
+                        <input
+                          type="text"
+                          value={plantIdState}
+                          onChange={(e) => setPlantIdState(e.target.value)}
+                          className="bg-[#0b1220] border border-slate-800 focus:border-[#00ffd0] hover:border-slate-700 text-amber-400 p-2.5 rounded-[4px] text-xs font-mono font-black uppercase transition-all outline-none"
+                          placeholder="Contoh: PKU01"
+                        />
+                      </div>
+
+                      <div className="flex flex-col gap-1.5">
+                        <label className="text-[9px] font-sans font-black text-[#00ffd0] uppercase">NAMA CABANG / PLANT</label>
+                        <input
+                          type="text"
+                          value={plantNameState}
+                          onChange={(e) => setPlantNameState(e.target.value)}
+                          className="bg-[#0b1220] border border-slate-800 focus:border-[#00ffd0] hover:border-slate-700 text-[#00ffd0] p-2.5 rounded-[4px] text-xs font-mono font-extrabold uppercase transition-all outline-none"
+                          placeholder="Contoh: Pekanbaru"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[9px] font-sans font-black text-slate-400 uppercase">Alamat Plant (Opsional)</label>
+                      <textarea
+                        value={plantAddressState}
+                        onChange={(e) => setPlantAddressState(e.target.value)}
+                        className="bg-[#0b1220] border border-slate-800 focus:border-[#00ffd0] hover:border-slate-700 text-slate-200 p-2.5 rounded-[4px] text-xs font-mono font-bold uppercase transition-all outline-none h-20 resize-none"
+                        placeholder="Contoh: Jl. Raya Pekanbaru - Dumai KM 12"
+                      />
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        savePlantIdentity({
+                          plantCompany: plantCompanyState,
+                          plantId: plantIdState,
+                          plantName: plantNameState,
+                          plantAddress: plantAddressState,
+                          registeredAt: new Date().toISOString()
+                        });
+                        
+                        localStorage.setItem('plant_id', plantIdState);
+                        localStorage.setItem('plant_name', plantNameState);
+                        localStorage.setItem('plant_company', plantCompanyState);
+                        localStorage.setItem('plant_address', plantAddressState);
+                        localStorage.setItem('plant_registered', 'true');
+                        
+                        alert("Sukses! Identitas plant berhasil diperbarui secara lokal.");
+                        setSyncHistoryLogs(prev => [
+                          `[${new Date().toLocaleTimeString()}] IDENTITAS DIPERBARUI -> ID: ${plantIdState}, Lokasi: ${plantNameState}`,
+                          ...prev
+                        ]);
+                      }}
+                      className="w-full bg-[#00ffd0]/10 hover:bg-[#00ffd0]/20 border border-[#00ffd0]/30 hover:border-[#00ffd0] text-[#00ffd0] font-sans font-black text-[10px] tracking-widest uppercase py-3 rounded transition-all cursor-pointer shadow-[0_0_8px_rgba(0,255,208,0.1)] hover:shadow-[0_0_15px_rgba(0,255,208,0.3)] font-black"
+                    >
+                      SIMPAN PERUBAHAN IDENTITAS PLANT
+                    </button>
+                    
+                    <p className="text-[8px] font-mono text-slate-500 uppercase leading-relaxed text-center mt-1">
+                      ⚠️ Mengubah ID plant akan mengelompokkan data cloud monitoring berikutnya ke ID cabang yang baru.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Kolom Kanan: Cloud Sync & Monitoring Layer */}
+                <div className="bg-[#05080e]/90 border border-slate-800 rounded p-5 space-y-4 flex flex-col justify-between shadow-lg">
+                  <div>
+                    <span className="text-[10px] font-sans font-black text-rose-500 tracking-wider uppercase border-b border-slate-800 pb-2 block">
+                      2. DESKTOP LOCAL DB TO CLOUD SYNC ENGINE
+                    </span>
+
+                    {/* Sync Telemetry Panel */}
+                    <div className="grid grid-cols-2 gap-4 mt-4">
+                      <div className="p-3 bg-slate-950 border border-slate-850 rounded">
+                        <span className="text-[8px] text-slate-500 font-sans font-black uppercase">Fase Koneksi</span>
+                        <div className="flex items-center gap-1.5 mt-1">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_#10b981] animate-pulse" />
+                          <span className="text-[#00ffd0] font-mono text-[9px] font-black uppercase">DESKTOP OFFLINE-READY</span>
+                        </div>
+                      </div>
+
+                      <div className="p-3 bg-slate-950 border border-slate-850 rounded">
+                        <span className="text-[8px] text-slate-500 font-sans font-black uppercase">Perekaman Telemetri</span>
+                        <div className="flex items-center gap-1 mt-1 text-slate-200">
+                          <span className="text-[9px] font-mono font-black text-cyan-400">AUTOMATED SENSORS SYSTEM</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Sync Stats Database */}
+                    <div className="p-4 bg-slate-950/80 border border-slate-850 rounded text-slate-300 font-mono text-[10px] space-y-2 uppercase mt-4">
+                      <div className="flex items-center justify-between">
+                        <span>Database Utama</span>
+                        <span className="text-slate-200 font-bold">SQL / LocalStorage Schema</span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span>Antrean Offline (Pending)</span>
+                        <span className="text-amber-500 font-black">{isSyncingSimulated ? 0 : getSyncStats().pendingRecords} File</span>
+                      </div>
+                      <div className="flex items-center justify-between flex-wrap">
+                        <span>Sistem Cloud Target</span>
+                        <span className="text-cyan-400 font-bold">Future API Endpoint Layer</span>
+                      </div>
+                    </div>
+
+                    {/* Simu Log Console */}
+                    <div className="mt-4 p-3 bg-[#030712] border border-slate-900 rounded font-mono text-[9px] text-[#00ffcc] space-y-1 h-[95px] overflow-y-auto scrollbar-thin">
+                      {syncHistoryLogs.map((logLine, idx) => (
+                        <div key={idx} className="truncate select-none">{logLine}</div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <button
+                      onClick={() => {
+                        if (isSyncingSimulated) return;
+                        setIsSyncingSimulated(true);
+                        setSyncHistoryLogs(prev => [
+                          `[${new Date().toLocaleTimeString()}] MEMULAI PILAR SINKRONISASI CLOUD...`,
+                          `[${new Date().toLocaleTimeString()}] MENGHUBUNGKAN KE SERVER PEMANTAUAN UTAMA: PT FARIKA CLOUD`,
+                          ...prev
+                        ]);
+
+                        setTimeout(() => {
+                          const queueStr = localStorage.getItem("cloud_sync_queue") || "[]";
+                          let queue = [];
+                          try {
+                            queue = JSON.parse(queueStr);
+                          } catch (e) {}
+
+                          // Mark all as synced
+                          const updatedQueue = queue.map((r: any) => ({ ...r, synced: true }));
+                          localStorage.setItem("cloud_sync_queue", JSON.stringify(updatedQueue));
+                          window.dispatchEvent(new Event("cloud_sync_queue_updated"));
+
+                          setIsSyncingSimulated(false);
+                          setSyncHistoryLogs(prev => [
+                            `[${new Date().toLocaleTimeString()}] SENSORS DATA TRANSMITTED SUCCESSFULLY! ✅`,
+                            `[${new Date().toLocaleTimeString()}] SINKRONISASI SELESAI. ${updatedQueue.length} records sukses disimpan ke Cloud.`,
+                            ...prev
+                          ]);
+                          alert(`Simulasi Sukses! ${updatedQueue.length} unit data produksi dan relai terkirim ke Cloud Monitoring Server.`);
+                        }, 1800);
+                      }}
+                      disabled={isSyncingSimulated}
+                      className="w-full bg-blue-950/40 hover:bg-blue-900/60 disabled:opacity-50 border border-blue-800 text-blue-400 font-sans font-black text-[10px] tracking-widest uppercase py-3 rounded transition-all cursor-pointer flex items-center justify-center gap-2"
+                    >
+                      {isSyncingSimulated ? (
+                        <>
+                          <div className="w-3.5 h-3.5 border-t-2 border-r-2 border-cyan-400 rounded-full animate-spin shrink-0" />
+                          <span>MENSINKRONKAN DATA KE CLOUD...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Cloud size={12} className="text-[#00ffd0]" />
+                          <span>SIMULASIKAN SINKRONISASI SEKARANG</span>
+                        </>
+                      )}
+                    </button>
+                    
+                    <div className="p-3 bg-blue-950/10 border border-blue-900/25 rounded text-[8.5px] text-slate-400 font-mono uppercase leading-relaxed text-center animate-pulse">
+                      🔐 Sistem HMI berjalan 100% offline secara lokal. Sinkronisasi dilakukan secara asinkron di latar belakang saat terminal memiliki akses internet.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-6 bg-[#0c1220] border-t border-slate-850/50 pt-4 flex justify-between text-[8px] font-mono text-slate-500 uppercase select-none shrink-0">
+              <span>SINKRONISASI ASINKRON: PEMBUNGKUS MULTI-PLANT AUTOMATIC INTEGRATED CONCRETE</span>
+              <span>VERSI SISTEM: SCADA v2.4a-CLOUD</span>
+            </div>
+          </div>
+        );
+
       case "Remote Tablet":
         return (
           <RemoteTablet />
@@ -1067,6 +1451,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
+  const uRole = (currentUser?.jabatan || "Operator").toUpperCase();
+
   return (
     <div className="fixed inset-0 z-[250] bg-[#070b13] p-3 flex flex-col h-screen select-none font-sans overflow-hidden">
       
@@ -1075,9 +1461,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         <div className="flex items-center gap-3">
           <Layout size={18} className="text-[#00e5ff] drop-shadow-[0_0_5px_rgba(0,229,255,0.4)]" />
           <span className="text-[12px] font-sans font-black tracking-widest text-white uppercase flex items-center gap-2">
-            Batch Plant HMI - Admin Panel
+            {uRole === "DIREKTUR" ? "BATCH PLANT - EXECUTIVE DASHBOARD" :
+             uRole === "SUPERVISOR" ? "BATCH PLANT - SUPERVISOR DASHBOARD" :
+             uRole === "LOGISTIK" ? "BATCH PLANT - LOGISTICS DASHBOARD" :
+             "BATCH PLANT - ADMINISTRATION DASHBOARD"}
             <span className="text-[7.5px] font-mono font-bold text-cyan-400 bg-cyan-900/45 border border-cyan-800/50 px-1.5 py-0.5 rounded-[3.5px] uppercase select-none tracking-normal">
-              Admin Mode
+              {uRole} MODE
             </span>
           </span>
         </div>
@@ -1098,6 +1487,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           activeMenu={activeMenu}
           setActiveMenu={setActiveMenu}
           onLogout={onLogout}
+          userRole={currentUser?.jabatan}
         />
 
         {/* Right Dynamic Contents Panel Container */}

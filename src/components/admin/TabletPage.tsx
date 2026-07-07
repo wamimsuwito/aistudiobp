@@ -505,7 +505,7 @@ export const TabletPage: React.FC = () => {
               )}
             </div>
             
-            <div className="bg-[#070b14] p-1.5 rounded-lg border border-slate-800 flex items-center justify-center gap-2 shadow-inner w-full sm:w-auto max-w-[340px] mx-auto">
+            <div className="bg-[#080d19] p-1.5 rounded-lg border-2 border-slate-800 flex items-center justify-center gap-2.5 shadow-2xl w-full sm:w-auto max-w-[420px] mx-auto">
               <button
                 disabled={mode !== "CONTROL"}
                 onClick={() => {
@@ -514,11 +514,11 @@ export const TabletPage: React.FC = () => {
                     mode: "MANUAL"
                   });
                 }}
-                className={`flex-1 sm:flex-none py-3 px-5 text-[10.5px] font-sans font-black uppercase transition-all rounded-md cursor-pointer text-center min-w-[85px] leading-none ${
+                className={`flex-1 sm:flex-none py-5 px-6 text-[11px] font-sans font-black tracking-wider uppercase transition-all rounded-[6px] cursor-pointer text-center min-w-[95px] leading-none ${
                   mainPlantBatchingMode === 'MANUAL'
-                    ? "bg-slate-700 text-white border border-slate-650 shadow-[0_2px_4px_rgba(0,0,0,0.5)]"
+                    ? "bg-slate-700 text-white border-b-4 border-slate-900 shadow-inner font-black"
                     : mode === "CONTROL"
-                      ? "text-slate-500 hover:text-slate-300 border border-transparent"
+                      ? "bg-slate-950/45 text-slate-500 hover:text-slate-300 border border-transparent"
                       : "text-slate-600/30 cursor-not-allowed border border-transparent"
                 }`}
               >
@@ -533,11 +533,11 @@ export const TabletPage: React.FC = () => {
                     mode: "SEMI_AUTO"
                   });
                 }}
-                className={`flex-1 sm:flex-none py-3 px-5 text-[10.5px] font-sans font-black uppercase transition-all rounded-md cursor-pointer text-center min-w-[85px] leading-none ${
+                className={`flex-1 sm:flex-none py-5 px-6 text-[11px] font-sans font-black tracking-wider uppercase transition-all rounded-[6px] cursor-pointer text-center min-w-[95px] leading-none ${
                   mainPlantBatchingMode === 'SEMI_AUTO'
-                    ? "bg-amber-600 text-white border border-amber-500 shadow-[0_2px_4px_rgba(217,119,6,0.4)]"
+                    ? "bg-amber-600 text-white border-b-4 border-amber-805 shadow-inner font-black"
                     : mode === "CONTROL"
-                      ? "text-slate-500 hover:text-slate-300 border border-transparent"
+                      ? "bg-slate-950/45 text-slate-500 hover:text-slate-300 border border-transparent"
                       : "text-slate-600/30 cursor-not-allowed border border-transparent"
                 }`}
               >
@@ -552,11 +552,11 @@ export const TabletPage: React.FC = () => {
                     mode: "AUTO"
                   });
                 }}
-                className={`flex-1 sm:flex-none py-3 px-5 text-[10.5px] font-sans font-black uppercase transition-all rounded-md cursor-pointer text-center min-w-[85px] leading-none ${
+                className={`flex-1 sm:flex-none py-5 px-6 text-[11px] font-sans font-black tracking-wider uppercase transition-all rounded-[6px] cursor-pointer text-center min-w-[95px] leading-none ${
                   mainPlantBatchingMode === 'AUTO'
-                    ? "bg-emerald-600 text-white border border-emerald-500 shadow-[0_2px_4px_rgba(16,185,129,0.4)]"
+                    ? "bg-emerald-600 text-white border-b-4 border-emerald-805 shadow-inner font-black"
                     : mode === "CONTROL"
-                      ? "text-slate-500 hover:text-slate-300 border border-transparent"
+                      ? "bg-slate-950/45 text-slate-500 hover:text-slate-300 border border-transparent"
                       : "text-slate-600/30 cursor-not-allowed border border-transparent"
                 }`}
               >

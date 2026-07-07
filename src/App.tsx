@@ -28,16 +28,23 @@ import {
   Package,
   HelpCircle,
   Check,
-  X
+  X,
+  LogOut,
+  ShieldAlert,
+  MessageSquare,
+  Send,
+  Clock
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { LoginModal } from "./components/admin/LoginModal";
+import { LoginPortal } from "./components/admin/LoginPortal";
 import { AdminDashboard } from "./components/admin/AdminDashboard";
 import { TabletPage } from "./components/admin/TabletPage";
 import { MixingSequence } from "./components/admin/MixingSequenceConfig";
 import { BatchConfigModal } from "./components/BatchConfigModal";
 import { webSerialService } from "./lib/webSerial";
 import { loadRelayConfig } from "./components/admin/relay-config/ConfigState";
+import { queueForCloudSync } from "./lib/syncService";
 
 // Background timer Web Worker using Blob URL to bypass browser throttling when tab is minimized/inactive
 let bgWorker: Worker | null = null;
@@ -130,6 +137,7 @@ interface Recipe {
   id: string;
   name: string;
   targets: Record<MaterialType, number>;
+  jobMixDetails?: any;
 }
 
 // --- Constants ---
@@ -342,12 +350,15 @@ const ScadaDiagram = ({
   dischargeTimeSec = 0,
   activeMixingTime = 10,
   ampere = null,
+  slump = null,
   relayLogs = [],
   isPaused = false,
   activeSiloSemen = "Silo 3 - 28.290 kg",
   siloWeights = [42150, 35800, 28290, 31400, 19500, 48900],
+  jumlahSilo = 6,
   activePins = {},
   batchingPlantMode = 'SYSTEM_1',
+  batchingMode = 'AUTO',
   waitingHopperEnabled = false,
   waitingHopperState = 'WAITING_HOPPER_IDLE',
   waitingHopperGateOpen: rawWaitingHopperGateOpen = false,
@@ -363,8 +374,12 @@ const ScadaDiagram = ({
   klaksonActive = false,
   admixInActive = false,
   admixOutActive = false,
-  onManualDeviceToggle
+  onManualDeviceToggle,
+  airPressure = 0,
+  setAirPressure
 }: { 
+  airPressure?: number;
+  setAirPressure?: React.Dispatch<React.SetStateAction<number>>;
   isRunning: boolean; 
   currentStep: string; 
   isDone: boolean; 
@@ -418,12 +433,15 @@ const ScadaDiagram = ({
   dischargeTimeSec?: number;
   activeMixingTime?: number;
   ampere?: number | null;
+  slump?: number | null;
   relayLogs?: { id: string; timestamp: Date; message: string; type: 'on' | 'off' | 'info' | 'done' }[];
   isPaused?: boolean;
   activeSiloSemen?: string;
   siloWeights?: number[];
+  jumlahSilo?: number;
   activePins?: Record<string, boolean>;
   batchingPlantMode?: 'SYSTEM_1' | 'SYSTEM_2' | 'SYSTEM_3';
+  batchingMode?: 'MANUAL' | 'SEMI_AUTO' | 'AUTO';
   waitingHopperEnabled?: boolean;
   waitingHopperState?: string;
   waitingHopperGateOpen?: boolean;
@@ -469,13 +487,14 @@ const ScadaDiagram = ({
     return label.replace(" 1", " #1").replace(" 2", " #2");
   };
 
-  const [airPressure, setAirPressure] = useState<number>(() => {
-    return compressorActive ? 85.0 : 0.0;
-  });
-
   useEffect(() => {
     const interval = setInterval(() => {
-      setAirPressure(prev => {
+      if (setAirPressure) {
+        setAirPressure(prev => {
+          // If connected to physical hardware serial, bypass simulator
+          if (webSerialService.getStatus() === "CONNECTED") {
+            return prev;
+          }
         let target = compressorActive ? 88.5 : 0.0;
         const hasPneumaticDischarge = 
           gatePasirHopperOpen || 
@@ -497,7 +516,8 @@ const ScadaDiagram = ({
         if (nextPressure > 110) nextPressure = 110;
         
         return parseFloat(nextPressure.toFixed(1));
-      });
+        });
+      }
     }, 200);
     return () => clearInterval(interval);
   }, [compressorActive, gatePasirHopperOpen, gateBatuHopperOpen, gateSemenHopperOpen, gateWaterHopperOpen, waitingHopperGateOpen, mixerDoorPercent]);
@@ -550,15 +570,17 @@ const ScadaDiagram = ({
     if (isAuto) return {};
 
     const isToggle = id === 'conveyorBottom' || id === 'conveyorUpper' || id === 'compressor';
+    const isSemiAuto = batchingMode === 'SEMI_AUTO';
 
-    if (isToggle) {
+    if (isToggle || isSemiAuto) {
       return {
-        onPointerDown: (e: React.PointerEvent) => {
-          if (e.button !== 0 && e.pointerType === 'mouse') return;
+        onClick: (e: React.MouseEvent) => {
           e.stopPropagation();
-          const currentStatus = getDeviceStatus(id);
           if (onManualDeviceToggle) {
-            onManualDeviceToggle(id, !currentStatus);
+            if (selectSiloIdx !== undefined) {
+              onManualDeviceToggle('selectSilo', selectSiloIdx as any);
+            }
+            onManualDeviceToggle(id);
           }
         },
         style: { cursor: 'pointer' }
@@ -1221,6 +1243,19 @@ const ScadaDiagram = ({
               const fillRatio = Math.min(1, Math.max(0, accumActual / scaleCapacitiesAccumulative));
               const rectH = fillRatio * 50;
               const cx = 223;
+
+              // Calculate individual component targets for System 2 Accumulative Scale
+              const tFactor = parseFloat((activeVolume / (totalCycles || 1)).toFixed(2)) || 1.0;
+              const savedJmf = selectedRecipe?.jobMixDetails;
+              const targetValuePasir1 = savedJmf?.pasir1 || Math.round((selectedRecipe?.targets?.pasir || 400) * 0.7);
+              const targetValuePasir2 = savedJmf?.pasir2 || Math.round((selectedRecipe?.targets?.pasir || 400) * 0.3);
+              const targetValueBatu1 = savedJmf?.batu1 || Math.round((selectedRecipe?.targets?.batu || 400) * 0.7);
+              const targetValueBatu2 = savedJmf?.batu2 || Math.round((selectedRecipe?.targets?.batu || 400) * 0.3);
+
+              const adjustedTargetPasir1 = Math.round(targetValuePasir1 * tFactor);
+              const adjustedTargetPasir2 = Math.round(targetValuePasir2 * tFactor);
+              const adjustedTargetBatu1 = Math.round(targetValueBatu1 * tFactor);
+              const adjustedTargetBatu2 = Math.round(targetValueBatu2 * tFactor);
               
               return (
                 <g key="accumulative_hopper">
@@ -1242,6 +1277,14 @@ const ScadaDiagram = ({
                   <path d="M68 335 L378 335 L328 385 L118 385 Z" fill="none" stroke={theme.outline} strokeWidth="1.5" />
                   <text x={cx} y="353" textAnchor="middle" fill="#00e5ff" fontSize="9" fontWeight="black" letterSpacing="0.8" className="select-none">TIMBANGAN AGGREGATE</text>
                   <text x={cx} y="371" textAnchor="middle" fill="#fbbf24" fontSize="10.5" fontWeight="bold" className="font-mono select-none">{accumActual.toFixed(0)} / {accumTarget.toFixed(0)} kg</text>
+
+                  {/* Individual targets visual overlay on left and right sides of scale */}
+                  <g className="font-sans select-none" fontSize="7.2" fontWeight="black">
+                    <text x="112" y="354" textAnchor="middle" fill="#94a3b8">PS1: <tspan fill="#00ff9c">{adjustedTargetPasir1}</tspan> kg</text>
+                    <text x="112" y="366" textAnchor="middle" fill="#94a3b8">PS2: <tspan fill="#00ff9c">{adjustedTargetPasir2}</tspan> kg</text>
+                    <text x="334" y="354" textAnchor="middle" fill="#94a3b8">BT1: <tspan fill="#00ff9c">{adjustedTargetBatu1}</tspan> kg</text>
+                    <text x="334" y="366" textAnchor="middle" fill="#94a3b8">BT2: <tspan fill="#00ff9c">{adjustedTargetBatu2}</tspan> kg</text>
+                  </g>
                   
                   {/* Sliding Gate Pneumatic mechanism */}
                   <g>
@@ -1448,6 +1491,8 @@ const ScadaDiagram = ({
           />
         </g>
 
+
+
         {/* Main Conveyor to Mixer (Feeder) */}
         <g 
           id="feeder-conveyor"
@@ -1525,10 +1570,10 @@ const ScadaDiagram = ({
         <g id="silos">
           {/* Total Cumulative Cement Stock Indicator */}
           {(() => {
-            const totalSemenStock = siloWeights.reduce((a, b) => a + b, 0);
+            const totalSemenStock = siloWeights.slice(0, jumlahSilo).reduce((a, b) => a + b, 0);
             const totalSemenTon = totalSemenStock / 1000;
             return (
-              <g transform="translate(550, 0)">
+              <g transform="translate(545, 0)">
                 <rect 
                   x="0" 
                   y="2" 
@@ -1554,8 +1599,11 @@ const ScadaDiagram = ({
             );
           })()}
 
-          {[...Array(6)].map((_, i) => {
-            const siloX = 550 + i * 45 + 15;
+          {[...Array(jumlahSilo)].map((_, i) => {
+            const groupWidth = (jumlahSilo - 1) * 45 + 30;
+            const startX = 672.5 - groupWidth / 2;
+            const siloLeftX = startX + i * 45;
+            const siloX = siloLeftX + 15;
             const siloY = 150;
             const isThisSiloSelected = isAuto 
               ? (selectedSiloNumber === (i + 1))
@@ -1580,7 +1628,7 @@ const ScadaDiagram = ({
               >
                 {/* Cylinder background */}
                 <rect 
-                  x={550 + i * 45} 
+                  x={siloLeftX} 
                   y="30" 
                   width="30" 
                   height="100" 
@@ -1590,7 +1638,7 @@ const ScadaDiagram = ({
                 {/* Cylinder filled level state */}
                 {fillRatio > 0 && (
                   <rect 
-                    x={550 + i * 45} 
+                    x={siloLeftX} 
                     y={fillY} 
                     width="30" 
                     height={fillHeight} 
@@ -1602,7 +1650,7 @@ const ScadaDiagram = ({
                 
                 {/* Cylinder main body outline */}
                 <rect 
-                  x={550 + i * 45} 
+                  x={siloLeftX} 
                   y="30" 
                   width="30" 
                   height="100" 
@@ -1613,14 +1661,14 @@ const ScadaDiagram = ({
 
                 {/* Cone tip funnel background */}
                 <path 
-                  d={`M${550 + i * 45} 130 L${550 + i * 45 + 15} 150 L${550 + i * 45 + 30} 130`} 
+                  d={`M${siloLeftX} 130 L${siloLeftX + 15} 150 L${siloLeftX + 30} 130`} 
                   fill="#050a12"
                 />
 
                 {/* Cone tip filled level */}
                 {weightVal > 0 && (
                   <path 
-                    d={`M${550 + i * 45 + (15 - 15 * Math.min(1, weightVal / 5000))} ${130 + (20 * (1 - Math.min(1, weightVal / 5000)))} L${550 + i * 45 + 15} 150 L${550 + i * 45 + 15 + (15 * Math.min(1, weightVal / 5000))} ${130 + (20 * (1 - Math.min(1, weightVal / 5000)))}`} 
+                    d={`M${siloLeftX + (15 - 15 * Math.min(1, weightVal / 5000))} ${130 + (20 * (1 - Math.min(1, weightVal / 5000)))} L${siloLeftX + 15} 150 L${siloLeftX + 15 + (15 * Math.min(1, weightVal / 5000))} ${130 + (20 * (1 - Math.min(1, weightVal / 5000)))}`} 
                     fill={isThisSiloSelected ? "#10b981" : "#475569"} 
                     opacity={isThisSiloActive ? 0.85 : 0.6}
                   />
@@ -1628,22 +1676,52 @@ const ScadaDiagram = ({
 
                 {/* Cone tip funnel outline */}
                 <path 
-                  d={`M${550 + i * 45} 130 L${550 + i * 45 + 15} 150 L${550 + i * 45 + 30} 130`} 
+                  d={`M${siloLeftX} 130 L${siloLeftX + 15} 150 L${siloLeftX + 30} 130`} 
                   fill="none" 
                   stroke={isThisSiloSelected ? "#10b981" : theme.outline} 
                   strokeWidth={isThisSiloSelected ? "1.5" : "1"} 
                 />
                 
                 {/* Cement Flow Path (Orthogonal lines with elbows) */}
-                <motion.path 
-                  d={`M${siloX} ${siloY} V200 H${650 + (i * 10)} V220`}
+                {/* 1. Base Pipe casing (Always visible as semi-transparent green to match Image 1 standby) */}
+                <path 
+                  d={`M${siloX} ${siloY} V200 H${672.5 + (i - (jumlahSilo - 1) / 2) * 12} V220`}
                   fill="none" 
-                  stroke={isThisSiloActive ? theme.flow : theme.pipe} 
-                  strokeWidth="1.5"
-                  strokeDasharray="4 4"
-                  animate={{ strokeDashoffset: isThisSiloActive ? [20, 0] : [0, 0] }}
-                  transition={isThisSiloActive ? { duration: 1, repeat: Infinity, ease: "linear" } : { duration: 0 }}
+                  stroke={isThisSiloActive ? "#00ffd0" : "#10b981"} 
+                  strokeWidth={isThisSiloActive ? "4" : "3"} 
+                  strokeLinecap="round" 
+                  strokeLinejoin="round" 
+                  opacity={isThisSiloActive ? "0.9" : "0.35"} 
                 />
+
+                {/* 2. Glow effect behind (only when active) */}
+                {isThisSiloActive && (
+                  <path 
+                    d={`M${siloX} ${siloY} V200 H${672.5 + (i - (jumlahSilo - 1) / 2) * 12} V220`}
+                    fill="none" 
+                    stroke="#10b981" 
+                    strokeWidth="8" 
+                    strokeLinecap="round" 
+                    strokeLinejoin="round" 
+                    opacity="0.4"
+                    className="blur-[2px]"
+                  />
+                )}
+
+                {/* 3. Animated material stream core (only when active) */}
+                {isThisSiloActive && (
+                  <motion.path 
+                    d={`M${siloX} ${siloY} V200 H${672.5 + (i - (jumlahSilo - 1) / 2) * 12} V220`}
+                    fill="none" 
+                    stroke="#ffffff" 
+                    strokeWidth="1.5"
+                    strokeLinecap="round" 
+                    strokeLinejoin="round" 
+                    strokeDasharray="6 6"
+                    animate={{ strokeDashoffset: [0, -24] }}
+                    transition={{ duration: 0.8, repeat: Infinity, ease: "linear" }}
+                  />
+                )}
 
                 {/* Butterfly Valve at cone tip */}
                 <g transform={`translate(${siloX}, ${siloY})`}>
@@ -1751,13 +1829,45 @@ const ScadaDiagram = ({
           </g>
           
           {/* Output to mixer */}
-          <motion.path 
+          {/* 1. Base Pipe casing (Always visible as semi-transparent green to match style) */}
+          <path 
             d="M672.5 300 V320"
-            fill="none" stroke={gateSemenHopperOpen ? theme.flow : theme.pipe} strokeWidth="3"
-            strokeDasharray="4 4"
-            animate={{ strokeDashoffset: gateSemenHopperOpen ? [20, 0] : [0, 0] }}
-            transition={gateSemenHopperOpen ? { duration: 0.8, repeat: Infinity, ease: "linear" } : { duration: 0 }}
+            fill="none" 
+            stroke={gateSemenHopperOpen ? "#00ffd0" : "#10b981"} 
+            strokeWidth={gateSemenHopperOpen ? "4" : "3"} 
+            strokeLinecap="round" 
+            strokeLinejoin="round" 
+            opacity={gateSemenHopperOpen ? "0.9" : "0.35"} 
           />
+
+          {/* 2. Glow effect behind (only when active) */}
+          {gateSemenHopperOpen && (
+            <path 
+              d="M672.5 300 V320"
+              fill="none" 
+              stroke="#10b981" 
+              strokeWidth="8" 
+              strokeLinecap="round" 
+              strokeLinejoin="round" 
+              opacity="0.4"
+              className="blur-[2px]"
+            />
+          )}
+
+          {/* 3. Animated material stream core (only when active, flowing down) */}
+          {gateSemenHopperOpen && (
+            <motion.path 
+              d="M672.5 300 V320"
+              fill="none" 
+              stroke="#ffffff" 
+              strokeWidth="1.5" 
+              strokeLinecap="round" 
+              strokeLinejoin="round" 
+              strokeDasharray="6 6"
+              animate={{ strokeDashoffset: [0, -24] }}
+              transition={{ duration: 0.8, repeat: Infinity, ease: "linear" }}
+            />
+          )}
 
           {/* Animated Gray Cement Dust Plume inside mixer feeding funnel */}
           {gateSemenHopperOpen && (
@@ -1835,15 +1945,45 @@ const ScadaDiagram = ({
                 </g>
                 
                 {/* Pipes conveying liquids to water scale hopper */}
-                <motion.path 
+                {/* 1. Base Pipe casing (Always visible as semi-transparent blue/green) */}
+                <path 
                   d={`M${t.x + 20} 145 V200 H800 V220`}
                   fill="none" 
-                  stroke={isOpen ? theme.flow : theme.pipe} 
-                  strokeWidth="1.5"
-                  strokeDasharray="4 4"
-                  animate={{ strokeDashoffset: isOpen ? [20, 0] : [0, 0] }}
-                  transition={isOpen ? { duration: 1, repeat: Infinity, ease: "linear" } : { duration: 0 }}
+                  stroke={isTankAir ? (isOpen ? "#00e5ff" : "#0284c7") : (isOpen ? "#00ff9c" : "#059669")} 
+                  strokeWidth={isOpen ? "4" : "3"} 
+                  strokeLinecap="round" 
+                  strokeLinejoin="round" 
+                  opacity={isOpen ? "0.9" : "0.35"} 
                 />
+
+                {/* 2. Glow effect behind (only when active) */}
+                {isOpen && (
+                  <path 
+                    d={`M${t.x + 20} 145 V200 H800 V220`}
+                    fill="none" 
+                    stroke={isTankAir ? "#0284c7" : "#059669"} 
+                    strokeWidth="8" 
+                    strokeLinecap="round" 
+                    strokeLinejoin="round" 
+                    opacity="0.4"
+                    className="blur-[2px]"
+                  />
+                )}
+
+                {/* 3. Animated material stream core (only when active) */}
+                {isOpen && (
+                  <motion.path 
+                    d={`M${t.x + 20} 145 V200 H800 V220`}
+                    fill="none" 
+                    stroke="#ffffff" 
+                    strokeWidth="1.5"
+                    strokeLinecap="round" 
+                    strokeLinejoin="round" 
+                    strokeDasharray="6 6"
+                    animate={{ strokeDashoffset: [0, -24] }}
+                    transition={{ duration: 0.8, repeat: Infinity, ease: "linear" }}
+                  />
+                )}
               </g>
             );
           })}
@@ -1902,13 +2042,45 @@ const ScadaDiagram = ({
           </g>
           
           {/* Outlet water pipeline discharging downstream - routed above 300 to cleanly bypass the integrated PLC panel */}
-          <motion.path 
+          {/* 1. Base Pipe casing (Always visible as semi-transparent blue) */}
+          <path 
             d="M800 285 V292 H700 V320"
-            fill="none" stroke={gateWaterHopperOpen ? theme.flow : theme.pipe} strokeWidth="2.5"
-            strokeDasharray="4 4"
-            animate={{ strokeDashoffset: gateWaterHopperOpen ? [20, 0] : [0, 0] }}
-            transition={gateWaterHopperOpen ? { duration: 0.8, repeat: Infinity, ease: "linear" } : { duration: 0 }}
+            fill="none" 
+            stroke={gateWaterHopperOpen ? "#00e5ff" : "#0284c7"} 
+            strokeWidth={gateWaterHopperOpen ? "4" : "3"} 
+            strokeLinecap="round" 
+            strokeLinejoin="round" 
+            opacity={gateWaterHopperOpen ? "0.9" : "0.35"} 
           />
+
+          {/* 2. Glow effect behind (only when active) */}
+          {gateWaterHopperOpen && (
+            <path 
+              d="M800 285 V292 H700 V320"
+              fill="none" 
+              stroke="#0284c7" 
+              strokeWidth="8" 
+              strokeLinecap="round" 
+              strokeLinejoin="round" 
+              opacity="0.4"
+              className="blur-[2px]"
+            />
+          )}
+
+          {/* 3. Animated material stream core (only when active, flowing down) */}
+          {gateWaterHopperOpen && (
+            <motion.path 
+              d="M800 285 V292 H700 V320"
+              fill="none" 
+              stroke="#ffffff" 
+              strokeWidth="1.5" 
+              strokeLinecap="round" 
+              strokeLinejoin="round" 
+              strokeDasharray="6 6"
+              animate={{ strokeDashoffset: [0, -24] }}
+              transition={{ duration: 0.8, repeat: Infinity, ease: "linear" }}
+            />
+          )}
 
           {/* Water Discharge Droplets entering mixer */}
           {gateWaterHopperOpen && (
@@ -2687,7 +2859,8 @@ const ScadaDiagram = ({
           const maxDoorTime = Math.max(1, totalDischargeMs / 1000);
 
           return (
-            <foreignObject x="795" y="325" width="160" height="240">
+            <>
+              <foreignObject x="795" y="325" width="160" height="240">
               <div className="w-full h-full bg-transparent p-2 flex flex-col justify-start gap-1 items-center relative">
                 {/* Header */}
                 <div className="w-full flex justify-center items-center pb-1 select-none">
@@ -2839,6 +3012,42 @@ const ScadaDiagram = ({
                 </div>
               </div>
             </foreignObject>
+
+            {/* Red box cards for AMPER MIXER and ESTIMASI SLUMP as requested */}
+            <foreignObject x="962" y="325" width="115" height="240">
+              <div className="w-full h-full flex flex-col justify-between gap-3 text-white select-none">
+                {/* Upper Box: Amper Mixer */}
+                <div className="flex-1 bg-[#05080c]/90 rounded-md border-2 border-red-500/90 p-2 flex flex-col justify-between items-center shadow-[0_0_12px_rgba(239,68,68,0.3)]">
+                  <div className="text-[10.5px] font-sans font-black tracking-widest text-red-500 uppercase text-center w-full border-b-2 border-red-950/60 pb-1 leading-tight">
+                    AMPER MIXER
+                  </div>
+                  <div className="flex-1 flex flex-col justify-center items-center">
+                    <span className="text-[30px] font-mono font-black text-red-500 tracking-tighter leading-none filter drop-shadow-[0_0_4px_rgba(239,68,68,0.5)]">
+                      {ampere !== null && ampere > 0 ? ampere.toFixed(1) : "0.0"}
+                    </span>
+                    <span className="text-[9px] font-sans font-extrabold text-slate-500 mt-1 uppercase tracking-wider">
+                      AMPERE (A)
+                    </span>
+                  </div>
+                </div>
+
+                {/* Lower Box: Estimasi Slump */}
+                <div className="flex-1 bg-[#05080c]/90 rounded-md border-2 border-red-500/90 p-2 flex flex-col justify-between items-center shadow-[0_0_12px_rgba(239,68,68,0.3)]">
+                  <div className="text-[10.5px] font-sans font-black tracking-widest text-red-500 uppercase text-center w-full border-b-2 border-red-950/60 pb-1 leading-tight">
+                    ESTIMASI SLUMP
+                  </div>
+                  <div className="flex-1 flex flex-col justify-center items-center">
+                    <span className="text-[30px] font-mono font-black text-red-500 tracking-tighter leading-none filter drop-shadow-[0_0_4px_rgba(239,68,68,0.5)]">
+                      {slump !== null && slump > 0 ? slump.toFixed(1) : "0.0"}
+                    </span>
+                    <span className="text-[9px] font-sans font-extrabold text-slate-500 mt-1 uppercase tracking-wider">
+                      CENTIMETER (CM)
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </foreignObject>
+          </>
           );
         })()}
 
@@ -2961,7 +3170,51 @@ const ScadaDiagram = ({
       )}
 
       {/* Print toggle and Help buttons aligned to the right side of the SCADA panel */}
-      <div className="absolute bottom-3 right-3 flex items-center gap-3.5 z-10 select-none">
+      <div className="absolute bottom-3.5 right-3.5 flex items-center gap-4 z-10 select-none">
+        {/* Pressure Gauge Widget */}
+        <div className="h-[46px] px-[17px] bg-[#0c111e]/95 border border-slate-800 rounded-[12px] flex items-center gap-3 shadow-md">
+          {/* Round Analog Gauge SVG */}
+          <svg className="w-[26px] h-[26px]" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="11" fill="url(#gaugeRim)" stroke="#334155" strokeWidth="0.8" />
+            <circle cx="12" cy="12" r="8.5" fill="#090d16" />
+            
+            {/* Warning zones */}
+            <path d="M 6 18 A 8.5 8.5 0 0 1 6 6" fill="none" stroke="#10b981" strokeWidth="0.8" />
+            <path d="M 6 6 A 8.5 8.5 0 0 1 18 6" fill="none" stroke="#fbbf24" strokeWidth="0.8" />
+            <path d="M 18 6 A 8.5 8.5 0 0 1 18 18" fill="none" stroke="#f43f5e" strokeWidth="0.8" />
+            
+            {/* Dynamic Needle */}
+            {(() => {
+              const compNeedleAngle = -120 + (Math.min(120, airPressure) / 120) * 240;
+              const rad = (compNeedleAngle * Math.PI) / 180;
+              const needleX = 12 + 7.5 * Math.sin(rad);
+              const needleY = 12 - 7.5 * Math.cos(rad);
+              return (
+                <line 
+                  x1="12" y1="12" 
+                  x2={needleX} 
+                  y2={needleY} 
+                  stroke="#ff007f" 
+                  strokeWidth="1" 
+                  strokeLinecap="round" 
+                />
+              );
+            })()}
+            <circle cx="12" cy="12" r="1" fill="#00ffff" />
+          </svg>
+          
+          <div className="flex flex-col justify-center leading-none text-left">
+            <span className="text-[9px] font-mono text-slate-500 font-bold uppercase tracking-wider">KOMPRESSOR</span>
+            <span 
+              className={`text-[13.5px] font-mono font-black ${
+                compressorActive ? "text-[#00ffd0] animate-pulse" : "text-slate-400"
+              }`}
+            >
+              {airPressure.toFixed(1)} PSI
+            </span>
+          </div>
+        </div>
+
         {/* Toggle Moisture Control Button */}
         <button
           onClick={(e) => {
@@ -2972,14 +3225,14 @@ const ScadaDiagram = ({
               setMoistureControl(!moistureControl);
             }
           }}
-          className={`h-[38px] px-3.5 border-2 rounded-[10px] flex flex-col justify-center items-center gap-0 leading-tight transition-all duration-150 active:scale-95 cursor-pointer font-sans select-none shrink-0 text-center ${
+          className={`h-[46px] px-[17px] border-2 rounded-[12px] flex flex-col justify-center items-center gap-0 leading-tight transition-all duration-150 active:scale-95 cursor-pointer font-sans select-none shrink-0 text-center ${
             moistureControl 
               ? 'bg-[#0d9488] border-[#09544d] text-white shadow-[0_4px_12px_rgba(13,148,136,0.35)]' 
               : 'bg-[#122825]/90 border-[#1c3f3b] text-slate-400 hover:text-slate-200 hover:bg-[#152e2b]'
           }`}
         >
-          <span className="text-[8px] tracking-wide uppercase font-black">MOISTURE</span>
-          <span className="text-[8px] tracking-wide uppercase font-black">CONTROL</span>
+          <span className="text-[9.5px] tracking-wide uppercase font-black">MOISTURE</span>
+          <span className="text-[9.5px] tracking-wide uppercase font-black">CONTROL</span>
         </button>
 
         {/* Quarry Aggregate Button */}
@@ -2990,10 +3243,10 @@ const ScadaDiagram = ({
               onQuarryClick();
             }
           }}
-          className="h-[38px] px-3.5 bg-[#07665C] border-2 border-[#09544d] text-slate-100 hover:text-white hover:bg-[#0d9488] rounded-[10px] flex flex-col justify-center items-center gap-0 leading-tight transition-all duration-150 active:scale-95 cursor-pointer font-sans select-none shrink-0 text-center"
+          className="h-[46px] px-[17px] bg-[#07665C] border-2 border-[#09544d] text-slate-100 hover:text-white hover:bg-[#0d9488] rounded-[12px] flex flex-col justify-center items-center gap-0 leading-tight transition-all duration-150 active:scale-95 cursor-pointer font-sans select-none shrink-0 text-center"
         >
-          <span className="text-[8px] tracking-wide uppercase font-black">QUARRY</span>
-          <span className="text-[8px] tracking-wide uppercase font-black">AGGREGATE</span>
+          <span className="text-[9.5px] tracking-wide uppercase font-black">QUARRY</span>
+          <span className="text-[9.5px] tracking-wide uppercase font-black">AGGREGATE</span>
         </button>
 
         {/* Toggle Print Button */}
@@ -3002,12 +3255,12 @@ const ScadaDiagram = ({
             e.stopPropagation();
             setIsPrint(!isPrint);
           }}
-          className="h-[38px] px-3.5 bg-[#0b1329] border-2 border-[#2563eb] rounded-[10px] flex items-center gap-2.5 transition-all duration-150 active:scale-95 shadow-[0_4px_12px_rgba(37,99,235,0.15)] cursor-pointer text-white group shrink-0"
+          className="h-[46px] px-[17px] bg-[#0b1329] border-2 border-[#2563eb] rounded-[12px] flex items-center gap-3 transition-all duration-150 active:scale-95 shadow-[0_4px_12px_rgba(37,99,235,0.15)] cursor-pointer text-white group shrink-0"
         >
-          <div className={`w-[18px] h-[18px] rounded-[5px] flex items-center justify-center border-2 transition-all duration-150 ${isPrint ? 'bg-[#2563eb] border-[#2563eb]' : 'border-slate-600 bg-transparent group-hover:border-slate-500'}`}>
-            {isPrint && <Check size={12} className="text-white stroke-[3.5px]" />}
+          <div className={`w-[22px] h-[22px] rounded-[6px] flex items-center justify-center border-2 transition-all duration-150 ${isPrint ? 'bg-[#2563eb] border-[#2563eb]' : 'border-slate-600 bg-transparent group-hover:border-slate-500'}`}>
+            {isPrint && <Check size={14} className="text-white stroke-[3.5px]" />}
           </div>
-          <span className="text-[12.5px] font-sans font-black tracking-wide text-white leading-none">Print</span>
+          <span className="text-[15px] font-sans font-black tracking-wide text-white leading-none">Print</span>
         </button>
 
         {/* Circular Help Button */}
@@ -3016,9 +3269,9 @@ const ScadaDiagram = ({
             e.stopPropagation();
             if (onHelpClick) onHelpClick();
           }}
-          className="w-[38px] h-[38px] bg-[#2563eb] hover:bg-blue-600 border border-blue-500/35 rounded-full flex items-center justify-center transition-all duration-150 active:scale-95 shadow-[0_4px_12px_rgba(37,99,235,0.3)] cursor-pointer shrink-0"
+          className="w-[46px] h-[46px] bg-[#2563eb] hover:bg-blue-600 border border-blue-500/35 rounded-full flex items-center justify-center transition-all duration-150 active:scale-95 shadow-[0_4px_12px_rgba(37,99,235,0.3)] cursor-pointer shrink-0"
         >
-          <HelpCircle size={21} className="text-white stroke-[2.5px]" />
+          <HelpCircle size={25} className="text-white stroke-[2.5px]" />
         </button>
       </div>
     </div>
@@ -3142,10 +3395,20 @@ export default function App() {
     localStorage.setItem('silo_weights', JSON.stringify(siloWeights));
   }, [siloWeights]);
 
+  const [jumlahSilo, setJumlahSilo] = useState<number>(() => {
+    const saved = localStorage.getItem('jumlah_silo');
+    return saved ? parseInt(saved, 10) : 6;
+  });
+
+  useEffect(() => {
+    localStorage.setItem('jumlah_silo', jumlahSilo.toString());
+  }, [jumlahSilo]);
+
   const [isFillSiloOpen, setIsFillSiloOpen] = useState(false);
   const [selectedFillSiloIdx, setSelectedFillSiloIdx] = useState<number>(0);
   const [fillSiloAmountText, setFillSiloAmountText] = useState<string>("20000");
   const [customAlertMessage, setCustomAlertMessage] = useState<string | null>(null);
+  const [isConfirmingResetSilo, setIsConfirmingResetSilo] = useState(false);
 
   const [isBatchConfigOpen, setIsBatchConfigOpen] = useState(false);
   const [activeVolume, setActiveVolume] = useState<number>(() => {
@@ -3180,9 +3443,32 @@ export default function App() {
     return localStorage.getItem('active_sopir') || "";
   });
 
+  // Sync queuing refs to avoid duplicate queueing in memory
+  const queuedLogIdsRef = useRef<Set<string>>(new Set());
+  const queuedRelayIdsRef = useRef<Set<string>>(new Set());
+
   // Auto-save configs to LocalStorage for complete offline desktop integration
   useEffect(() => {
-    localStorage.setItem('hmi_batch_logs', JSON.stringify(logs));
+    const currentPlantId = localStorage.getItem('plant_id') || 'PKU01';
+    const currentPlantName = localStorage.getItem('plant_name') || 'Pekanbaru';
+    const currentPlantCompany = localStorage.getItem('plant_company') || 'PT Farika Riau Perkasa';
+
+    const logsWithPlant = logs.map(item => ({
+      ...item,
+      plantId: currentPlantId,
+      plantName: currentPlantName,
+      plantCompany: currentPlantCompany
+    }));
+
+    localStorage.setItem('hmi_batch_logs', JSON.stringify(logsWithPlant));
+
+    // Automated Cloud Queueing Layer
+    logsWithPlant.forEach(item => {
+      if (item.id && !queuedLogIdsRef.current.has(item.id)) {
+        queuedLogIdsRef.current.add(item.id);
+        queueForCloudSync("production", item);
+      }
+    });
   }, [logs]);
 
   useEffect(() => {
@@ -3379,7 +3665,24 @@ export default function App() {
   });
 
   useEffect(() => {
-    localStorage.setItem('hmi_relay_logs', JSON.stringify(relayLogs));
+    const currentPlantId = localStorage.getItem('plant_id') || 'PKU01';
+    const currentPlantName = localStorage.getItem('plant_name') || 'Pekanbaru';
+
+    const logsWithPlant = relayLogs.map(item => ({
+      ...item,
+      plantId: currentPlantId,
+      plantName: currentPlantName
+    }));
+
+    localStorage.setItem('hmi_relay_logs', JSON.stringify(logsWithPlant));
+
+    // Automated Cloud Queueing Layer
+    logsWithPlant.forEach(item => {
+      if (item.id && !queuedRelayIdsRef.current.has(item.id)) {
+        queuedRelayIdsRef.current.add(item.id);
+        queueForCloudSync("relay_log", item);
+      }
+    });
   }, [relayLogs]);
   
   // Conveyor / Machinery States
@@ -3453,48 +3756,20 @@ export default function App() {
   // ----------------------------------------------------
   // REAL LOADCELL TELEMETRY DIRECT BINDING (SINGLE SOURCE OF TRUTH)
   // ----------------------------------------------------
+  const handleTelemetryRef = useRef<any>(null);
+
   useEffect(() => {
     if (currentView === 'tablet') return;
-    const getTelemetryValue = (data: any, keys: string[]): number | null => {
-      if (!data) return null;
-      for (const k of keys) {
-        if (typeof data[k] === 'number') {
-          return data[k];
-        }
-      }
-      return null;
-    };
-
-    const handleTelemetry = (data: any) => {
-      if (operationModeRef.current !== 'PRODUKSI') return;
-
-      // Extract sensor weights using common aliases mapped to loadcells
-      const valPasir = getTelemetryValue(data, ['pasir', 'sand', 'w_pasir', 'weight_pasir', 'p']);
-      const valBatu = getTelemetryValue(data, ['batu', 'stone', 'w_batu', 'weight_batu', 'b']);
-      const valSemen = getTelemetryValue(data, ['semen', 'cement', 'w_semen', 'weight_semen', 's']);
-      const valAir = getTelemetryValue(data, ['air', 'water', 'w_air', 'weight_air', 'a']);
-      const valWaiting = getTelemetryValue(data, ['waiting', 'waiting_hopper', 'w_waiting', 'weight_waiting', 'wh']);
-
-      // Perform a clean, atomic scale update matching telemetry weights
-      if (valPasir !== null || valBatu !== null || valSemen !== null || valAir !== null) {
-        setScalesSync(prev => {
-          const next = { ...prev };
-          if (valPasir !== null) next.pasir.actual = parseFloat(valPasir.toFixed(1));
-          if (valBatu !== null) next.batu.actual = parseFloat(valBatu.toFixed(1));
-          if (valSemen !== null) next.semen.actual = parseFloat(valSemen.toFixed(1));
-          if (valAir !== null) next.air.actual = parseFloat(valAir.toFixed(1));
-          return next;
-        });
-      }
-
-      if (valWaiting !== null) {
-        setWaitingHopperWeightSync(parseFloat(valWaiting.toFixed(1)));
+    
+    const bridge = (data: any) => {
+      if (handleTelemetryRef.current) {
+        handleTelemetryRef.current(data);
       }
     };
 
-    webSerialService.registerTelemetryCallback(handleTelemetry);
+    webSerialService.registerTelemetryCallback(bridge);
     return () => {
-      webSerialService.unregisterTelemetryCallback(handleTelemetry);
+      webSerialService.unregisterTelemetryCallback(bridge);
     };
   }, []);
 
@@ -3944,7 +4219,7 @@ export default function App() {
   }, [isDone]);
 
   // Admin Login and Session state
-  const [currentView, setCurrentView] = useState<'hmi' | 'admin-login' | 'admin-dashboard' | 'tablet'>(() => {
+  const [currentView, setCurrentView] = useState<'portal' | 'hmi' | 'admin-login' | 'admin-dashboard' | 'tablet'>(() => {
     const isTabletPath = 
       window.location.pathname.includes('/tablet') || 
       window.location.hash.includes('tablet') || 
@@ -3954,8 +4229,21 @@ export default function App() {
     if (isTabletPath) {
       return 'tablet';
     }
-    const session = localStorage.getItem('admin_session');
-    return session === 'true' ? 'admin-dashboard' : 'hmi';
+
+    const savedUserStr = localStorage.getItem("batching_plant_active_user");
+    if (savedUserStr) {
+      try {
+        const u = JSON.parse(savedUserStr);
+        const role = u.jabatan?.toUpperCase() || "";
+        if (role === "OPERATOR") {
+          return 'hmi';
+        } else if (["ADMIN", "DIREKTUR", "SUPERVISOR", "LOGISTIK"].includes(role)) {
+          localStorage.setItem('admin_session', 'true');
+          return 'admin-dashboard';
+        }
+      } catch (err) {}
+    }
+    return 'portal';
   });
 
   const [isOperatorLoginOpen, setIsOperatorLoginOpen] = useState(false);
@@ -3963,19 +4251,83 @@ export default function App() {
     const saved = localStorage.getItem("batching_plant_active_user");
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        if (parsed.jabatan?.toUpperCase() === "OPERATOR") {
+          return parsed;
+        }
       } catch (err) {}
     }
-    return { nama: "Budi", nik: "12002", jabatan: "Operator" };
+    return null; // Forcing real operator login from the login portal
   });
+
+  // Guard system to enforce strict view-access-control (No bypass possible)
+  useEffect(() => {
+    const checkAccess = () => {
+      const isTabletPath = 
+        window.location.pathname.includes('/tablet') || 
+        window.location.hash.includes('tablet') || 
+        window.location.search.includes('view=tablet') ||
+        window.location.port === '3001';
+        
+      if (isTabletPath) {
+        if (currentView !== 'tablet') {
+          setCurrentView('tablet');
+        }
+        return;
+      }
+
+      const savedUserStr = localStorage.getItem("batching_plant_active_user");
+      if (!savedUserStr) {
+        if (currentView !== 'portal') {
+          setCurrentView('portal');
+        }
+        return;
+      }
+
+      try {
+        const u = JSON.parse(savedUserStr);
+        const role = u.jabatan?.toUpperCase() || "";
+        if (role === "OPERATOR") {
+          if (currentView !== 'hmi') {
+            setCurrentView('hmi');
+          }
+        } else if (["ADMIN", "DIREKTUR", "SUPERVISOR", "LOGISTIK"].includes(role)) {
+          if (currentView !== 'admin-dashboard') {
+            setCurrentView('admin-dashboard');
+          }
+        } else {
+          localStorage.removeItem("batching_plant_active_user");
+          localStorage.removeItem("admin_session");
+          setCurrentView('portal');
+        }
+      } catch (err) {
+        localStorage.removeItem("batching_plant_active_user");
+        localStorage.removeItem("admin_session");
+        setCurrentView('portal');
+      }
+    };
+
+    checkAccess();
+    window.addEventListener("active_user_session_sync", checkAccess);
+    return () => {
+      window.removeEventListener("active_user_session_sync", checkAccess);
+    };
+  }, [currentView]);
 
   useEffect(() => {
     const handleSync = () => {
       const saved = localStorage.getItem("batching_plant_active_user");
       if (saved) {
         try {
-          setActiveOperator(JSON.parse(saved));
+          const parsed = JSON.parse(saved);
+          if (parsed.jabatan?.toUpperCase() === "OPERATOR") {
+            setActiveOperator(parsed);
+          } else {
+            setActiveOperator(null);
+          }
         } catch (err) {}
+      } else {
+        setActiveOperator(null);
       }
     };
     window.addEventListener("active_user_session_sync", handleSync);
@@ -4087,6 +4439,7 @@ export default function App() {
   
   // Real-time state additions for second image
   const [ampere, setAmpere] = useState<number | null>(null);
+  const [airPressure, setAirPressure] = useState<number>(0.0);
   const [slump, setSlump] = useState<number | null>(null);
   const [mixingTime, setMixingTime] = useState(0);
   const [isAuto, setIsAuto] = useState(true);
@@ -4094,6 +4447,48 @@ export default function App() {
   useEffect(() => {
     isAutoRef.current = isAuto;
   }, [isAuto]);
+
+  // Tanpa Operator (Operatorless Mode) State with local storage sync
+  const [tanpaOperator, setTanpaOperator] = useState<boolean>(() => {
+    return localStorage.getItem("tanpa_operator_enabled") === "true";
+  });
+  const [truckPresenceRequired, setTruckPresenceRequired] = useState<boolean>(() => {
+    return localStorage.getItem("tanpa_operator_truck_presence") === "true";
+  });
+  const [driverDischargeRequired, setDriverDischargeRequired] = useState<boolean>(() => {
+    return localStorage.getItem("tanpa_operator_driver_confirm") === "true";
+  });
+  const [minAirPressure, setMinAirPressure] = useState<number>(() => {
+    const val = localStorage.getItem("tanpa_operator_min_pressure");
+    return val !== null ? parseFloat(val) : 80.0;
+  });
+  const [pressureLimitEnabled, setPressureLimitEnabled] = useState<boolean>(() => {
+    return localStorage.getItem("tanpa_operator_pressure_limit_enabled") === "true";
+  });
+
+  const [isTruckPresent, setIsTruckPresent] = useState<boolean>(false);
+  const [driverBtnPressed, setDriverBtnPressed] = useState<boolean>(false);
+
+  const updateTanpaOperator = (val: boolean) => {
+    setTanpaOperator(val);
+    localStorage.setItem("tanpa_operator_enabled", val ? "true" : "false");
+  };
+  const updateTruckPresenceRequired = (val: boolean) => {
+    setTruckPresenceRequired(val);
+    localStorage.setItem("tanpa_operator_truck_presence", val ? "true" : "false");
+  };
+  const updateDriverDischargeRequired = (val: boolean) => {
+    setDriverDischargeRequired(val);
+    localStorage.setItem("tanpa_operator_driver_confirm", val ? "true" : "false");
+  };
+  const updateMinAirPressure = (val: number) => {
+    setMinAirPressure(val);
+    localStorage.setItem("tanpa_operator_min_pressure", val.toString());
+  };
+  const updatePressureLimitEnabled = (val: boolean) => {
+    setPressureLimitEnabled(val);
+    localStorage.setItem("tanpa_operator_pressure_limit_enabled", val ? "true" : "false");
+  };
 
   const [batchingMode, setBatchingMode] = useState<'MANUAL' | 'SEMI_AUTO' | 'AUTO'>('AUTO');
   const batchingModeRef = useRef(batchingMode);
@@ -4165,9 +4560,34 @@ export default function App() {
     return localStorage.getItem('company_logo') || "";
   });
 
+  // --- Plant Identity & Cloud Synchronization States ---
+  const [plantId, setPlantId] = useState<string>(() => localStorage.getItem('plant_id') || 'PKU01');
+  const [plantName, setPlantName] = useState<string>(() => localStorage.getItem('plant_name') || 'Pekanbaru');
+  const [plantCompany, setPlantCompany] = useState<string>(() => localStorage.getItem('plant_company') || 'PT Farika Riau Perkasa');
+  const [plantAddress, setPlantAddress] = useState<string>(() => localStorage.getItem('plant_address') || '');
+  const [plantRegistered, setPlantRegistered] = useState<boolean>(() => localStorage.getItem('plant_registered') === 'true');
+
+  // Sync state changes in administrative settings
+  useEffect(() => {
+    const syncPlantInfo = () => {
+      setPlantId(localStorage.getItem('plant_id') || 'PKU01');
+      setPlantName(localStorage.getItem('plant_name') || 'Pekanbaru');
+      setPlantCompany(localStorage.getItem('plant_company') || 'PT Farika Riau Perkasa');
+      setPlantAddress(localStorage.getItem('plant_address') || '');
+      setPlantRegistered(localStorage.getItem('plant_registered') === 'true');
+    };
+    window.addEventListener("plant_identity_updated", syncPlantInfo);
+    return () => {
+      window.removeEventListener("plant_identity_updated", syncPlantInfo);
+    };
+  }, []);
+
   const manualGateOpenTimeMsRef = useRef<number>(0);
   const isManualGateOpenTimeValidRef = useRef<boolean>(false);
   const manualGateSequenceStateRef = useRef<'IDLE' | 'OPENING'>('IDLE');
+
+  // Custom modal state for secure, reliable logout in framing/iframe conditions
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
   const mixerDoorStateTextRef = useRef("CLOSED");
   const mixerDoorPercentRef = useRef(0);
@@ -4280,6 +4700,43 @@ export default function App() {
     mixerStateRef.current = val;
     setMixerState(val);
   };
+
+  // Dynamic simulation of Ampere and Slump based on Mixer Shaft activity and Recipe targets
+  useEffect(() => {
+    let intervalId: NodeJS.Timeout;
+    
+    if (mixerShaftActive) {
+      intervalId = setInterval(() => {
+        // If connected to physical hardware serial, bypass simulation
+        if (webSerialService.getStatus() === "CONNECTED") {
+          return;
+        }
+        if (isRunning && mixerState === 'mixing') {
+          // Dynamic mixing load
+          const baseSlump = parseFloat(selectedRecipe?.slump || "11") || 11.0;
+          const targetAmpere = 100.0 - (baseSlump - 10.0) * 4.0; // tighter class -> higher ampere
+          
+          setAmpere(parseFloat((targetAmpere + (Math.random() - 0.5) * 3.0).toFixed(1)));
+          setSlump(parseFloat((baseSlump + (Math.random() - 0.5) * 0.8).toFixed(1)));
+        } else {
+          // Idle rotation (empty mixer running, but not actively mixing in a batch cycle)
+          setAmpere(parseFloat((46.5 + (Math.random() - 0.5) * 1.5).toFixed(1)));
+          setSlump(0.0);
+        }
+      }, 500);
+    } else {
+      // If connected to hardware, do not overwrite sensory state
+      if (webSerialService.getStatus() !== "CONNECTED") {
+        setAmpere(0.0);
+        setSlump(0.0);
+      }
+    }
+    
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [mixerShaftActive, isRunning, mixerState, selectedRecipe]);
+
   const dischargeTimerMsRef = useRef(0);
   const mixingTimerMsRef = useRef(0);
   const doorStepRef = useRef(1);
@@ -4513,6 +4970,12 @@ export default function App() {
     sopir: string;
   }) => {
     if (isRunning) return;
+
+    // Safety checks: Block batching if compressor air pressure is below safety threshold
+    if (pressureLimitEnabled && airPressure < minAirPressure) {
+      setAlarmMessage(`BATCHING PROSES DIBATALKAN: Tekanan angin kompresor (${airPressure.toFixed(1)} PSI) di bawah batas minimum yang diatur (${minAirPressure.toFixed(1)} PSI)! Tunggu hingga angin cukup.`);
+      return;
+    }
 
     // Safety checks: Block batching if any pin configuration is empty!
     const currentConfig = loadRelayConfig();
@@ -5504,10 +5967,6 @@ export default function App() {
   // MASTER TICK PLC SIMULATOR TIMER LOOP (100ms intervals)
   useEffect(() => {
     if (isRunning) {
-      // Fluctuate Ampere on Twin shaft
-      setAmpere(parseFloat((9.3 + Math.random() * 0.4).toFixed(1)));
-      setSlump(parseFloat((11.5 + Math.random() * 1.5).toFixed(1)));
-
       const tickHandler = () => {
         if (isPausedRef.current) return;
 
@@ -7796,6 +8255,33 @@ export default function App() {
           setBatchProgress(Math.min(99, Math.round(baseProgress + stepPercent)));
 
           if (mixSec >= activeMixingTime) {
+            // Check Tanpa Operator (Operatorless Mode) restrictions
+            if (tanpaOperator) {
+              const needsTruck = truckPresenceRequired && !isTruckPresent;
+              const needsDriver = driverDischargeRequired && !driverBtnPressed;
+
+              if (needsTruck || needsDriver) {
+                // Hold countdown of HMI at 0, hold discharge, transition state
+                setMixingCountdown(0);
+                setMixingTime(activeMixingTime);
+
+                if (needsTruck) {
+                  setProductionState('MENUNGGU TRUK MIXER');
+                  setMixerStatusText('STANDBY: TRUK MIXER BELUM TERDETEKSI');
+                } else if (needsDriver) {
+                  setProductionState('MENUNGGU TOMBOL DRIVER');
+                  setMixerStatusText('STANDBY: MENUNGGU DRIVER KONFIRMASI (PIN A5)');
+                }
+                return; // Guard statement: return early, wait for next tick evaluation
+              }
+            }
+
+            // Both conditions satisfied (or disabled) -> proceed to discharge!
+            // Clean driver confirm signal for next batch
+            if (tanpaOperator && driverDischargeRequired) {
+              setDriverBtnPressed(false);
+            }
+
             setMixerStateSync('discharging_concrete');
             doorStepRef.current = 1;
             doorTimerMsRef.current = 0;
@@ -8086,8 +8572,6 @@ export default function App() {
         }
       };
     } else {
-      setAmpere(null);
-      setSlump(null);
       setMixingTime(0);
       setMixingCountdown(0);
     }
@@ -9056,18 +9540,31 @@ export default function App() {
             <span>MODE: {operationMode === 'PRODUKSI' ? 'PRODUKSI NYATA' : 'SIMULASI'}</span>
           </div>
           
-          {/* Login Operator */}
-          <button 
-            onClick={() => setIsOperatorLoginOpen(true)} 
-            className="bg-[#1e293b]/70 hover:bg-[#334155] border border-cyan-800/60 hover:border-cyan-500 rounded-full px-3 h-7 flex items-center gap-1.5 text-[9.5px] text-slate-200 transition-colors uppercase font-bold whitespace-nowrap cursor-pointer shadow-[0_0_6px_rgba(34,211,238,0.1)] hover:shadow-[0_0_10px_rgba(34,211,238,0.3)] animate-pulse"
-          >
-            <User size={10} className="text-[#00ffd0]" />
-            <span>OP: {activeOperator?.nama || "Unknown"}</span>
-          </button>
+          {/* Operator Profile with Custom Logout Button */}
+          <div className="flex items-center gap-1.5 shrink-0 select-none">
+            <div className="bg-[#1e293b]/70 border border-cyan-800/60 rounded-full px-3 h-7 flex items-center gap-1.5 text-[9.5px] text-slate-200 uppercase font-bold">
+              <User size={10} className="text-[#00ffd0]" />
+              <span>OP: {activeOperator?.nama || "Unknown"}</span>
+            </div>
+            
+            <button 
+              onClick={() => {
+                setShowLogoutConfirm(true);
+              }} 
+              className="bg-rose-950/70 hover:bg-rose-900 border border-rose-800/80 rounded-full px-2.5 h-7 flex items-center gap-1.5 text-[9.5px] text-rose-300 hover:text-white transition-all font-sans font-black tracking-wide cursor-pointer uppercase shadow-[0_0_6px_rgba(239,68,68,0.1)] active:scale-95"
+              title="Logout Operator Session"
+            >
+              <LogOut size={10} className="text-rose-400" />
+              <span>LOGOUT</span>
+            </button>
+          </div>
           
           {/* Isi Silo */}
           <button 
-            onClick={() => setIsFillSiloOpen(true)} 
+            onClick={() => {
+              setIsConfirmingResetSilo(false);
+              setIsFillSiloOpen(true);
+            }} 
             className="bg-[#172554]/70 hover:bg-[#1e3a8a] border border-blue-900/30 rounded-full px-2.5 h-7 flex items-center gap-1.5 text-[10px] text-slate-200 cursor-pointer transition-colors uppercase font-bold whitespace-nowrap"
           >
             <Package size={10} className="text-[#38bdf8]" />
@@ -9083,25 +9580,9 @@ export default function App() {
           </div>
 
           {/* Status Location */}
-          <div className="bg-slate-800 border border-slate-700/60 text-slate-200 font-mono text-[9px] font-black px-2 py-1 rounded-[4px] uppercase select-none leading-none h-7 flex items-center">
+          <div className="bg-slate-800 border border-slate-700/60 text-slate-200 font-mono text-[9px] font-black px-2 py-1 rounded-[4px] uppercase select-none leading-none h-7 flex items-center shrink-0">
             PKU-BP#1
           </div>
-
-          {/* Login Admin */}
-          <button 
-            onClick={() => {
-              const session = localStorage.getItem('admin_session');
-              if (session === 'true') {
-                setCurrentView('admin-dashboard');
-              } else {
-                setCurrentView('admin-login');
-              }
-            }} 
-            className="bg-[#06b6d4]/90 hover:bg-[#0891b2] text-black font-sans font-extrabold text-[10px] rounded-[4px] px-2.5 h-7 uppercase flex items-center gap-1 transition-all whitespace-nowrap cursor-pointer"
-          >
-            <Power size={10} className="rotate-90" />
-            <span>Admin</span>
-          </button>
         </div>
 
         {/* Right Side: Jam + Tanggal + Hidden Admin Icon */}
@@ -9375,9 +9856,28 @@ export default function App() {
           setCompanyTagline={setCompanyTagline}
           companyLogo={companyLogo}
           setCompanyLogo={setCompanyLogo}
+          jumlahSilo={jumlahSilo}
+          setJumlahSilo={setJumlahSilo}
+          tanpaOperator={tanpaOperator}
+          setTanpaOperator={updateTanpaOperator}
+          truckPresenceRequired={truckPresenceRequired}
+          setTruckPresenceRequired={updateTruckPresenceRequired}
+          driverDischargeRequired={driverDischargeRequired}
+          setDriverDischargeRequired={updateDriverDischargeRequired}
+          minAirPressure={minAirPressure}
+          setMinAirPressure={updateMinAirPressure}
+          pressureLimitEnabled={pressureLimitEnabled}
+          setPressureLimitEnabled={updatePressureLimitEnabled}
+          isTruckPresent={isTruckPresent}
+          setIsTruckPresent={setIsTruckPresent}
+          driverBtnPressed={driverBtnPressed}
+          setDriverBtnPressed={setDriverBtnPressed}
+          airPressure={airPressure}
           onLogout={() => {
             localStorage.removeItem('admin_session');
-            setCurrentView('admin-login');
+            localStorage.removeItem('batching_plant_active_user');
+            window.dispatchEvent(new Event("active_user_session_sync"));
+            setCurrentView('portal');
           }}
         />
         {activePrintLog && <PrintTicketModal log={activePrintLog} onClose={() => setActivePrintLog(null)} />}
@@ -9388,6 +9888,258 @@ export default function App() {
   if (currentView === 'tablet') {
     return <TabletPage />;
   }
+
+  // Unified SCADA & ERP Central Portal Security Gate
+  if (currentView === 'portal') {
+    return (
+      <LoginPortal 
+        plantId={plantId || "PKU01"} 
+        plantName={plantName || "PEKANBARU"} 
+        onSuccess={(matchedUser) => {
+          const role = matchedUser.jabatan?.toUpperCase() || "";
+          if (role === "OPERATOR") {
+            setCurrentView('hmi');
+          } else {
+            setCurrentView('admin-dashboard');
+          }
+        }}
+      />
+    );
+  }
+
+  // Initial Mandatory Plant Identity Registration Check
+  if (!plantRegistered) {
+    return (
+      <div className="h-screen w-screen bg-[#070b13] text-slate-100 flex items-center justify-center p-6 select-none font-sans">
+        <div className="w-full max-w-lg bg-[#0b1329] border border-cyan-500 rounded-lg p-8 shadow-[0_0_35px_rgba(6,182,212,0.15)] flex flex-col gap-6 relative">
+          
+          {/* Top aesthetic accent line */}
+          <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-cyan-500 to-teal-400 rounded-t-lg" />
+          
+          <div className="flex flex-col items-center gap-2.5 text-center">
+            <div className="w-12 h-12 rounded-full bg-cyan-950/40 border border-cyan-500/30 flex items-center justify-center text-cyan-400 animate-pulse">
+              <span className="text-sm font-bold font-mono">ID</span>
+            </div>
+            
+            <h2 className="text-sm font-sans font-black tracking-widest text-[#00ffd0] uppercase mt-2">
+              SISTEM REGISTRASI IDENTITAS SCADA
+            </h2>
+            <p className="text-[9px] font-mono text-slate-400 uppercase leading-relaxed max-w-sm">
+              Inisialisasi Data Multi-Plant & Offline Synchronization
+            </p>
+          </div>
+
+          <p className="text-[9px] font-mono text-slate-300 leading-relaxed uppercase bg-slate-950/80 border border-slate-850 p-4 rounded text-center">
+            ⚠️ Komputer HMI ini membutuhkan konfigurasi nama cabang plant lokal sebelum dapat mengakses diagram SCADA dan panel kontrol batching.
+          </p>
+
+          <div className="space-y-4">
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[9px] font-sans font-black text-slate-400 uppercase mb-0.5">Perusahaan Induk / Afiliasi</span>
+              <input
+                type="text"
+                value={plantCompany}
+                onChange={(e) => setPlantCompany(e.target.value)}
+                className="bg-[#05080e] border border-slate-800 focus:border-cyan-400 text-slate-200 p-2.5 rounded text-xs font-mono font-bold uppercase transition-all outline-none"
+                placeholder="CONTOH: PT Farika Riau Perkasa"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1.5">
+                <span className="text-[9px] font-sans font-black text-amber-500 uppercase mb-0.5">KODE / ID PLANT (UNIK)</span>
+                <input
+                  type="text"
+                  value={plantId}
+                  onChange={(e) => setPlantId(e.target.value)}
+                  className="bg-[#05080e] border border-[#f59e0b]/40 focus:border-amber-400 text-amber-400 p-2.5 rounded text-xs font-mono font-black uppercase transition-all outline-none"
+                  placeholder="CONTOH: PKU01"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <span className="text-[9px] font-sans font-black text-[#00ffd0] uppercase mb-0.5">NAMA CABANG / PLANT</span>
+                <input
+                  type="text"
+                  value={plantName}
+                  onChange={(e) => setPlantName(e.target.value)}
+                  className="bg-[#05080e] border border-[#00ffd0]/40 focus:border-[#00ffd0] text-[#00ffd0] p-2.5 rounded text-xs font-mono font-bold uppercase transition-all outline-none"
+                  placeholder="CONTOH: Pekanbaru"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[9px] font-sans font-black text-slate-400 uppercase mb-0.5">Alamat Cabang (Opsional)</span>
+              <textarea
+                value={plantAddress}
+                onChange={(e) => setPlantAddress(e.target.value)}
+                className="bg-[#05080e] border border-slate-800 focus:border-cyan-400 text-slate-200 p-2.5 rounded text-xs font-mono font-bold uppercase transition-all outline-none h-16 resize-none"
+                placeholder="CONTOH: Jl. Raya Pekanbaru - Dumai KM 12"
+              />
+            </div>
+
+            <button
+              onClick={() => {
+                if (!plantCompany || !plantId || !plantName) {
+                  alert("Kesalahan: Silakan lengkapi semua kolom identitas plant.");
+                  return;
+                }
+
+                localStorage.setItem('plant_id', plantId);
+                localStorage.setItem('plant_name', plantName);
+                localStorage.setItem('plant_company', plantCompany);
+                localStorage.setItem('plant_address', plantAddress);
+                localStorage.setItem('plant_registered', 'true');
+                localStorage.setItem('plant_registered_at', new Date().toISOString());
+
+                setPlantRegistered(true);
+              }}
+              className="mt-2 w-full bg-cyan-950/40 hover:bg-cyan-900 border border-cyan-800 text-cyan-400 hover:text-white font-sans font-black text-[10px] tracking-widest uppercase py-3.5 rounded transition-all cursor-pointer shadow-[0_0_12px_rgba(6,182,212,0.2)] hover:shadow-[0_0_20px_rgba(6,182,212,0.4)]"
+            >
+              SIMPAN REGISTRASI & AKTIFKAN DASHBOARD SCADA
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  handleTelemetryRef.current = (data: any) => {
+    if (operationModeRef.current !== 'PRODUKSI') return;
+
+    if (!data) return;
+
+    // 1. Extract physical emergency stop button state
+    if (data.estop === 1 || data.estop === true) {
+      emergencyStop();
+      return; // Stop any subsequent telemetry processing immediately
+    }
+
+    // 1.5. Extract operatorless sensor states from physical serial
+    if (typeof data.truck === 'boolean') {
+      setIsTruckPresent(data.truck);
+    } else if (typeof data.truck === 'number') {
+      setIsTruckPresent(data.truck === 1);
+    }
+
+    if (typeof data.driver === 'boolean') {
+      setDriverBtnPressed(data.driver);
+    } else if (typeof data.driver === 'number') {
+      setDriverBtnPressed(data.driver === 1);
+    }
+
+    // 2. Extract compressor pressure (PSI) if available from serial interface
+    if (typeof data.pressure === 'number') {
+      setAirPressure(parseFloat(data.pressure.toFixed(1)));
+    }
+
+    // 3. Extract mixer ampere if available from serial interface
+    const valAmpere = typeof data.ampere === 'number' ? data.ampere : (typeof data.mixerAmp === 'number' ? data.mixerAmp : null);
+    if (valAmpere !== null) {
+      setAmpere(parseFloat(valAmpere.toFixed(1)));
+      // Estimate slump from physical current in real time using inverse calibration formula
+      if (mixerShaftActive && valAmpere > 47.0) {
+        const estimatedSlump = 10.0 + (100.0 - valAmpere) / 4.0;
+        setSlump(parseFloat(Math.max(5.0, Math.min(22.0, estimatedSlump)).toFixed(1)));
+      } else {
+        setSlump(0.0);
+      }
+    }
+
+    // 4. Extract sensor weights using common aliases mapped to loadcells
+    const getTelemetryValue = (d: any, keys: string[]): number | null => {
+      if (!d) return null;
+      for (const k of keys) {
+        if (typeof d[k] === 'number') {
+          return d[k];
+        }
+      }
+      return null;
+    };
+
+    const valPasir = getTelemetryValue(data, ['pasir', 'sand', 'w_pasir', 'weight_pasir', 'p']);
+    const valBatu = getTelemetryValue(data, ['batu', 'stone', 'w_batu', 'weight_batu', 'b']);
+    const valSemen = getTelemetryValue(data, ['semen', 'cement', 'w_semen', 'weight_semen', 's']);
+    const valAir = getTelemetryValue(data, ['air', 'water', 'w_air', 'weight_air', 'a']);
+    const valWaiting = getTelemetryValue(data, ['waiting', 'waiting_hopper', 'w_waiting', 'weight_waiting', 'wh']);
+
+    // Perform a clean, atomic scale update matching telemetry weights
+    if (valPasir !== null || valBatu !== null || valSemen !== null || valAir !== null) {
+      setScalesSync(prev => {
+        const next = { ...prev };
+        if (valPasir !== null) next.pasir.actual = parseFloat(valPasir.toFixed(1));
+        if (valBatu !== null) next.batu.actual = parseFloat(valBatu.toFixed(1));
+        if (valSemen !== null) next.semen.actual = parseFloat(valSemen.toFixed(1));
+        if (valAir !== null) next.air.actual = parseFloat(valAir.toFixed(1));
+        return next;
+      });
+    }
+
+    if (valWaiting !== null) {
+      setWaitingHopperWeightSync(parseFloat(valWaiting.toFixed(1)));
+    }
+
+    // 5. Synchronize physical manual panel buttons with the digital screen controls
+    if (!isAuto && data.btn !== undefined && typeof data.btn === 'object') {
+      const btn = data.btn;
+      if (btn.pasir1 !== undefined) setGatePasir1SiloOpen(!!btn.pasir1);
+      if (btn.pasir2 !== undefined) setGatePasir2SiloOpen(!!btn.pasir2);
+      if (btn.batu1 !== undefined) setGateBatu1SiloOpen(!!btn.batu1);
+      if (btn.batu2 !== undefined) setGateBatu2SiloOpen(!!btn.batu2);
+      if (btn.semen !== undefined) setScrewSemenActive(!!btn.semen);
+      if (btn.air !== undefined) setValveWaterActive(!!btn.air);
+      
+      if (btn.dump_pasir !== undefined) setGatePasirHopperOpenSync(!!btn.dump_pasir);
+      if (btn.dump_batu !== undefined) setGateBatuHopperOpenSync(!!btn.dump_batu);
+      if (btn.dump_semen !== undefined) setGateSemenHopperOpenSync(!!btn.dump_semen);
+      if (btn.dump_air !== undefined) setGateWaterHopperOpenSync(!!btn.dump_air);
+      
+      if (btn.conveyor_bawah !== undefined) setConveyorBottomActiveSync(!!btn.conveyor_bawah);
+      if (btn.conveyor_atas !== undefined) setConveyorUpperActiveSync(!!btn.conveyor_atas);
+      if (btn.mixer !== undefined) setMixerShaftActive(!!btn.mixer);
+      if (btn.vibrator !== undefined) setVibratorActive(!!btn.vibrator);
+      if (btn.compressor !== undefined) setCompressorActive(!!btn.compressor);
+      if (btn.klakson !== undefined) setKlaksonActive(!!btn.klakson);
+      if (btn.waiting_hopper !== undefined) setWaitingHopperGateOpenSync(!!btn.waiting_hopper);
+      if (btn.admix !== undefined) setAdmixInActive(!!btn.admix);
+      
+      if (btn.mixer_buka !== undefined) {
+        const nextVal = !!btn.mixer_buka;
+        if (nextVal) {
+          setMixerDoorPercent(100);
+          setMixerDoorStateText("OPENED");
+          setConcreteDischargeActive(true);
+          setMixerDoor1OpenActive(true);
+          setMixerDoor2OpenActive(true);
+          setMixerDoor3OpenActive(true);
+          setMixerDoorClosingActive(false);
+        } else if (btn.mixer_tutup !== undefined && !!btn.mixer_tutup) {
+          setMixerDoorPercent(0);
+          setMixerDoorStateText("CLOSED");
+          setConcreteDischargeActive(false);
+          setMixerDoor1OpenActive(false);
+          setMixerDoor2OpenActive(false);
+          setMixerDoor3OpenActive(false);
+          setMixerDoorClosingActive(true);
+          setTimeout(() => {
+            setMixerDoorClosingActive(false);
+          }, 1500);
+        }
+      } else if (btn.mixer_tutup !== undefined && !!btn.mixer_tutup) {
+        setMixerDoorPercent(0);
+        setMixerDoorStateText("CLOSED");
+        setConcreteDischargeActive(false);
+        setMixerDoor1OpenActive(false);
+        setMixerDoor2OpenActive(false);
+        setMixerDoor3OpenActive(false);
+        setMixerDoorClosingActive(true);
+        setTimeout(() => {
+          setMixerDoorClosingActive(false);
+        }, 1500);
+      }
+    }
+  };
 
   return (
     <div className="h-screen max-h-screen w-screen max-w-full overflow-hidden bg-[#070b13] text-slate-100 font-sans flex flex-col p-2">
@@ -9471,6 +10223,7 @@ export default function App() {
             <BatchConfigModal
               recipes={recipesList}
               siloWeights={siloWeights}
+              jumlahSilo={jumlahSilo}
               onClose={() => setIsBatchConfigOpen(false)}
               onConfirm={(config) => {
                 setIsBatchConfigOpen(false);
@@ -9512,6 +10265,65 @@ export default function App() {
                 setIsOperatorLoginOpen(false);
               }}
             />
+          )}
+        </AnimatePresence>
+
+        {/* Custom Safe React Logout Confirmation Modal Overlay */}
+        <AnimatePresence>
+          {showLogoutConfirm && (
+            <div className="fixed inset-0 z-[400] flex items-center justify-center bg-slate-950/80 backdrop-blur-sm select-none">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                transition={{ duration: 0.2 }}
+                className="w-full max-w-md bg-[#0d1527] border-2 border-rose-500 rounded-[8px] p-6 shadow-[0_0_35px_rgba(239,68,68,0.25)] relative overflow-hidden"
+              >
+                {/* Visual Top Decorative Warning Line */}
+                <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-rose-500 to-amber-500" />
+                
+                <div className="flex items-start gap-4 mt-2">
+                  <div className="w-12 h-12 rounded-full bg-rose-950/40 border border-rose-500/30 flex items-center justify-center text-rose-500 shrink-0">
+                    <ShieldAlert size={22} className="animate-pulse" />
+                  </div>
+                  <div className="flex-1 text-left">
+                    <h3 className="text-sm font-sans font-black tracking-widest text-rose-500 uppercase leading-none">
+                      KONFIRMASI LOGOUT OPERATOR
+                    </h3>
+                    <p className="text-[10px] font-mono text-slate-400 uppercase tracking-tighter leading-relaxed mt-2.5">
+                      Sesi aktif operator <span className="text-rose-400 font-extrabold">"{activeOperator?.nama || "Unknown"}"</span> pada HMI Produksi ini akan dinonaktifkan secara penuh.
+                    </p>
+                    <p className="text-[9px] font-sans text-slate-500 uppercase mt-1 leading-normal">
+                      Apakah Anda yakin ingin keluar dan kembali ke Gate login?
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-end gap-3 mt-6 border-t border-slate-900 pt-4">
+                  {/* Cancel Button */}
+                  <button
+                    onClick={() => setShowLogoutConfirm(false)}
+                    className="px-4 py-2 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-white font-sans font-extrabold text-[10px] tracking-widest uppercase transition-colors active:scale-95 cursor-pointer"
+                  >
+                    KEMBALI KE HMI
+                  </button>
+
+                  {/* Confirm Logout Button */}
+                  <button
+                    onClick={() => {
+                      localStorage.removeItem("batching_plant_active_user");
+                      localStorage.removeItem("admin_session");
+                      window.dispatchEvent(new Event("active_user_session_sync"));
+                      setShowLogoutConfirm(false);
+                      setCurrentView('portal');
+                    }}
+                    className="px-5 py-2 rounded bg-rose-950/90 hover:bg-rose-900 border border-rose-500 text-rose-200 hover:text-white font-sans font-black text-[10px] tracking-widest uppercase transition-colors active:scale-95 cursor-pointer"
+                  >
+                    YA, KELUAR SEKARANG
+                  </button>
+                </div>
+              </motion.div>
+            </div>
           )}
         </AnimatePresence>
 
@@ -9850,72 +10662,125 @@ export default function App() {
                   </button>
                 </div>
 
-                <div className="space-y-3.5 my-1">
-                  {/* Select Silo */}
-                  <div className="space-y-1.5">
-                    <label className="block text-slate-350 text-[11px] font-bold uppercase tracking-wider">Pilih Silo Semen</label>
-                    <div className="grid grid-cols-3 gap-2">
-                      {[...Array(6)].map((_, idx) => {
-                        const isSel = selectedFillSiloIdx === idx;
-                        return (
-                          <button
-                            key={idx}
-                            type="button"
-                            onClick={() => setSelectedFillSiloIdx(idx)}
-                            className={`py-2 px-1 text-center rounded-[4px] border text-[11px] font-mono font-bold transition-all cursor-pointer ${
-                              isSel 
-                                ? 'bg-blue-950/85 border-[#38bdf8] text-[#38bdf8] shadow-[0_0_8px_rgba(56,189,248,0.25)]' 
-                                : 'bg-[#070b13] border-slate-850 text-slate-400 hover:border-slate-800'
-                            }`}
-                          >
-                            SILO {idx + 1}
-                            <span className="block text-[8px] font-sans font-medium text-slate-500 mt-0.5">
-                              {((siloWeights[idx] ?? 0) / 1000).toFixed(1)}t
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* Volume Input */}
-                  <div className="space-y-1.5">
-                    <label className="block text-slate-350 text-[11px] font-bold uppercase tracking-wider">Volume Pengisian (Kg)</label>
-                    <div className="relative">
-                      <input 
-                        type="text" 
-                        value={fillSiloAmountText}
-                        onChange={(e) => {
-                          const cleaned = e.target.value.replace(/[^0-9]/g, "");
-                          setFillSiloAmountText(cleaned);
-                        }}
-                        className="w-full h-10 bg-[#070b13] border border-slate-800 hover:border-slate-700 focus:border-cyan-400 focus:shadow-[0_0_8px_rgba(34,211,238,0.25)] text-white text-[13px] font-mono rounded-[4px] px-3 outline-hidden transition-all text-left" 
-                        placeholder="Contoh: 20000"
-                      />
-                      <span className="absolute right-3 top-2.5 font-mono text-[11px] text-slate-500 font-bold uppercase select-none">KG</span>
-                    </div>
-                    <p className="text-[9.5px] font-sans text-slate-500 leading-normal italic select-none">
-                      • Kapasitas Maksimal: 120.000 Kg
-                      <span className="block">• Ruang Tersisa: {Math.max(0, 120000 - (siloWeights[selectedFillSiloIdx] ?? 0)).toLocaleString('id-ID')} Kg</span>
+                {isConfirmingResetSilo ? (
+                  <div className="space-y-4 my-3 p-4 bg-rose-955/20 border-2 border-rose-800 rounded-[6px] text-left">
+                    <p className="text-xs font-sans font-black text-rose-500 uppercase tracking-widest leading-none">
+                      ⚠️ KONFIRMASI RESET SILO
                     </p>
+                    <p className="text-[10px] font-mono text-slate-300 uppercase leading-relaxed">
+                      Apakah Anda yakin ingin mengosongkan isi <span className="text-rose-455 font-extrabold">SILO {selectedFillSiloIdx + 1}</span> menjadi <span className="text-rose-400 font-extrabold">0 KG</span> secara permanen?
+                    </p>
+                    <p className="text-[9px] font-sans text-slate-500 uppercase leading-normal">
+                      Aksi ini akan mencatat log peringatan sistem dan menyetel ulang berat silo semen terpilih.
+                    </p>
+                    <div className="flex gap-2.5 pt-1">
+                      <button
+                        onClick={() => setIsConfirmingResetSilo(false)}
+                        className="flex-1 py-2 bg-slate-900 border border-slate-850 hover:bg-slate-800 text-slate-400 hover:text-white rounded text-[10px] uppercase font-black tracking-wider cursor-pointer transition-colors"
+                      >
+                        Batal
+                      </button>
+                      <button
+                        onClick={() => {
+                          setSiloWeights(prev => {
+                            const next = [...prev];
+                            next[selectedFillSiloIdx] = 0;
+                            return next;
+                          });
+                          setIsConfirmingResetSilo(false);
+                          
+                          // Log the warning log
+                          setRelayLogs(l => [{
+                            id: 'FILL-RESET-' + Math.random().toString(36).substring(7).toUpperCase(),
+                            timestamp: new Date(),
+                            message: `[SILO] Reset isi Silo ${selectedFillSiloIdx + 1} menjadi 0 kg oleh Operator`,
+                            type: 'warning'
+                          }, ...l]);
+                        }}
+                        className="flex-1 py-2 bg-rose-950 border border-rose-600 text-rose-200 hover:bg-rose-900 hover:text-white rounded text-[10px] uppercase font-black tracking-wider cursor-pointer transition-colors"
+                      >
+                        Ya, Reset 0
+                      </button>
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <>
+                    <div className="space-y-3.5 my-1">
+                      {/* Select Silo */}
+                      <div className="space-y-1.5">
+                        <label className="block text-slate-350 text-[11px] font-bold uppercase tracking-wider">Pilih Silo Semen</label>
+                        <div className="grid grid-cols-3 gap-2">
+                          {[...Array(jumlahSilo)].map((_, idx) => {
+                            const isSel = selectedFillSiloIdx === idx;
+                            return (
+                              <button
+                                key={idx}
+                                type="button"
+                                onClick={() => setSelectedFillSiloIdx(idx)}
+                                className={`py-2 px-1 text-center rounded-[4px] border text-[11px] font-mono font-bold transition-all cursor-pointer ${
+                                  isSel 
+                                    ? 'bg-blue-950/85 border-[#38bdf8] text-[#38bdf8] shadow-[0_0_8px_rgba(56,189,248,0.25)]' 
+                                    : 'bg-[#070b13] border-slate-850 text-slate-400 hover:border-slate-800'
+                                }`}
+                              >
+                                SILO {idx + 1}
+                                <span className="block text-[8px] font-sans font-medium text-slate-500 mt-0.5">
+                                  {((siloWeights[idx] ?? 0) / 1000).toFixed(1)}t
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
 
-                <div className="flex gap-2.5 pt-2">
-                  <button 
-                    onClick={() => {
-                      const amt = parseInt(fillSiloAmountText, 10);
-                      if (isNaN(amt) || amt <= 0) {
-                        setCustomAlertMessage("Volume pengisian harus bernilai positif");
-                        return;
-                      }
-                      startFillSilo(selectedFillSiloIdx, amt);
-                    }}
-                    className="flex-1 h-10 bg-[#38bdf8] hover:bg-[#0ea5e9] text-slate-950 font-black text-xs uppercase tracking-wider rounded-[4px] transition-colors shadow-lg active:scale-97 cursor-pointer text-center"
-                  >
-                    Mulai Pengisian
-                  </button>
-                </div>
+                      {/* Volume Input */}
+                      <div className="space-y-1.5">
+                        <label className="block text-slate-350 text-[11px] font-bold uppercase tracking-wider">Volume Pengisian (Kg)</label>
+                        <div className="relative">
+                          <input 
+                            type="text" 
+                            value={fillSiloAmountText}
+                            onChange={(e) => {
+                              const cleaned = e.target.value.replace(/[^0-9]/g, "");
+                              setFillSiloAmountText(cleaned);
+                            }}
+                            className="w-full h-10 bg-[#070b13] border border-slate-800 hover:border-slate-700 focus:border-cyan-400 focus:shadow-[0_0_8px_rgba(34,211,238,0.25)] text-white text-[13px] font-mono rounded-[4px] px-3 outline-hidden transition-all text-left" 
+                            placeholder="Contoh: 20000"
+                          />
+                          <span className="absolute right-3 top-2.5 font-mono text-[11px] text-slate-500 font-bold uppercase select-none">KG</span>
+                        </div>
+                        <p className="text-[9.5px] font-sans text-slate-500 leading-normal italic select-none">
+                          • Kapasitas Maksimal: 120.000 Kg
+                          <span className="block">• Ruang Tersisa: {Math.max(0, 120000 - (siloWeights[selectedFillSiloIdx] ?? 0)).toLocaleString('id-ID')} Kg</span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2.5 pt-2">
+                      <button 
+                        onClick={() => {
+                          setIsConfirmingResetSilo(true);
+                        }}
+                        className="flex-1 h-10 bg-rose-950/60 hover:bg-rose-900 border border-rose-800 text-rose-350 hover:text-white font-sans font-black text-xs uppercase tracking-wider rounded-[4px] transition-colors active:scale-97 cursor-pointer text-center"
+                      >
+                        Reset Silo
+                      </button>
+                      <button 
+                        onClick={() => {
+                          const amt = parseInt(fillSiloAmountText, 10);
+                          if (isNaN(amt) || amt <= 0) {
+                            setCustomAlertMessage("Volume pengisian harus bernilai positif");
+                            return;
+                          }
+                          startFillSilo(selectedFillSiloIdx, amt);
+                        }}
+                        className="flex-[2] h-10 bg-[#38bdf8] hover:bg-[#0ea5e9] text-slate-950 font-black text-xs uppercase tracking-wider rounded-[4px] transition-colors shadow-lg active:scale-97 cursor-pointer text-center"
+                      >
+                        Mulai Pengisian
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             </motion.div>
           )}
@@ -10030,6 +10895,19 @@ export default function App() {
               } else {
                 item = scales[key as MaterialType];
               }
+
+              // Calculate individual component targets for System 2 Accumulative Scale
+              const tFactor = parseFloat((activeVolume / (totalCycles || 1)).toFixed(2)) || 1.0;
+              const savedJmf = selectedRecipe?.jobMixDetails;
+              const targetValuePasir1 = savedJmf?.pasir1 || Math.round((selectedRecipe?.targets?.pasir || 400) * 0.7);
+              const targetValuePasir2 = savedJmf?.pasir2 || Math.round((selectedRecipe?.targets?.pasir || 400) * 0.3);
+              const targetValueBatu1 = savedJmf?.batu1 || Math.round((selectedRecipe?.targets?.batu || 400) * 0.7);
+              const targetValueBatu2 = savedJmf?.batu2 || Math.round((selectedRecipe?.targets?.batu || 400) * 0.3);
+
+              const adjustedTargetPasir1 = Math.round(targetValuePasir1 * tFactor);
+              const adjustedTargetPasir2 = Math.round(targetValuePasir2 * tFactor);
+              const adjustedTargetBatu1 = Math.round(targetValueBatu1 * tFactor);
+              const adjustedTargetBatu2 = Math.round(targetValueBatu2 * tFactor);
               
               return (
                 <div key={key} className="bg-[#121c32]/50 border border-slate-800 rounded-[5px] p-3 shadow-md flex flex-col justify-between overflow-hidden relative min-h-[148px] transition-all duration-250">
@@ -10062,27 +10940,43 @@ export default function App() {
                             : 'bg-slate-800'
                       }`} />
 
-                      {/* Manual JOG Buttons merged for desktop ergonomics */}
+                      {/* Manual JOG / SEMI AUTO Buttons merged for desktop ergonomics */}
                       {itemConf.isCombined ? (
                         <div className="flex gap-1 shrink-0">
                           <div className="flex flex-col items-center">
-                            <button
-                              onMouseDown={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir1(true); }}
-                              onMouseUp={() => setJoggingPasir1(false)}
-                              onMouseLeave={() => setJoggingPasir1(false)}
-                              onTouchStart={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir1(true); }}
-                              onTouchEnd={() => setJoggingPasir1(false)}
-                              disabled={!isRunning || scales.pasir.isComplete}
-                              className={`py-1 px-1.5 flex items-center justify-center text-[7.5px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
-                                ${joggingPasir1
-                                  ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
-                                  : scales.pasir.isComplete || !isRunning
-                                    ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
-                                    : 'bg-[#121c32] text-amber-500 border-amber-500/25 cursor-pointer hover:bg-amber-500/10'
-                                }`}
-                            >
-                              PS1
-                            </button>
+                            {batchingMode === 'SEMI_AUTO' ? (
+                              <button
+                                onClick={() => { if (isRunning && !scales.pasir.isComplete) handleManualDeviceToggle('pasir1'); }}
+                                disabled={!isRunning || scales.pasir.isComplete}
+                                className={`py-1 px-1.5 flex items-center justify-center text-[7.5px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
+                                  ${semiAutoDosing.pasir1
+                                    ? 'bg-emerald-500 text-slate-950 border-emerald-450 font-black animate-pulse'
+                                    : scales.pasir.isComplete || !isRunning
+                                      ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
+                                      : 'bg-[#121c32] text-emerald-400 border-emerald-500/20 cursor-pointer hover:bg-emerald-500/10 hover:border-emerald-500/50'
+                                  }`}
+                              >
+                                PS1
+                              </button>
+                            ) : (
+                              <button
+                                onMouseDown={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir1(true); }}
+                                onMouseUp={() => setJoggingPasir1(false)}
+                                onMouseLeave={() => setJoggingPasir1(false)}
+                                onTouchStart={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir1(true); }}
+                                onTouchEnd={() => setJoggingPasir1(false)}
+                                disabled={!isRunning || scales.pasir.isComplete}
+                                className={`py-1 px-1.5 flex items-center justify-center text-[7.5px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
+                                  ${joggingPasir1
+                                    ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
+                                    : scales.pasir.isComplete || !isRunning
+                                      ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
+                                      : 'bg-[#121c32] text-amber-500 border-amber-500/25 cursor-pointer hover:bg-amber-500/10'
+                                  }`}
+                              >
+                                PS1
+                              </button>
+                            )}
                             <span className={`w-2 h-2 rounded-full mt-1.5 transition-all duration-150 ${
                               gatePasir1SiloOpen
                                 ? 'bg-[#00ff9c] shadow-[0_0_6px_rgba(0,255,156,0.8)] animate-blink-fast'
@@ -10090,23 +10984,39 @@ export default function App() {
                             }`} />
                           </div>
                           <div className="flex flex-col items-center">
-                            <button
-                              onMouseDown={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir2(true); }}
-                              onMouseUp={() => setJoggingPasir2(false)}
-                              onMouseLeave={() => setJoggingPasir2(false)}
-                              onTouchStart={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir2(true); }}
-                              onTouchEnd={() => setJoggingPasir2(false)}
-                              disabled={!isRunning || scales.pasir.isComplete}
-                              className={`py-1 px-1.5 flex items-center justify-center text-[8px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
-                                ${joggingPasir2
-                                  ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
-                                  : scales.pasir.isComplete || !isRunning
-                                    ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
-                                    : 'bg-[#121c32] text-amber-500 border-amber-500/25 cursor-pointer hover:bg-amber-500/10'
-                                }`}
-                            >
-                              PS2
-                            </button>
+                            {batchingMode === 'SEMI_AUTO' ? (
+                              <button
+                                onClick={() => { if (isRunning && !scales.pasir.isComplete) handleManualDeviceToggle('pasir2'); }}
+                                disabled={!isRunning || scales.pasir.isComplete}
+                                className={`py-1 px-1.5 flex items-center justify-center text-[8px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
+                                  ${semiAutoDosing.pasir2
+                                    ? 'bg-emerald-500 text-slate-950 border-emerald-450 font-black animate-pulse'
+                                    : scales.pasir.isComplete || !isRunning
+                                      ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
+                                      : 'bg-[#121c32] text-emerald-400 border-emerald-500/20 cursor-pointer hover:bg-emerald-500/10 hover:border-emerald-500/50'
+                                  }`}
+                              >
+                                PS2
+                              </button>
+                            ) : (
+                              <button
+                                onMouseDown={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir2(true); }}
+                                onMouseUp={() => setJoggingPasir2(false)}
+                                onMouseLeave={() => setJoggingPasir2(false)}
+                                onTouchStart={() => { if (isRunning && !scales.pasir.isComplete) setJoggingPasir2(true); }}
+                                onTouchEnd={() => setJoggingPasir2(false)}
+                                disabled={!isRunning || scales.pasir.isComplete}
+                                className={`py-1 px-1.5 flex items-center justify-center text-[8px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
+                                  ${joggingPasir2
+                                    ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
+                                    : scales.pasir.isComplete || !isRunning
+                                      ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
+                                      : 'bg-[#121c32] text-amber-500 border-amber-500/25 cursor-pointer hover:bg-amber-500/10'
+                                  }`}
+                              >
+                                PS2
+                              </button>
+                            )}
                             <span className={`w-2 h-2 rounded-full mt-1.5 transition-all duration-150 ${
                               gatePasir2SiloOpen
                                 ? 'bg-[#00ff9c] shadow-[0_0_6px_rgba(0,255,156,0.8)] animate-blink-fast'
@@ -10114,23 +11024,39 @@ export default function App() {
                             }`} />
                           </div>
                           <div className="flex flex-col items-center">
-                            <button
-                              onMouseDown={() => { if (isRunning && !scales.batu.isComplete) setJoggingBatu1(true); }}
-                              onMouseUp={() => setJoggingBatu1(false)}
-                              onMouseLeave={() => setJoggingBatu1(false)}
-                              onTouchStart={() => { if (isRunning && !scales.batu.isComplete) setJoggingBatu1(true); }}
-                              onTouchEnd={() => setJoggingBatu1(false)}
-                              disabled={!isRunning || scales.batu.isComplete}
-                              className={`py-1 px-1.5 flex items-center justify-center text-[7.5px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
-                                ${joggingBatu1
-                                  ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
-                                  : scales.batu.isComplete || !isRunning
-                                    ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
-                                    : 'bg-[#121c32] text-amber-500 border-amber-500/25 cursor-pointer hover:bg-amber-500/10'
-                                }`}
-                            >
-                              BT1
-                            </button>
+                            {batchingMode === 'SEMI_AUTO' ? (
+                              <button
+                                onClick={() => { if (isRunning && !scales.batu.isComplete) handleManualDeviceToggle('batu1'); }}
+                                disabled={!isRunning || scales.batu.isComplete}
+                                className={`py-1 px-1.5 flex items-center justify-center text-[7.5px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
+                                  ${semiAutoDosing.batu1
+                                    ? 'bg-emerald-500 text-slate-950 border-emerald-450 font-black animate-pulse'
+                                    : scales.batu.isComplete || !isRunning
+                                      ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
+                                      : 'bg-[#121c32] text-emerald-400 border-emerald-500/20 cursor-pointer hover:bg-emerald-500/10 hover:border-emerald-500/50'
+                                  }`}
+                              >
+                                BT1
+                              </button>
+                            ) : (
+                              <button
+                                onMouseDown={() => { if (isRunning && !scales.batu.isComplete) setJoggingBatu1(true); }}
+                                onMouseUp={() => setJoggingBatu1(false)}
+                                onMouseLeave={() => setJoggingBatu1(false)}
+                                onTouchStart={() => { if (isRunning && !scales.batu.isComplete) setJoggingBatu1(true); }}
+                                onTouchEnd={() => setJoggingBatu1(false)}
+                                disabled={!isRunning || scales.batu.isComplete}
+                                className={`py-1 px-1.5 flex items-center justify-center text-[7.5px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
+                                  ${joggingBatu1
+                                    ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
+                                    : scales.batu.isComplete || !isRunning
+                                      ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
+                                      : 'bg-[#121c32] text-amber-500 border-amber-500/25 cursor-pointer hover:bg-amber-500/10'
+                                  }`}
+                              >
+                                BT1
+                              </button>
+                            )}
                             <span className={`w-2 h-2 rounded-full mt-1.5 transition-all duration-150 ${
                               gateBatu1SiloOpen
                                 ? 'bg-[#00ff9c] shadow-[0_0_6px_rgba(0,255,156,0.8)] animate-blink-fast'
@@ -10138,23 +11064,39 @@ export default function App() {
                             }`} />
                           </div>
                           <div className="flex flex-col items-center">
-                            <button
-                              onMouseDown={() => { if (isRunning && !scales.batu.isComplete) setJoggingBatu2(true); }}
-                              onMouseUp={() => setJoggingBatu2(false)}
-                              onMouseLeave={() => setJoggingBatu2(false)}
-                              onTouchStart={() => { if (isRunning && !scales.batu.isComplete) setJoggingBatu2(true); }}
-                              onTouchEnd={() => setJoggingBatu2(false)}
-                              disabled={!isRunning || scales.batu.isComplete}
-                              className={`py-1 px-1.5 flex items-center justify-center text-[7.5px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
-                                ${joggingBatu2
-                                  ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
-                                  : scales.batu.isComplete || !isRunning
-                                    ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
-                                    : 'bg-[#121c32] text-amber-500 border-amber-500/25 cursor-pointer hover:bg-amber-500/10'
-                                }`}
-                            >
-                              BT2
-                            </button>
+                            {batchingMode === 'SEMI_AUTO' ? (
+                              <button
+                                onClick={() => { if (isRunning && !scales.batu.isComplete) handleManualDeviceToggle('batu2'); }}
+                                disabled={!isRunning || scales.batu.isComplete}
+                                className={`py-1 px-1.5 flex items-center justify-center text-[7.5px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
+                                  ${semiAutoDosing.batu2
+                                    ? 'bg-emerald-500 text-slate-950 border-emerald-450 font-black animate-pulse'
+                                    : scales.batu.isComplete || !isRunning
+                                      ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
+                                      : 'bg-[#121c32] text-emerald-400 border-emerald-500/25 cursor-pointer hover:bg-emerald-500/10'
+                                  }`}
+                              >
+                                BT2
+                              </button>
+                            ) : (
+                              <button
+                                onMouseDown={() => { if (isRunning && !scales.batu.isComplete) setJoggingBatu2(true); }}
+                                onMouseUp={() => setJoggingBatu2(false)}
+                                onMouseLeave={() => setJoggingBatu2(false)}
+                                onTouchStart={() => { if (isRunning && !scales.batu.isComplete) setJoggingBatu2(true); }}
+                                onTouchEnd={() => setJoggingBatu2(false)}
+                                disabled={!isRunning || scales.batu.isComplete}
+                                className={`py-1 px-1.5 flex items-center justify-center text-[7.5px] font-sans font-black tracking-tighter rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[28px] h-5
+                                  ${joggingBatu2
+                                    ? 'bg-amber-500 text-black border-amber-400 font-extrabold animate-pulse'
+                                    : scales.batu.isComplete || !isRunning
+                                      ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
+                                      : 'bg-[#121c32] text-amber-500 border-amber-500/25 cursor-pointer hover:bg-amber-500/10'
+                                  }`}
+                              >
+                                BT2
+                              </button>
+                            )}
                             <span className={`w-2 h-2 rounded-full mt-1.5 transition-all duration-150 ${
                               gateBatu2SiloOpen
                                 ? 'bg-[#00ff9c] shadow-[0_0_6px_rgba(0,255,156,0.8)] animate-blink-fast'
@@ -10165,23 +11107,39 @@ export default function App() {
                       ) : key === 'pasir' ? (
                         <div className="flex gap-1.5 shrink-0">
                           <div className="flex flex-col items-center">
-                            <button
-                              onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingPasir1(true); }}
-                              onMouseUp={() => setJoggingPasir1(false)}
-                              onMouseLeave={() => setJoggingPasir1(false)}
-                              onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingPasir1(true); }}
-                              onTouchEnd={() => setJoggingPasir1(false)}
-                              disabled={!isRunning || item.isComplete}
-                              className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
-                                ${joggingPasir1
-                                  ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
-                                  : item.isComplete || !isRunning
-                                    ? 'bg-slate-900 border-slate-950 text-slate-600 cursor-not-allowed font-medium'
-                                    : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
-                                }`}
-                            >
-                              {joggingPasir1 ? 'JOG 1' : 'PASIR 1'}
-                            </button>
+                            {batchingMode === 'SEMI_AUTO' ? (
+                              <button
+                                onClick={() => { if (isRunning && !item.isComplete) handleManualDeviceToggle('pasir1'); }}
+                                disabled={!isRunning || item.isComplete}
+                                className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
+                                  ${semiAutoDosing.pasir1
+                                    ? 'bg-emerald-500 text-slate-950 border-emerald-450 font-black animate-pulse'
+                                    : item.isComplete || !isRunning
+                                      ? 'bg-slate-900 border-slate-950 text-slate-600 cursor-not-allowed font-medium'
+                                      : 'bg-[#121c32] text-emerald-400 border-emerald-500/20 cursor-pointer hover:bg-emerald-500/10 hover:border-emerald-500/50'
+                                  }`}
+                              >
+                                PASIR 1
+                              </button>
+                            ) : (
+                              <button
+                                onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingPasir1(true); }}
+                                onMouseUp={() => setJoggingPasir1(false)}
+                                onMouseLeave={() => setJoggingPasir1(false)}
+                                onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingPasir1(true); }}
+                                onTouchEnd={() => setJoggingPasir1(false)}
+                                disabled={!isRunning || item.isComplete}
+                                className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
+                                  ${joggingPasir1
+                                    ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
+                                    : item.isComplete || !isRunning
+                                      ? 'bg-slate-900 border-slate-950 text-slate-600 cursor-not-allowed font-medium'
+                                      : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
+                                  }`}
+                              >
+                                {joggingPasir1 ? 'JOG 1' : 'PASIR 1'}
+                              </button>
+                            )}
                             <span className={`w-2 h-2 rounded-full mt-1.5 transition-all duration-150 ${
                               gatePasir1SiloOpen
                                 ? 'bg-[#00ff9c] shadow-[0_0_6px_rgba(0,255,156,0.8)] animate-blink-fast'
@@ -10189,23 +11147,39 @@ export default function App() {
                             }`} />
                           </div>
                           <div className="flex flex-col items-center">
-                            <button
-                              onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingPasir2(true); }}
-                              onMouseUp={() => setJoggingPasir2(false)}
-                              onMouseLeave={() => setJoggingPasir2(false)}
-                              onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingPasir2(true); }}
-                              onTouchEnd={() => setJoggingPasir2(false)}
-                              disabled={!isRunning || item.isComplete}
-                              className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
-                                ${joggingPasir2
-                                  ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
-                                  : item.isComplete || !isRunning
-                                    ? 'bg-slate-900 border-slate-950 text-slate-600 cursor-not-allowed font-medium'
-                                    : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
-                                }`}
-                            >
-                              {joggingPasir2 ? 'JOG 2' : 'PASIR 2'}
-                            </button>
+                            {batchingMode === 'SEMI_AUTO' ? (
+                              <button
+                                onClick={() => { if (isRunning && !item.isComplete) handleManualDeviceToggle('pasir2'); }}
+                                disabled={!isRunning || item.isComplete}
+                                className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
+                                  ${semiAutoDosing.pasir2
+                                    ? 'bg-emerald-500 text-slate-950 border-emerald-450 font-black animate-pulse'
+                                    : item.isComplete || !isRunning
+                                      ? 'bg-slate-900 border-slate-950 text-slate-600 cursor-not-allowed font-medium'
+                                      : 'bg-[#121c32] text-emerald-400 border-emerald-500/20 cursor-pointer hover:bg-emerald-500/10 hover:border-emerald-500/50'
+                                  }`}
+                              >
+                                PASIR 2
+                              </button>
+                            ) : (
+                              <button
+                                onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingPasir2(true); }}
+                                onMouseUp={() => setJoggingPasir2(false)}
+                                onMouseLeave={() => setJoggingPasir2(false)}
+                                onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingPasir2(true); }}
+                                onTouchEnd={() => setJoggingPasir2(false)}
+                                disabled={!isRunning || item.isComplete}
+                                className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
+                                  ${joggingPasir2
+                                    ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
+                                    : item.isComplete || !isRunning
+                                      ? 'bg-slate-900 border-slate-950 text-slate-600 cursor-not-allowed font-medium'
+                                      : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-emerald-500/50'
+                                  }`}
+                              >
+                                {joggingPasir2 ? 'JOG 2' : 'PASIR 2'}
+                              </button>
+                            )}
                             <span className={`w-2 h-2 rounded-full mt-1.5 transition-all duration-150 ${
                               gatePasir2SiloOpen
                                 ? 'bg-[#00ff9c] shadow-[0_0_6px_rgba(0,255,156,0.8)] animate-blink-fast'
@@ -10216,23 +11190,39 @@ export default function App() {
                       ) : key === 'batu' ? (
                         <div className="flex gap-1.5 shrink-0">
                           <div className="flex flex-col items-center">
-                            <button
-                              onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingBatu1(true); }}
-                              onMouseUp={() => setJoggingBatu1(false)}
-                              onMouseLeave={() => setJoggingBatu1(false)}
-                              onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingBatu1(true); }}
-                              onTouchEnd={() => setJoggingBatu1(false)}
-                              disabled={!isRunning || item.isComplete}
-                              className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
-                                ${joggingBatu1
-                                  ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
-                                  : item.isComplete || !isRunning
-                                    ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
-                                    : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
-                                }`}
-                            >
-                              {joggingBatu1 ? 'JOG 1' : 'BATU 1'}
-                            </button>
+                            {batchingMode === 'SEMI_AUTO' ? (
+                              <button
+                                onClick={() => { if (isRunning && !item.isComplete) handleManualDeviceToggle('batu1'); }}
+                                disabled={!isRunning || item.isComplete}
+                                className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
+                                  ${semiAutoDosing.batu1
+                                    ? 'bg-emerald-500 text-slate-950 border-emerald-450 font-black animate-pulse'
+                                    : item.isComplete || !isRunning
+                                      ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
+                                      : 'bg-[#121c32] text-emerald-400 border-emerald-500/20 cursor-pointer hover:bg-emerald-500/10 hover:border-emerald-500/50'
+                                  }`}
+                              >
+                                BATU 1
+                              </button>
+                            ) : (
+                              <button
+                                onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingBatu1(true); }}
+                                onMouseUp={() => setJoggingBatu1(false)}
+                                onMouseLeave={() => setJoggingBatu1(false)}
+                                onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingBatu1(true); }}
+                                onTouchEnd={() => setJoggingBatu1(false)}
+                                disabled={!isRunning || item.isComplete}
+                                className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
+                                  ${joggingBatu1
+                                    ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
+                                    : item.isComplete || !isRunning
+                                      ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
+                                      : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
+                                  }`}
+                              >
+                                {joggingBatu1 ? 'JOG 1' : 'BATU 1'}
+                              </button>
+                            )}
                             <span className={`w-2 h-2 rounded-full mt-1.5 transition-all duration-150 ${
                               gateBatu1SiloOpen
                                 ? 'bg-[#00ff9c] shadow-[0_0_6px_rgba(0,255,156,0.8)] animate-blink-fast'
@@ -10240,23 +11230,39 @@ export default function App() {
                             }`} />
                           </div>
                           <div className="flex flex-col items-center">
-                            <button
-                              onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingBatu2(true); }}
-                              onMouseUp={() => setJoggingBatu2(false)}
-                              onMouseLeave={() => setJoggingBatu2(false)}
-                              onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingBatu2(true); }}
-                              onTouchEnd={() => setJoggingBatu2(false)}
-                              disabled={!isRunning || item.isComplete}
-                              className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
-                                ${joggingBatu2
-                                  ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
-                                  : item.isComplete || !isRunning
-                                    ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
-                                    : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-amber-500/50'
-                                }`}
-                            >
-                              {joggingBatu2 ? 'JOG 2' : 'BATU 2'}
-                            </button>
+                            {batchingMode === 'SEMI_AUTO' ? (
+                              <button
+                                onClick={() => { if (isRunning && !item.isComplete) handleManualDeviceToggle('batu2'); }}
+                                disabled={!isRunning || item.isComplete}
+                                className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
+                                  ${semiAutoDosing.batu2
+                                    ? 'bg-emerald-500 text-slate-950 border-emerald-450 font-black animate-pulse'
+                                    : item.isComplete || !isRunning
+                                      ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
+                                      : 'bg-[#121c32] text-emerald-400 border-emerald-500/20 cursor-pointer hover:bg-emerald-500/10 hover:border-emerald-500/50'
+                                  }`}
+                              >
+                                BATU 2
+                              </button>
+                            ) : (
+                              <button
+                                onMouseDown={() => { if (isRunning && !item.isComplete) setJoggingBatu2(true); }}
+                                onMouseUp={() => setJoggingBatu2(false)}
+                                onMouseLeave={() => setJoggingBatu2(false)}
+                                onTouchStart={() => { if (isRunning && !item.isComplete) setJoggingBatu2(true); }}
+                                onTouchEnd={() => setJoggingBatu2(false)}
+                                disabled={!isRunning || item.isComplete}
+                                className={`py-1 px-2 flex items-center justify-center text-[8px] font-sans font-black tracking-wider rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer min-w-[50px] h-5
+                                  ${joggingBatu2
+                                    ? 'bg-amber-500 text-black border-amber-400 font-extrabold scale-95 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
+                                    : item.isComplete || !isRunning
+                                      ? 'bg-slate-900 border-slate-950 text-slate-650 cursor-not-allowed font-medium'
+                                      : 'bg-[#121c32] text-amber-500 border-amber-500/20 cursor-pointer hover:bg-amber-500/10 hover:border-emerald-500/50'
+                                  }`}
+                              >
+                                {joggingBatu2 ? 'JOG 2' : 'BATU 2'}
+                              </button>
+                            )}
                             <span className={`w-2 h-2 rounded-full mt-1.5 transition-all duration-150 ${
                               gateBatu2SiloOpen
                                 ? 'bg-[#00ff9c] shadow-[0_0_6px_rgba(0,255,156,0.8)] animate-blink-fast'
@@ -10265,45 +11271,95 @@ export default function App() {
                           </div>
                         </div>
                       ) : (
-                        <button
-                          onMouseDown={() => {
-                            if (isRunning && !item.isComplete) {
-                              if (key === 'semen') setJoggingSemen(true);
-                              if (key === 'air') setJoggingAir(true);
-                            }
-                          }}
-                          onMouseUp={() => {
-                            if (key === 'semen') setJoggingSemen(false);
-                            if (key === 'air') setJoggingAir(false);
-                          }}
-                          onMouseLeave={() => {
-                            if (key === 'semen') setJoggingSemen(false);
-                            if (key === 'air') setJoggingAir(false);
-                          }}
-                          onTouchStart={() => {
-                            if (isRunning && !item.isComplete) {
-                              if (key === 'semen') setJoggingSemen(true);
-                              if (key === 'air') setJoggingAir(true);
-                            }
-                          }}
-                          onTouchEnd={() => {
-                            if (key === 'semen') setJoggingSemen(false);
-                            if (key === 'air') setJoggingAir(false);
-                          }}
-                          disabled={!isRunning || item.isComplete}
-                          className={`py-1 px-2 text-[8px] font-sans font-black tracking-widest rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer h-5 min-w-[55px]
-                            ${(key === 'semen' ? joggingSemen : joggingAir)
-                              ? 'bg-amber-500 text-black border-[#fb923c] font-extrabold animate-pulse'
-                              : item.isComplete || !isRunning
-                                ? 'bg-slate-900 border-slate-950 text-slate-600 cursor-not-allowed font-medium'
-                                : 'bg-[#121c32] text-[#f59e0b] border-amber-550/25 cursor-pointer hover:bg-[#a87c16]/10 hover:border-amber-500/50'
-                            }`}
-                        >
-                          {(key === 'semen' ? joggingSemen : joggingAir) ? 'JOG' : 'JOG'}
-                        </button>
+                        batchingMode === 'SEMI_AUTO' ? (
+                          <button
+                            onClick={() => {
+                              if (isRunning && !item.isComplete) {
+                                if (key === 'semen') {
+                                  // Click semen semi-auto is toggled using handleManualDeviceToggle('siloX')
+                                  const activeSiloNumMatch = activeSiloSemen.match(/\d+/);
+                                  const activeSiloIdx = activeSiloNumMatch ? parseInt(activeSiloNumMatch[0], 10) : 1;
+                                  handleManualDeviceToggle('silo' + activeSiloIdx);
+                                }
+                                if (key === 'air') {
+                                  handleManualDeviceToggle('valveIsiAir');
+                                }
+                              }
+                            }}
+                            disabled={!isRunning || item.isComplete}
+                            className={`py-1 px-2 text-[8px] font-sans font-black tracking-widest rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer h-5 min-w-[55px]
+                              ${((key === 'semen' ? semiAutoDosing.semen : semiAutoDosing.air))
+                                ? 'bg-emerald-500 text-slate-950 border-emerald-450 font-black animate-pulse'
+                                : item.isComplete || !isRunning
+                                  ? 'bg-slate-900 border-slate-950 text-slate-600 cursor-not-allowed font-medium'
+                                  : 'bg-[#121c32] text-emerald-400 border-emerald-550/25 cursor-pointer hover:bg-emerald-500/10 hover:border-emerald-500/50'
+                              }`}
+                          >
+                            SEMI
+                          </button>
+                        ) : (
+                          <button
+                            onMouseDown={() => {
+                              if (isRunning && !item.isComplete) {
+                                if (key === 'semen') setJoggingSemen(true);
+                                if (key === 'air') setJoggingAir(true);
+                              }
+                            }}
+                            onMouseUp={() => {
+                              if (key === 'semen') setJoggingSemen(false);
+                              if (key === 'air') setJoggingAir(false);
+                            }}
+                            onMouseLeave={() => {
+                              if (key === 'semen') setJoggingSemen(false);
+                              if (key === 'air') setJoggingAir(false);
+                            }}
+                            onTouchStart={() => {
+                              if (isRunning && !item.isComplete) {
+                                if (key === 'semen') setJoggingSemen(true);
+                                if (key === 'air') setJoggingAir(true);
+                              }
+                            }}
+                            onTouchEnd={() => {
+                              if (key === 'semen') setJoggingSemen(false);
+                              if (key === 'air') setJoggingAir(false);
+                            }}
+                            disabled={!isRunning || item.isComplete}
+                            className={`py-1 px-2 text-[8px] font-sans font-black tracking-widest rounded transition-all duration-150 leading-none select-none uppercase shrink-0 border text-center cursor-pointer h-5 min-w-[55px]
+                              ${(key === 'semen' ? joggingSemen : joggingAir)
+                                ? 'bg-amber-500 text-black border-[#fb923c] font-extrabold animate-pulse'
+                                : item.isComplete || !isRunning
+                                  ? 'bg-slate-900 border-slate-950 text-slate-600 cursor-not-allowed font-medium'
+                                  : 'bg-[#121c32] text-[#f59e0b] border-amber-550/25 cursor-pointer hover:bg-[#a87c16]/10 hover:border-amber-500/50'
+                              }`}
+                          >
+                            {(key === 'semen' ? joggingSemen : joggingAir) ? 'JOG' : 'JOG'}
+                          </button>
+                        )
                       )}
                     </div>
                   </div>
+
+                  {/* Individual targets detail for System 2 Accumulative Scale */}
+                  {itemConf.isCombined && (
+                    <div className="mt-2 text-[10px] grid grid-cols-4 gap-1 select-none shrink-0">
+                      <div className="flex flex-col bg-[#0b1329]/40 border border-slate-800/80 p-1 rounded text-center">
+                        <span className="text-[7.2px] font-sans font-black text-[#00e5ff] uppercase leading-none mb-0.5">PS1 TGT</span>
+                        <span className="text-[10px] font-mono font-black text-amber-500 leading-none">{adjustedTargetPasir1} <span className="text-[6.5px] text-slate-500 font-bold">KG</span></span>
+                      </div>
+                      <div className="flex flex-col bg-[#0b1329]/40 border border-slate-800/80 p-1 rounded text-center">
+                        <span className="text-[7.2px] font-sans font-black text-[#00e5ff] uppercase leading-none mb-0.5">PS2 TGT</span>
+                        <span className="text-[10px] font-mono font-black text-amber-500 leading-none">{adjustedTargetPasir2} <span className="text-[6.5px] text-slate-500 font-bold">KG</span></span>
+                      </div>
+                      <div className="flex flex-col bg-[#0b1329]/40 border border-slate-800/80 p-1 rounded text-center">
+                        <span className="text-[7.2px] font-sans font-black text-[#00e5ff] uppercase leading-none mb-0.5">BT1 TGT</span>
+                        <span className="text-[10px] font-mono font-black text-amber-500 leading-none">{adjustedTargetBatu1} <span className="text-[6.5px] text-slate-500 font-bold">KG</span></span>
+                      </div>
+                      <div className="flex flex-col bg-[#0b1329]/40 border border-slate-800/80 p-1 rounded text-center">
+                        <span className="text-[7.2px] font-sans font-black text-[#00e5ff] uppercase leading-none mb-0.5">BT2 TGT</span>
+                        <span className="text-[10px] font-mono font-black text-amber-500 leading-none">{adjustedTargetBatu2} <span className="text-[6.5px] text-slate-500 font-bold">KG</span></span>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Bottom Micro progress indicator to fill taller card space */}
                   <div className="h-1.5 w-full bg-[#111827] mt-3 rounded-full overflow-hidden shrink-0 border border-slate-800/80">
@@ -10355,6 +11411,7 @@ export default function App() {
                 targetBatch={targetBatch}
                 activeVolume={activeVolume}
                 siloWeights={siloWeights}
+                jumlahSilo={jumlahSilo}
                 gatePasirSiloOpen={gatePasirSiloOpen}
                 gatePasir1SiloOpen={gatePasir1SiloOpen}
                 gatePasir2SiloOpen={gatePasir2SiloOpen}
@@ -10377,6 +11434,9 @@ export default function App() {
                 dischargeTimeSec={dischargeTimeSec}
                 activeMixingTime={activeMixingTime}
                 ampere={ampere}
+                airPressure={airPressure}
+                setAirPressure={setAirPressure}
+                slump={slump}
                 relayLogs={relayLogs}
                 isPaused={isPaused}
                 activeSiloSemen={activeSiloSemen}
@@ -10397,7 +11457,75 @@ export default function App() {
                 admixInActive={admixInActive}
                 admixOutActive={admixOutActive}
                 onManualDeviceToggle={handleManualDeviceToggle}
+                batchingMode={batchingMode}
               />
+
+              {/* LOG AKTIVITAS HMI (Moved to empty space on the right side of ScadaDiagram mimic) */}
+              <div className="absolute bottom-[95px] right-[20px] w-[480px] h-[255px] bg-[#070b13]/95 border border-slate-800 rounded-lg p-3 flex flex-col gap-2 shadow-2xl z-10 text-white select-none font-mono text-left">
+                {/* Header */}
+                <div className="flex items-center justify-between border-b border-slate-800 pb-1.5 shrink-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 inline-block shrink-0 animate-pulse" />
+                    <span className="text-[10px] font-black tracking-widest text-[#00ff9c] uppercase">
+                      LOG AKTIVITAS HMI
+                    </span>
+                  </div>
+                  <span className="text-[8px] font-mono font-bold text-slate-500 uppercase tracking-widest">REALTIME</span>
+                </div>
+
+                {/* Log Feed */}
+                <div className="flex-1 overflow-y-auto pr-0.5 space-y-1.5 scrollbar-thin text-[10.5px] uppercase">
+                  {relayLogs.length === 0 ? (
+                    <div className="text-slate-600 italic text-center pt-12 font-bold tracking-widest text-[9.5px]">HMI MONITOR STANDBY</div>
+                  ) : (
+                    <div className="flex flex-col gap-1">
+                      {[...relayLogs]
+                        .filter((log) => log && typeof log === 'object' && typeof log.message === 'string')
+                        .slice(0, 50)
+                        .map((log) => {
+                          const isOff = log.type === 'off' || log.message.endsWith('off') || log.message.toLowerCase().endsWith('off)');
+                          const isDone = log.type === 'done' || log.message === 'produksi selesai' || log.message.toLowerCase().includes('selesai');
+                          const isColors = !isOff && !isDone && (log.type === 'on' || log.message.endsWith('on') || log.message.toLowerCase().endsWith('on)') || log.message.startsWith('dump') || log.message.includes(' on') || log.message.toLowerCase().includes('on)'));
+                          
+                          let itemStyle = "border-b border-slate-900/40 pb-1 flex justify-between items-center px-1 hover:bg-slate-950/40 transition-colors gap-2";
+                          let textStyle = "text-slate-350 font-bold truncate max-w-[370px] text-[10.5px] leading-tight";
+                          
+                          if (isDone) {
+                            itemStyle = "border border-cyan-500/20 py-1 bg-cyan-950/20 my-0.5 font-sans flex flex-col items-center justify-center gap-0.5 shadow-[0_0_8px_rgba(6,182,212,0.1)] rounded";
+                            textStyle = "text-cyan-400 font-black text-[11px] tracking-wider uppercase leading-none";
+                          } else if (isColors) {
+                            textStyle = "text-emerald-400 font-bold tracking-tight text-[10.5px] leading-tight";
+                          } else if (isOff) {
+                            textStyle = "text-red-500 font-bold tracking-tight text-[10.5px] leading-tight";
+                          }
+                          
+                          const logTime = log.timestamp instanceof Date ? log.timestamp : new Date(log.timestamp);
+                          const timeString = logTime.toLocaleTimeString('id-ID', { hour12: false }).replace(/:/g, '.');
+
+                          if (isDone) {
+                            return (
+                              <div key={log.id} className={itemStyle}>
+                                <span className={textStyle}>{log.message}</span>
+                                <span className="text-[8.5px] text-cyan-500/60 font-black uppercase tracking-wider">
+                                  {timeString}
+                                </span>
+                              </div>
+                            );
+                          }
+                          
+                          return (
+                            <div key={log.id} className={itemStyle}>
+                              <span className={textStyle} title={log.message}>{log.message}</span>
+                              <span className="text-[8.5px] text-slate-500 font-bold shrink-0">
+                                {timeString}
+                              </span>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
 
@@ -10452,70 +11580,6 @@ export default function App() {
 
             {/* INDUSTRIAL PLC PANEL COHESIVE BUTTON GRID */}
             <div className="bg-[#0b1329] border border-slate-800 rounded-[5px] p-2.5 flex flex-col gap-2.5 shadow-xl flex-1 relative overflow-hidden min-h-[300px]">
-              {/* ACTIVITY LOGS (Moved to the right panel, placed above START and STOP buttons as requested) */}
-              <div className="h-[110px] shrink-0 flex flex-col bg-[#070b12]/95 border border-slate-850 rounded-[4px] p-2">
-                <div className="flex justify-between items-center border-b border-slate-900/60 pb-1 mb-1 shrink-0 select-none">
-                  <span className="text-[7.5px] font-sans font-black tracking-widest text-red-500 uppercase flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-red-500 inline-block shrink-0" />
-                    LOG AKTIVITAS HMI
-                  </span>
-                  <span className="text-[6.5px] font-mono font-bold text-slate-500 uppercase">REALTIME</span>
-                </div>
-                
-                {/* Scrollable list of logs in a single-column layout for narrower space */}
-                <div className="flex-1 overflow-y-auto pr-0.5 space-y-1 font-mono scrollbar-thin text-[8.5px] uppercase">
-                  {relayLogs.length === 0 ? (
-                    <div className="text-slate-600 italic text-center pt-4 font-bold tracking-widest text-[7.5px]">HMI MONITOR STANDBY</div>
-                  ) : (
-                    <div className="flex flex-col gap-0.5">
-                      {[...relayLogs]
-                        .filter((log) => log && typeof log === 'object' && typeof log.message === 'string')
-                        .slice(0, 30)
-                        .map((log) => {
-                          const isOff = log.type === 'off' || log.message.endsWith('off') || log.message.toLowerCase().endsWith('off)');
-                          const isDone = log.type === 'done' || log.message === 'produksi selesai';
-                          const isColors = !isOff && !isDone && (log.type === 'on' || log.message.endsWith('on') || log.message.toLowerCase().endsWith('on)') || log.message.startsWith('dump') || log.message.includes(' on') || log.message.toLowerCase().includes('on)'));
-                          
-                          let itemStyle = "border-b border-slate-900/40 pb-0.5 flex justify-between items-center px-1 hover:bg-slate-950/40 transition-colors gap-1";
-                        let textStyle = "text-slate-350 font-bold truncate max-w-[130px] leading-tight";
-                        
-                        if (isDone) {
-                          itemStyle = "border border-cyan-500/20 py-1 bg-cyan-950/20 my-0.5 font-sans flex flex-col items-center justify-center gap-0.5 shadow-[0_0_8px_rgba(6,182,212,0.1)] rounded";
-                          textStyle = "text-cyan-400 font-black text-[8.5px] tracking-wider uppercase leading-none";
-                        } else if (isColors) {
-                          textStyle = "text-emerald-400 font-bold tracking-tight leading-tight";
-                        } else if (isOff) {
-                          textStyle = "text-red-500 font-bold tracking-tight leading-tight";
-                        }
-                        
-                        const logTime = log.timestamp instanceof Date ? log.timestamp : new Date(log.timestamp);
-                        const timeString = logTime.toLocaleTimeString('id-ID', { hour12: false }).replace(/:/g, '.');
-
-                        if (isDone) {
-                          return (
-                            <div key={log.id} className={itemStyle}>
-                              <span className={textStyle}>{log.message}</span>
-                              <span className="text-[6.5px] text-cyan-500/60 font-black uppercase tracking-wider">
-                                {timeString}
-                              </span>
-                            </div>
-                          );
-                        }
-                        
-                        return (
-                          <div key={log.id} className={itemStyle}>
-                            <span className={textStyle} title={log.message}>{log.message}</span>
-                            <span className="text-[6.5px] text-slate-500 font-bold shrink-0">
-                              {timeString}
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </div>
-
               {/* Robust Industrial Alignment for Bottom Control Buttons */}
               <div className="flex flex-col gap-1 shrink-0 select-none">
                 
@@ -10585,34 +11649,34 @@ export default function App() {
 
                 {/* BATCHING PLANT MODE SELECTOR (MANUAL | SEMI AUTO | AUTO) */}
                 <div className="flex flex-col gap-1.5 shrink-0 w-full px-2">
-                  <span className="text-[7.5px] font-mono text-slate-500 font-bold uppercase tracking-wider text-center">MODE BATCHING</span>
-                  <div className="bg-[#0b101c] p-1 rounded-[6px] border border-slate-800 flex items-center justify-center gap-1 w-full max-w-[240px] mx-auto">
+                  <span className="text-[8px] font-mono text-slate-400 font-black uppercase tracking-wider text-center">MODE BATCHING CONTROL</span>
+                  <div className="bg-[#080d19] p-1.5 rounded-[8px] border-2 border-slate-800 flex items-center justify-center gap-2.5 w-full max-w-[360px] mx-auto shadow-2xl">
                     <button
                       onClick={() => setBatchingMode('MANUAL')}
-                      className={`flex-1 py-2.5 px-3 text-[10px] font-sans font-black uppercase transition-all rounded-[4px] cursor-pointer text-center ${
+                      className={`flex-1 py-5 px-3 text-[11px] font-sans font-black tracking-wider uppercase transition-all rounded-[6px] cursor-pointer text-center leading-none ${
                         batchingMode === 'MANUAL'
-                          ? "bg-slate-700 text-white shadow-inner font-black"
-                          : "text-slate-500 hover:text-slate-300"
+                          ? "bg-slate-700 text-white border-b-4 border-slate-900 shadow-inner font-black"
+                          : "bg-slate-950/40 text-slate-500 hover:text-slate-300 border border-transparent"
                       }`}
                     >
-                      MAN
+                      MANUAL
                     </button>
                     <button
                       onClick={() => setBatchingMode('SEMI_AUTO')}
-                      className={`flex-1 py-2.5 px-3 text-[10px] font-sans font-black uppercase transition-all rounded-[4px] cursor-pointer text-center ${
+                      className={`flex-1 py-5 px-3 text-[11px] font-sans font-black tracking-wider uppercase transition-all rounded-[6px] cursor-pointer text-center leading-none ${
                         batchingMode === 'SEMI_AUTO'
-                          ? "bg-amber-600 text-white shadow-inner font-black"
-                          : "text-slate-500 hover:text-slate-300"
+                          ? "bg-amber-600 text-white border-b-4 border-amber-805 shadow-inner font-black"
+                          : "bg-slate-950/40 text-slate-500 hover:text-slate-300 border border-transparent"
                       }`}
                     >
                       SEMI
                     </button>
                     <button
                       onClick={() => setBatchingMode('AUTO')}
-                      className={`flex-1 py-2.5 px-3 text-[10px] font-sans font-black uppercase transition-all rounded-[4px] cursor-pointer text-center ${
+                      className={`flex-1 py-5 px-3 text-[11px] font-sans font-black tracking-wider uppercase transition-all rounded-[6px] cursor-pointer text-center leading-none ${
                         batchingMode === 'AUTO'
-                          ? "bg-emerald-600 text-white shadow-inner font-black"
-                          : "text-slate-500 hover:text-slate-300"
+                          ? "bg-emerald-600 text-white border-b-4 border-emerald-805 shadow-inner font-black"
+                          : "bg-slate-950/40 text-slate-500 hover:text-slate-300 border border-transparent"
                       }`}
                     >
                       AUTO

@@ -12,6 +12,7 @@ interface BatchConfigModalProps {
   recipes: Recipe[];
   onClose: () => void;
   siloWeights?: number[];
+  jumlahSilo?: number;
   onConfirm: (config: {
     recipe: Recipe;
     volume: number;
@@ -30,6 +31,7 @@ export const BatchConfigModal: React.FC<BatchConfigModalProps> = ({
   recipes,
   onClose,
   siloWeights,
+  jumlahSilo = 6,
   onConfirm,
 }) => {
   // State variables for fields
@@ -45,7 +47,7 @@ export const BatchConfigModal: React.FC<BatchConfigModalProps> = ({
     const match = siloSemen.match(/Silo\s*(\d+)/i);
     if (match && siloWeights) {
       const idx = parseInt(match[1], 10) - 1;
-      if (idx >= 0 && idx < 6) {
+      if (idx >= 0 && idx < jumlahSilo) {
         const currentWeight = siloWeights[idx];
         setSiloSemen(`Silo ${idx + 1} - ${currentWeight.toLocaleString('id-ID')} kg`);
       }
@@ -244,8 +246,8 @@ export const BatchConfigModal: React.FC<BatchConfigModalProps> = ({
                 onChange={(e) => setSiloSemen(e.target.value)}
                 className="w-full h-[38px] bg-[#070b13] border border-slate-800 hover:border-slate-700 focus:border-cyan-400 focus:shadow-[0_0_8px_rgba(34,211,238,0.25)] text-white text-[12px] font-sans rounded-[4px] px-3.5 pr-10 outline-hidden appearance-none transition-all cursor-pointer"
               >
-                {[...Array(6)].map((_, idx) => {
-                  const weightVal = siloWeights ? siloWeights[idx] : [85000, 110000, 45000, 95000, 60000, 30000][idx];
+                {[...Array(jumlahSilo)].map((_, idx) => {
+                  const weightVal = siloWeights && siloWeights[idx] !== undefined ? siloWeights[idx] : [85000, 110000, 45000, 95000, 60000, 30000, 50000, 40000][idx];
                   const valStr = `Silo ${idx + 1} - ${weightVal.toLocaleString('id-ID')} kg`;
                   return (
                     <option key={idx} value={valStr} className="bg-[#0c111e]">

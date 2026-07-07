@@ -15,37 +15,65 @@ import {
   BellRing,
   Building,
   LogOut,
-  Tablet
+  Tablet,
+  Globe,
+  Truck,
+  Layers,
+  AlertOctagon,
+  UserX
 } from "lucide-react";
 
 interface SidebarProps {
   activeMenu: string;
   setActiveMenu: (menu: string) => void;
   onLogout: () => void;
+  userRole?: string;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
   activeMenu,
   setActiveMenu,
-  onLogout
+  onLogout,
+  userRole = "Operator"
 }) => {
-  const menuItems = [
-    { id: "Dashboard", label: "Dashboard", icon: LayoutDashboard },
-    { id: "Penamaan BP", label: "Penamaan BP", icon: FileText },
-    { id: "Job Mix Formula", label: "Job Mix Formula", icon: FlaskConical },
-    { id: "Urutan Mixing", label: "Urutan Mixing", icon: Sliders },
-    { id: "Pengaturan Relay & Pintu Mixer", label: "Pengaturan Relay & Pintu Mixer", icon: Cpu },
-    { id: "Setting Com dan Port", label: "Setting Com dan Port", icon: Cable },
-    { id: "Setting", label: "Setting", icon: Settings },
-    { id: "Manajemen User", label: "Manajemen User", icon: Users },
-    { id: "Joging Material", label: "Joging Material", icon: RefreshCw },
-    { id: "Database Produksi", label: "Database Produksi", icon: Database },
-    { id: "Print Tiket", label: "Print Tiket", icon: Printer },
-    { id: "Kalibrasi Slump", label: "Kalibrasi Slump", icon: Gauge },
-    { id: "Pengaturan Alert", label: "Pengaturan Alert", icon: BellRing },
-    { id: "Pengaturan Perusahaan", label: "Pengaturan Perusahaan", icon: Building },
-    { id: "Remote Tablet", label: "Remote Tablet", icon: Tablet }
-  ];
+  const currentRole = userRole.toUpperCase();
+
+  // If DIREKTUR, show only restricted reporting & monitoring tabs
+  const getMenuItems = () => {
+    if (currentRole === "DIREKTUR") {
+      return [
+        { id: "Dashboard Direktur", label: "Dashboard Direktur", icon: LayoutDashboard },
+        { id: "Monitoring Plant", label: "Monitoring Plant", icon: Globe },
+        { id: "Database Produksi", label: "Database Produksi (Produksi)", icon: Database },
+        { id: "Monitoring Stok", label: "Stok Material", icon: Layers },
+        { id: "Monitoring Armada", label: "Monitoring Armada", icon: Truck },
+        { id: "Alert Center", label: "Alert Center", icon: AlertOctagon }
+      ];
+    }
+
+    // Default admin sidebar items
+    return [
+      { id: "Dashboard", label: "Dashboard", icon: LayoutDashboard },
+      { id: "Penamaan BP", label: "Penamaan BP", icon: FileText },
+      { id: "Job Mix Formula", label: "Job Mix Formula", icon: FlaskConical },
+      { id: "Urutan Mixing", label: "Urutan Mixing", icon: Sliders },
+      { id: "Pengaturan Relay & Pintu Mixer", label: "Pengaturan Relay & Pintu Mixer", icon: Cpu },
+      { id: "Setting Com dan Port", label: "Setting Com dan Port", icon: Cable },
+      { id: "Setting", label: "Setting", icon: Settings },
+      { id: "Manajemen User", label: "Manajemen User", icon: Users },
+      { id: "Joging Material", label: "Joging Material", icon: RefreshCw },
+      { id: "Database Produksi", label: "Database Produksi", icon: Database },
+      { id: "Print Tiket", label: "Print Tiket", icon: Printer },
+      { id: "Kalibrasi Slump", label: "Kalibrasi Slump", icon: Gauge },
+      { id: "Pengaturan Alert", label: "Pengaturan Alert", icon: BellRing },
+      { id: "Pengaturan Perusahaan", label: "Pengaturan Perusahaan", icon: Building },
+      { id: "Pengaturan Plant", label: "Pengaturan Plant & Sync", icon: Globe },
+      { id: "Remote Tablet", label: "Remote Tablet", icon: Tablet },
+      { id: "Tanpa Operator", label: "Tanpa Operator", icon: UserX }
+    ];
+  };
+
+  const menuItems = getMenuItems();
 
   return (
     <div className="w-[280px] bg-[#0c1322] border-r border-[#1e293b]/70 flex flex-col justify-between h-full py-4 shrink-0 overflow-y-auto scrollbar-thin select-none">
@@ -54,7 +82,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div className="flex items-center gap-2 px-3 pb-3 mb-2 border-b border-slate-800/80">
           <div className="w-2.5 h-2.5 rounded-full bg-cyan-400 shadow-[0_0_8px_#22d3ee] animate-pulse shrink-0" />
           <span className="text-[12px] font-sans font-black tracking-widest text-slate-200 uppercase">
-            Menu Admin
+            {currentRole === "DIREKTUR" ? "Portal Komisaris" : "Menu Admin"}
           </span>
         </div>
 

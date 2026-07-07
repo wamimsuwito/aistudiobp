@@ -37,24 +37,102 @@ export interface CalibrationPoint {
   keterangan: string;
 }
 
+export interface JobMix {
+  id: string;
+  mutuBeton: string; // Mutu Beton (e.g., "K225", "K250", "K300")
+  pasir1: number;
+  pasir2: number;
+  batu1: number;
+  batu2: number;
+  semen: number;
+  air: number;
+  additive: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+const DEFAULT_JOB_MIX_LIST: JobMix[] = [
+  {
+    id: "jmf-1",
+    mutuBeton: "K225",
+    pasir1: 520,
+    pasir2: 150,
+    batu1: 650,
+    batu2: 330,
+    semen: 300,
+    air: 150,
+    additive: 1.5,
+    createdAt: "2026-05-26 12:00",
+    updatedAt: "2026-05-26 12:00"
+  },
+  {
+    id: "jmf-2",
+    mutuBeton: "K250",
+    pasir1: 550,
+    pasir2: 170,
+    batu1: 680,
+    batu2: 300,
+    semen: 350,
+    air: 160,
+    additive: 2.0,
+    createdAt: "2026-05-26 12:00",
+    updatedAt: "2026-05-26 12:00"
+  },
+  {
+    id: "jmf-3",
+    mutuBeton: "K300",
+    pasir1: 650,
+    pasir2: 120,
+    batu1: 780,
+    batu2: 350,
+    semen: 400,
+    air: 180,
+    additive: 2.5,
+    createdAt: "2026-05-26 12:00",
+    updatedAt: "2026-05-26 15:00"
+  }
+];
+
 const DEFAULT_POINTS: CalibrationPoint[] = [
   // K-300 default points
-  { id: "cal-1", timestamp: "2026-05-26 08:30", epoch: 1779784200000, operator: "admin", mixDesign: "K-300 FA", ampere: 98.2, slumpAktual: 13.5, estimatedSlump: 13.2, error: 0.3, ignored: false, keterangan: "Test Lapangan 1" },
-  { id: "cal-2", timestamp: "2026-05-26 09:15", epoch: 1779786900000, operator: "admin", mixDesign: "K-300 FA", ampere: 104.5, slumpAktual: 11.0, estimatedSlump: 11.1, error: -0.1, ignored: false, keterangan: "Semen agak kering" },
-  { id: "cal-3", timestamp: "2026-05-26 10:45", epoch: 1779792300000, operator: "admin", mixDesign: "K-300 FA", ampere: 110.1, slumpAktual: 9.0, estimatedSlump: 9.2, error: -0.2, ignored: false, keterangan: "Beton kental" },
+  { id: "cal-1", timestamp: "2026-05-26 08:30", epoch: 1779784200000, operator: "admin", mixDesign: "K300", ampere: 98.2, slumpAktual: 13.5, estimatedSlump: 13.2, error: 0.3, ignored: false, keterangan: "Test Lapangan 1" },
+  { id: "cal-2", timestamp: "2026-05-26 09:15", epoch: 1779786900000, operator: "admin", mixDesign: "K300", ampere: 104.5, slumpAktual: 11.0, estimatedSlump: 11.1, error: -0.1, ignored: false, keterangan: "Semen agak kering" },
+  { id: "cal-3", timestamp: "2026-05-26 10:45", epoch: 1779792300000, operator: "admin", mixDesign: "K300", ampere: 110.1, slumpAktual: 9.0, estimatedSlump: 9.2, error: -0.2, ignored: false, keterangan: "Beton kental" },
   
   // K-250 default points
-  { id: "cal-4", timestamp: "2026-05-26 09:00", epoch: 1779786000000, operator: "admin", mixDesign: "K-250 NFA", ampere: 92.4, slumpAktual: 14.0, estimatedSlump: 13.8, error: 0.2, ignored: false, keterangan: "Normal test" },
-  { id: "cal-5", timestamp: "2026-05-26 11:20", epoch: 1779794400000, operator: "admin", mixDesign: "K-250 NFA", ampere: 102.0, slumpAktual: 10.5, estimatedSlump: 10.8, error: -0.3, ignored: false, keterangan: "Aduk lama" }
+  { id: "cal-4", timestamp: "2026-05-26 09:00", epoch: 1779786000000, operator: "admin", mixDesign: "K250", ampere: 92.4, slumpAktual: 14.0, estimatedSlump: 13.8, error: 0.2, ignored: false, keterangan: "Normal test" },
+  { id: "cal-5", timestamp: "2026-05-26 11:20", epoch: 1779794400000, operator: "admin", mixDesign: "K250", ampere: 102.0, slumpAktual: 10.5, estimatedSlump: 10.8, error: -0.3, ignored: false, keterangan: "Aduk lama" }
 ];
 
 export const SlumpCalibration: React.FC = () => {
+  // Load JMF dynamically from localStorage or defaults
+  const [jmfList, setJmfList] = useState<JobMix[]>(() => {
+    const saved = localStorage.getItem("batching_plant_jmf_list");
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch (err) {}
+    }
+    return DEFAULT_JOB_MIX_LIST;
+  });
+
   // Database State
   const [points, setPoints] = useState<CalibrationPoint[]>(() => {
     const saved = localStorage.getItem("batching_plant_slump_calibration_data");
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          // Normalize older/hardcoded names so they match JMF mutuBeton keys (e.g. K300 instead of K-300 FA)
+          return parsed.map((p: any) => {
+            let mix = p.mixDesign || "";
+            if (mix === "K-300 FA") mix = "K300";
+            if (mix === "K-250 NFA") mix = "K250";
+            if (mix === "K-350 FA") mix = "K350";
+            return { ...p, mixDesign: mix };
+          });
+        }
       } catch (e) {
         return DEFAULT_POINTS;
       }
@@ -79,7 +157,16 @@ export const SlumpCalibration: React.FC = () => {
   };
 
   // Form input states
-  const [formMixDesign, setFormMixDesign] = useState("K-300 FA");
+  const [formMixDesign, setFormMixDesign] = useState<string>(() => {
+    const saved = localStorage.getItem("batching_plant_jmf_list");
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed[0].mutuBeton;
+      } catch (err) {}
+    }
+    return "K300";
+  });
   const [formAmpere, setFormAmpere] = useState("");
   const [formSlump, setFormSlump] = useState("");
   const [formKeterangan, setFormKeterangan] = useState("");
@@ -88,7 +175,16 @@ export const SlumpCalibration: React.FC = () => {
   });
 
   // Selected mix design for chart filtering
-  const [selectedMixForChart, setSelectedMixForChart] = useState("K-300 FA");
+  const [selectedMixForChart, setSelectedMixForChart] = useState<string>(() => {
+    const saved = localStorage.getItem("batching_plant_jmf_list");
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed[0].mutuBeton;
+      } catch (err) {}
+    }
+    return "K300";
+  });
 
   // Real-time Ampere and Telemetry States
   const [liveAmpere, setLiveAmpere] = useState<number>(95.0);
@@ -107,8 +203,33 @@ export const SlumpCalibration: React.FC = () => {
     localStorage.setItem("slump_auto_learning", String(autoLearningActive));
   }, [autoLearningActive]);
 
-  // Connect WebSerial telemetry
+  // Connect WebSerial telemetry and listen for JMF database updates
   useEffect(() => {
+    const handleJmfUpdate = () => {
+      const saved = localStorage.getItem("batching_plant_jmf_list");
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setJmfList(parsed);
+            
+            // Validate and adjust selected mix designs if they no longer exist
+            const activeMutuList = parsed.map(jmf => jmf.mutuBeton);
+            setFormMixDesign(current => {
+              if (activeMutuList.includes(current)) return current;
+              return parsed[0].mutuBeton;
+            });
+            setSelectedMixForChart(current => {
+              if (activeMutuList.includes(current)) return current;
+              return parsed[0].mutuBeton;
+            });
+          }
+        } catch (err) {}
+      }
+    };
+
+    window.addEventListener("jmf_database_updated", handleJmfUpdate);
+
     // Read initials
     setSerialState(webSerialService.getStatus());
 
@@ -119,8 +240,11 @@ export const SlumpCalibration: React.FC = () => {
 
     // Register active telemetry
     const onTelemetry = (data: any) => {
-      if (data && typeof data.mixerAmp === "number") {
-        setLiveAmpere(parseFloat(data.mixerAmp.toFixed(1)));
+      if (data) {
+        const ampVal = typeof data.mixerAmp === "number" ? data.mixerAmp : (typeof data.ampere === "number" ? data.ampere : null);
+        if (ampVal !== null) {
+          setLiveAmpere(parseFloat(ampVal.toFixed(1)));
+        }
       }
     };
 
@@ -128,6 +252,7 @@ export const SlumpCalibration: React.FC = () => {
     webSerialService.registerTelemetryCallback(onTelemetry);
 
     return () => {
+      window.removeEventListener("jmf_database_updated", handleJmfUpdate);
       webSerialService.unregisterStatusCallback(onStatus);
       webSerialService.unregisterTelemetryCallback(onTelemetry);
     };
@@ -155,7 +280,7 @@ export const SlumpCalibration: React.FC = () => {
   // SYSTEM ESTIMATOR LOGIC
   // Calculate Regression Formula coefficients f(Ampere) for each Mix Design
   const activeFormulas = useMemo(() => {
-    const designs = ["K-300 FA", "K-250 NFA", "K-350 FA"];
+    const designs = jmfList.map(jmf => jmf.mutuBeton);
     const formulas: Record<string, { slope: number; intercept: number; isDefault: boolean; count: number }> = {};
 
     designs.forEach(mix => {
@@ -191,23 +316,26 @@ export const SlumpCalibration: React.FC = () => {
         // Formula K300 default: Slump = -0.18A + 30 (e.g., 100A -> 12cm, 110A -> 10.2cm)
         let slope = -0.18;
         let intercept = 30;
-        if (mix === "K-250 NFA") {
+        if (mix === "K250") {
           slope = -0.16;
           intercept = 28.5; // K250 lighter loads
-        } else if (mix === "K-350 FA") {
+        } else if (mix === "K350") {
           slope = -0.20;
           intercept = 32.2; // K350 heavier motor loads
+        } else if (mix === "K225") {
+          slope = -0.15;
+          intercept = 27.0; // K225 lighter loads
         }
         formulas[mix] = { slope, intercept, isDefault: true, count: validPoints.length };
       }
     });
 
     return formulas;
-  }, [points]);
+  }, [points, jmfList]);
 
   // Live slump estimation function
   const estimateSlumpVal = (amp: number, mix: string): { val: number; confidence: "LOW CONFIDENCE" | "MEDIUM" | "HIGH CONFIDENCE"; formulaText: string } => {
-    const formula = activeFormulas[mix] || activeFormulas["K-300 FA"];
+    const formula = activeFormulas[mix] || Object.values(activeFormulas)[0] || { slope: -0.18, intercept: 30, count: 0 };
     const est = (formula.slope * amp) + formula.intercept;
     const boundedEst = Math.max(3, Math.min(24, est)); // Bound physical values 3cm to 24cm slump
     
@@ -408,7 +536,7 @@ export const SlumpCalibration: React.FC = () => {
                 {activeEstimatesForDashboard.confidence}
               </span>
               <span className="text-[8px] font-mono text-slate-400 uppercase">
-                Mix design: <span className="text-[#00ffd0] font-bold">{formMixDesign}</span>
+                Job Mix Formula: <span className="text-[#00ffd0] font-bold">{formMixDesign}</span>
               </span>
             </div>
           </div>
@@ -465,15 +593,17 @@ export const SlumpCalibration: React.FC = () => {
                 
                 {/* Selector Formula */}
                 <div className="flex flex-col gap-1.5">
-                  <span className="text-[9px] font-sans font-black text-slate-400 uppercase tracking-wider">Mix Design Beton</span>
+                  <span className="text-[9px] font-sans font-black text-slate-400 uppercase tracking-wider">Job Mix Formula</span>
                   <select
                     value={formMixDesign}
                     onChange={(e) => setFormMixDesign(e.target.value)}
-                    className="bg-[#020617] border border-slate-800 text-slate-200 p-2.5 rounded-[4px] text-xs font-mono font-bold uppercase focus:border-cyan-400 outline-none"
+                    className="bg-[#020617] border border-slate-800 text-slate-200 p-2.5 rounded-[4px] text-xs font-mono font-bold uppercase focus:border-cyan-400 outline-none cursor-pointer"
                   >
-                    <option value="K-300 FA">MUTU K300 FLY ASH</option>
-                    <option value="K-250 NFA">MUTU K250 NORMAL</option>
-                    <option value="K-350 FA">MUTU K350 FLY ASH</option>
+                    {jmfList.map((jmf) => (
+                      <option key={jmf.id} value={jmf.mutuBeton}>
+                        MUTU {jmf.mutuBeton.toUpperCase()}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
@@ -576,7 +706,7 @@ export const SlumpCalibration: React.FC = () => {
                       <tr className="border-b border-slate-800 text-slate-500 uppercase text-[9px] font-black">
                         <th className="py-2.5 px-2">Tanggal / Jam</th>
                         <th className="py-2.5">Operator</th>
-                        <th className="py-2.5 text-center">Mix Design</th>
+                        <th className="py-2.5 text-center">Job Mix Formula</th>
                         <th className="py-2.5 text-center">Ampere Motor</th>
                         <th className="py-2.5 text-center">Slump cone</th>
                         <th className="py-2.5 text-center">Estimasi sitem</th>
@@ -676,11 +806,13 @@ export const SlumpCalibration: React.FC = () => {
                   <select
                     value={selectedMixForChart}
                     onChange={(e) => setSelectedMixForChart(e.target.value)}
-                    className="bg-[#020617] border border-slate-800 text-cyan-400 px-2 py-1 rounded text-[10px] font-mono uppercase font-black focus:border-[#00ffd0] outline-none"
+                    className="bg-[#020617] border border-slate-800 text-cyan-400 px-2 py-1 rounded text-[10px] font-mono uppercase font-black focus:border-[#00ffd0] outline-none cursor-pointer"
                   >
-                    <option value="K-300 FA">K-300 FLY ASH</option>
-                    <option value="K-250 NFA">K-250 NFA NORMAL</option>
-                    <option value="K-350 FA">K-350 FLY ASH</option>
+                    {jmfList.map((jmf) => (
+                      <option key={jmf.id} value={jmf.mutuBeton}>
+                        MUTU {jmf.mutuBeton.toUpperCase()}
+                      </option>
+                    ))}
                   </select>
                 </div>
                 

@@ -23,7 +23,7 @@ import {
 export interface UserData {
   nama: string;
   nik: string;
-  jabatan: "Operator" | "Admin";
+  jabatan: "ADMIN" | "DIREKTUR" | "SUPERVISOR" | "LOGISTIK" | "OPERATOR" | "Admin" | "Operator";
   password: string;
   createdAt?: string;
   updatedAt?: string;
@@ -34,26 +34,42 @@ const DEFAULT_USER_LIST: UserData[] = [
   {
     nama: "Administrator Utama",
     nik: "12001",
-    jabatan: "Admin",
+    jabatan: "ADMIN",
     password: "admin",
     createdAt: "2026-05-26 12:00",
     updatedAt: "2026-05-26 12:00"
   },
   {
-    nama: "Budi",
+    nama: "Andi Saputra",
     nik: "12002",
-    jabatan: "Operator",
+    jabatan: "OPERATOR",
     password: "1234",
     createdAt: "2026-05-26 12:00",
     updatedAt: "2026-05-26 12:00"
   },
   {
-    nama: "Rian Operator",
-    nik: "12003",
-    jabatan: "Operator",
-    password: "5678",
-    createdAt: "2026-05-26 14:00",
-    updatedAt: "2026-05-26 14:00"
+    nama: "Direktur Farika",
+    nik: "12004",
+    jabatan: "DIREKTUR",
+    password: "dir",
+    createdAt: "2026-06-05 08:00",
+    updatedAt: "2026-06-05 08:00"
+  },
+  {
+    nama: "Logistik Farika",
+    nik: "12005",
+    jabatan: "LOGISTIK",
+    password: "log",
+    createdAt: "2026-06-05 08:00",
+    updatedAt: "2026-06-05 08:00"
+  },
+  {
+    nama: "Supervisor Farika",
+    nik: "12006",
+    jabatan: "SUPERVISOR",
+    password: "spv",
+    createdAt: "2026-06-05 08:00",
+    updatedAt: "2026-06-05 08:00"
   }
 ];
 
@@ -80,7 +96,7 @@ export const UserManagement: React.FC = () => {
   // Form states
   const [nama, setNama] = useState("");
   const [nik, setNik] = useState("");
-  const [jabatan, setJabatan] = useState<"Operator" | "Admin">("Operator");
+  const [jabatan, setJabatan] = useState<UserData["jabatan"]>("OPERATOR");
   const [password, setPassword] = useState("");
 
   // Editing state - tracks index or NIK as key
@@ -114,7 +130,7 @@ export const UserManagement: React.FC = () => {
   const handleReset = () => {
     setNama("");
     setNik("");
-    setJabatan("Operator");
+    setJabatan("OPERATOR");
     setPassword("");
     setEditNikKey(null);
   };
@@ -224,8 +240,9 @@ export const UserManagement: React.FC = () => {
   const handleDeleteTrigger = (nikVal: string) => {
     // Basic fail-safe to prevent user deleting the very last Admin user in system
     const targetUser = users.find(u => u.nik === nikVal);
-    if (targetUser?.jabatan === "Admin") {
-      const adminsCount = users.filter(u => u.jabatan === "Admin").length;
+    const isTargetAdmin = targetUser?.jabatan === "Admin" || targetUser?.jabatan === "ADMIN";
+    if (isTargetAdmin) {
+      const adminsCount = users.filter(u => u.jabatan === "Admin" || u.jabatan === "ADMIN").length;
       if (adminsCount <= 1) {
         setErrorMsg("Sistem menolak: Minimal harus ada satu akun Administrator aktif.");
         return;
@@ -370,7 +387,7 @@ export const UserManagement: React.FC = () => {
               </div>
             </div>
 
-            {/* Field: Jabatan (Dropdown Operator / Admin) */}
+            {/* Field: Jabatan (Dropdown Otoritas) */}
             <div className="flex flex-col gap-1.5">
               <span className="text-[9.5px] font-sans font-black text-slate-400 uppercase tracking-wider">
                 Jabatan / Hak Otoritas <span className="text-rose-500">*</span>
@@ -378,15 +395,26 @@ export const UserManagement: React.FC = () => {
               <div className="relative">
                 <select
                   value={jabatan}
-                  onChange={(e) => setJabatan(e.target.value as "Operator" | "Admin")}
+                  onChange={(e) => setJabatan(e.target.value as any)}
                   className="bg-[#020617] border border-slate-800 text-cyan-400 px-3.5 py-2 rounded-[4px] text-xs font-mono font-black uppercase focus:border-cyan-400 outline-none w-full appearance-none cursor-pointer"
                 >
-                  <option value="Operator" className="bg-[#020617] text-slate-200">
-                    OPERATOR [ HANYA BATCHING ]
+                  <option value="ADMIN" className="bg-[#020617] text-[#00ffd0]">
+                    ADMIN [ AKSES PENUH ]
                   </option>
-                  <option value="Admin" className="bg-[#020617] text-[#00ffd0]">
-                    ADMIN [ SEMUA AKSES ]
+                  <option value="DIREKTUR" className="bg-[#020617] text-teal-400">
+                    DIREKTUR [ MONITORING & DASHBOARD ]
                   </option>
+                  <option value="SUPERVISOR" className="bg-[#020617] text-blue-400">
+                    SUPERVISOR [ MONITORING PLANT ]
+                  </option>
+                  <option value="LOGISTIK" className="bg-[#020617] text-amber-550">
+                    LOGISTIK [ STOK & MATERIAL ]
+                  </option>
+                  <option value="OPERATOR" className="bg-[#020617] text-slate-300">
+                    OPERATOR [ PRODUKSI UTAMA ]
+                  </option>
+                  <option value="Admin" className="hidden">Admin</option>
+                  <option value="Operator" className="hidden">Operator</option>
                 </select>
                 <div className="absolute right-3.5 top-[13px] pointer-events-none w-2 h-2 border-r-2 border-b-2 border-cyan-400 rotate-45" />
               </div>
@@ -510,7 +538,7 @@ export const UserManagement: React.FC = () => {
                         {/* Nama */}
                         <td className="py-3 px-2 text-white font-bold flex items-center gap-2">
                           <div className={`w-2 h-2 rounded-full ${
-                            item.jabatan === "Admin" ? "bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.7)]" : "bg-slate-550"
+                            (item.jabatan === "Admin" || item.jabatan === "ADMIN") ? "bg-[#00ffd0] shadow-[0_0_6px_rgba(34,211,238,0.7)]" : "bg-slate-500"
                           }`} />
                           <span className="uppercase">{item.nama}</span>
                         </td>
@@ -521,8 +549,14 @@ export const UserManagement: React.FC = () => {
                         {/* Jabatan with Badge */}
                         <td className="py-3">
                           <span className={`inline-block text-[8px] font-sans font-black px-2 py-0.5 rounded tracking-widest uppercase ${
-                            item.jabatan === "Admin" 
+                            (item.jabatan === "Admin" || item.jabatan === "ADMIN") 
                               ? "bg-cyan-950/80 text-cyan-400 border border-cyan-800/60 shadow-[0_0_4px_rgba(6,182,212,0.15)]" 
+                              : item.jabatan === "DIREKTUR"
+                              ? "bg-teal-950/80 text-teal-400 border border-teal-800"
+                              : item.jabatan === "SUPERVISOR"
+                              ? "bg-blue-950/80 text-blue-400 border border-blue-800"
+                              : item.jabatan === "LOGISTIK"
+                              ? "bg-amber-950/80 text-amber-500 border border-amber-800"
                               : "bg-slate-900 text-slate-400 border border-slate-800"
                           }`}>
                             {item.jabatan}
