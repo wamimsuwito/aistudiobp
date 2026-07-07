@@ -11463,7 +11463,7 @@ export default function App() {
               </div>
 
               {/* LOG AKTIVITAS HMI (Statically placed side-by-side with no overlap) */}
-              <div className="w-full lg:w-[480px] h-[255px] lg:h-auto bg-[#070b13]/95 border border-slate-800 rounded-lg p-3 flex flex-col gap-2 shadow-2xl text-white select-none font-mono text-left shrink-0">
+              <div className="w-full lg:w-[360px] h-[255px] lg:h-auto lg:mb-16 bg-[#070b13]/95 border border-slate-800 rounded-lg p-3 flex flex-col gap-2 shadow-2xl text-white select-none font-mono text-left shrink-0">
                 {/* Header */}
                 <div className="flex items-center justify-between border-b border-slate-800 pb-1.5 shrink-0">
                   <div className="flex items-center gap-1.5">
@@ -11490,15 +11490,15 @@ export default function App() {
                           const isColors = !isOff && !isDone && (log.type === 'on' || log.message.endsWith('on') || log.message.toLowerCase().endsWith('on)') || log.message.startsWith('dump') || log.message.includes(' on') || log.message.toLowerCase().includes('on)'));
                           
                           let itemStyle = "border-b border-slate-900/40 pb-1 flex justify-between items-center px-1 hover:bg-slate-950/40 transition-colors gap-2";
-                          let textStyle = "text-slate-350 font-bold truncate max-w-[370px] text-[10.5px] leading-tight";
+                          let textStyle = "text-slate-350 font-bold truncate flex-1 text-[10.5px] leading-tight";
                           
                           if (isDone) {
                             itemStyle = "border border-cyan-500/20 py-1 bg-cyan-950/20 my-0.5 font-sans flex flex-col items-center justify-center gap-0.5 shadow-[0_0_8px_rgba(6,182,212,0.1)] rounded";
                             textStyle = "text-cyan-400 font-black text-[11px] tracking-wider uppercase leading-none";
                           } else if (isColors) {
-                            textStyle = "text-emerald-400 font-bold tracking-tight text-[10.5px] leading-tight";
+                            textStyle = "text-emerald-400 font-bold tracking-tight flex-1 truncate text-[10.5px] leading-tight";
                           } else if (isOff) {
-                            textStyle = "text-red-500 font-bold tracking-tight text-[10.5px] leading-tight";
+                            textStyle = "text-red-500 font-bold tracking-tight flex-1 truncate text-[10.5px] leading-tight";
                           }
                           
                           const logTime = log.timestamp instanceof Date ? log.timestamp : new Date(log.timestamp);
