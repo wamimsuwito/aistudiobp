@@ -1080,7 +1080,7 @@ const ScadaDiagram = ({
   }, [isRunning, conveyorBottomActive, conveyorUpperActive, gatePasirHopperOpen, gateBatuHopperOpen, waitingHopperEnabled, waitingHopperGateOpen, waitingHopperState, mixerShaftActive, isPaused, mixerState, isAuto, gatePasir1SiloOpen, gatePasir2SiloOpen, gateBatu1SiloOpen, gateBatu2SiloOpen]);
 
   return (
-    <div className="w-full h-full flex items-center justify-center bg-[#05080c] overflow-hidden rounded-[4px] relative">
+    <div className="w-full h-full flex items-center justify-center bg-[#05080c] overflow-hidden lg:overflow-visible rounded-[4px] relative">
       <svg 
         viewBox="45 -30 1085 640" 
         className="w-full h-full max-h-full" 
@@ -3170,7 +3170,7 @@ const ScadaDiagram = ({
       )}
 
       {/* Print toggle and Help buttons aligned to the right side of the SCADA panel */}
-      <div className="absolute bottom-3.5 right-3.5 flex items-center gap-4 z-10 select-none">
+      <div className="absolute bottom-3.5 right-3.5 lg:right-[-230px] flex items-center gap-4 z-10 select-none">
         {/* Pressure Gauge Widget */}
         <div className="h-[46px] px-[17px] bg-[#0c111e]/95 border border-slate-800 rounded-[12px] flex items-center gap-3 shadow-md">
           {/* Round Analog Gauge SVG */}
