@@ -11379,89 +11379,91 @@ export default function App() {
           {/* CENTER PANEL: MECHANICAL DIAGRAM */}
           <div className="flex-1 flex flex-col gap-3 min-h-0">
             {/* MECHANICAL SCADA CANVAS AREA (Elegant representation) */}
-            <div className="flex-1 bg-[#05080c] border border-slate-800 rounded-[5px] relative overflow-hidden flex items-center justify-center p-1.5 shadow-inner">
-              <ScadaDiagram 
-                isRunning={isRunning} 
-                currentStep={currentStep} 
-                isDone={isDone} 
-                truckImage={truckImage}
-                onTruckClick={() => fileInputRef.current?.click()}
-                scales={scales}
-                startBatch={() => setIsBatchConfigOpen(true)}
-                stopBatch={stopBatch}
-                isAuto={isAuto}
-                setIsAuto={setIsAuto}
-                moistureControl={moistureControl}
-                setMoistureControl={setMoistureControl}
-                onMoistureClick={() => setIsMoistureOpen(true)}
-                quarryAggregate={quarryAggregate}
-                setQuarryAggregate={setQuarryAggregate}
-                onQuarryClick={() => setIsQuarryOpen(true)}
-                quarryPasir1={quarryPasir1}
-                quarryPasir2={quarryPasir2}
-                quarryBatu1={quarryBatu1}
-                quarryBatu2={quarryBatu2}
-                isPrint={isPrint}
-                setIsPrint={setIsPrint}
-                onHelpClick={() => setIsHelpOpen(true)}
-                productionState={productionState}
-                currentCycle={currentCycle}
-                totalCycles={totalCycles}
-                currentBatch={currentBatch}
-                targetBatch={targetBatch}
-                activeVolume={activeVolume}
-                siloWeights={siloWeights}
-                jumlahSilo={jumlahSilo}
-                gatePasirSiloOpen={gatePasirSiloOpen}
-                gatePasir1SiloOpen={gatePasir1SiloOpen}
-                gatePasir2SiloOpen={gatePasir2SiloOpen}
-                gateBatuSiloOpen={gateBatuSiloOpen}
-                gateBatu1SiloOpen={gateBatu1SiloOpen}
-                gateBatu2SiloOpen={gateBatu2SiloOpen}
-                screwSemenActive={screwSemenActive}
-                valveWaterActive={valveWaterActive}
-                gatePasirHopperOpen={gatePasirHopperOpen}
-                gateBatuHopperOpen={gateBatuHopperOpen}
-                gateSemenHopperOpen={gateSemenHopperOpen}
-                gateWaterHopperOpen={gateWaterHopperOpen}
-                conveyorBottomActive={conveyorBottomActive}
-                conveyorUpperActive={conveyorUpperActive}
-                mixerShaftActive={mixerShaftActive}
-                mixerDoorPercent={mixerDoorPercent}
-                mixerDoorStateText={mixerDoorStateText}
-                concreteDischargeActive={concreteDischargeActive}
-                mixingCountdown={mixingCountdown}
-                dischargeTimeSec={dischargeTimeSec}
-                activeMixingTime={activeMixingTime}
-                ampere={ampere}
-                airPressure={airPressure}
-                setAirPressure={setAirPressure}
-                slump={slump}
-                relayLogs={relayLogs}
-                isPaused={isPaused}
-                activeSiloSemen={activeSiloSemen}
-                activePins={activePins}
-                batchingPlantMode={batchingPlantMode}
-                waitingHopperEnabled={waitingHopperEnabled}
-                waitingHopperState={waitingHopperState}
-                waitingHopperGateOpen={waitingHopperGateOpen}
-                waitingHopperWeight={waitingHopperWeight}
-                selectedRecipe={selectedRecipe}
-                volumePerBatch={volumePerBatch}
-                scaleCapacities={scaleCapacities}
-                mixerState={mixerState}
-                aggregateInMixer={aggregateInMixerRef.current}
-                compressorActive={compressorActive}
-                vibratorActive={vibratorActive}
-                klaksonActive={klaksonActive}
-                admixInActive={admixInActive}
-                admixOutActive={admixOutActive}
-                onManualDeviceToggle={handleManualDeviceToggle}
-                batchingMode={batchingMode}
-              />
+            <div className="flex-1 bg-[#05080c] border border-slate-800 rounded-[5px] relative overflow-hidden flex flex-col lg:flex-row items-stretch p-2 gap-3 shadow-inner">
+              <div className="flex-1 min-w-0 h-full relative flex items-center justify-center">
+                <ScadaDiagram 
+                  isRunning={isRunning} 
+                  currentStep={currentStep} 
+                  isDone={isDone} 
+                  truckImage={truckImage}
+                  onTruckClick={() => fileInputRef.current?.click()}
+                  scales={scales}
+                  startBatch={() => setIsBatchConfigOpen(true)}
+                  stopBatch={stopBatch}
+                  isAuto={isAuto}
+                  setIsAuto={setIsAuto}
+                  moistureControl={moistureControl}
+                  setMoistureControl={setMoistureControl}
+                  onMoistureClick={() => setIsMoistureOpen(true)}
+                  quarryAggregate={quarryAggregate}
+                  setQuarryAggregate={setQuarryAggregate}
+                  onQuarryClick={() => setIsQuarryOpen(true)}
+                  quarryPasir1={quarryPasir1}
+                  quarryPasir2={quarryPasir2}
+                  quarryBatu1={quarryBatu1}
+                  quarryBatu2={quarryBatu2}
+                  isPrint={isPrint}
+                  setIsPrint={setIsPrint}
+                  onHelpClick={() => setIsHelpOpen(true)}
+                  productionState={productionState}
+                  currentCycle={currentCycle}
+                  totalCycles={totalCycles}
+                  currentBatch={currentBatch}
+                  targetBatch={targetBatch}
+                  activeVolume={activeVolume}
+                  siloWeights={siloWeights}
+                  jumlahSilo={jumlahSilo}
+                  gatePasirSiloOpen={gatePasirSiloOpen}
+                  gatePasir1SiloOpen={gatePasir1SiloOpen}
+                  gatePasir2SiloOpen={gatePasir2SiloOpen}
+                  gateBatuSiloOpen={gateBatuSiloOpen}
+                  gateBatu1SiloOpen={gateBatu1SiloOpen}
+                  gateBatu2SiloOpen={gateBatu2SiloOpen}
+                  screwSemenActive={screwSemenActive}
+                  valveWaterActive={valveWaterActive}
+                  gatePasirHopperOpen={gatePasirHopperOpen}
+                  gateBatuHopperOpen={gateBatuHopperOpen}
+                  gateSemenHopperOpen={gateSemenHopperOpen}
+                  gateWaterHopperOpen={gateWaterHopperOpen}
+                  conveyorBottomActive={conveyorBottomActive}
+                  conveyorUpperActive={conveyorUpperActive}
+                  mixerShaftActive={mixerShaftActive}
+                  mixerDoorPercent={mixerDoorPercent}
+                  mixerDoorStateText={mixerDoorStateText}
+                  concreteDischargeActive={concreteDischargeActive}
+                  mixingCountdown={mixingCountdown}
+                  dischargeTimeSec={dischargeTimeSec}
+                  activeMixingTime={activeMixingTime}
+                  ampere={ampere}
+                  airPressure={airPressure}
+                  setAirPressure={setAirPressure}
+                  slump={slump}
+                  relayLogs={relayLogs}
+                  isPaused={isPaused}
+                  activeSiloSemen={activeSiloSemen}
+                  activePins={activePins}
+                  batchingPlantMode={batchingPlantMode}
+                  waitingHopperEnabled={waitingHopperEnabled}
+                  waitingHopperState={waitingHopperState}
+                  waitingHopperGateOpen={waitingHopperGateOpen}
+                  waitingHopperWeight={waitingHopperWeight}
+                  selectedRecipe={selectedRecipe}
+                  volumePerBatch={volumePerBatch}
+                  scaleCapacities={scaleCapacities}
+                  mixerState={mixerState}
+                  aggregateInMixer={aggregateInMixerRef.current}
+                  compressorActive={compressorActive}
+                  vibratorActive={vibratorActive}
+                  klaksonActive={klaksonActive}
+                  admixInActive={admixInActive}
+                  admixOutActive={admixOutActive}
+                  onManualDeviceToggle={handleManualDeviceToggle}
+                  batchingMode={batchingMode}
+                />
+              </div>
 
-              {/* LOG AKTIVITAS HMI (Moved to empty space on the right side of ScadaDiagram mimic) */}
-              <div className="absolute bottom-[95px] right-[20px] w-[480px] h-[255px] bg-[#070b13]/95 border border-slate-800 rounded-lg p-3 flex flex-col gap-2 shadow-2xl z-10 text-white select-none font-mono text-left">
+              {/* LOG AKTIVITAS HMI (Statically placed side-by-side with no overlap) */}
+              <div className="w-full lg:w-[480px] h-[255px] lg:h-auto bg-[#070b13]/95 border border-slate-800 rounded-lg p-3 flex flex-col gap-2 shadow-2xl text-white select-none font-mono text-left shrink-0">
                 {/* Header */}
                 <div className="flex items-center justify-between border-b border-slate-800 pb-1.5 shrink-0">
                   <div className="flex items-center gap-1.5">
